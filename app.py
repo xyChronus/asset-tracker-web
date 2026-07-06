@@ -298,10 +298,8 @@ def crypto_history_tick():
 
 
 def _pse_open():
-    n = datetime.now()  # server runs UTC on Render; PHT = UTC+8
-    hour_pht = (n.hour + 8) % 24
-    weekday_pht = (n.weekday() + (1 if n.hour + 8 >= 24 else 0)) % 7
-    return weekday_pht < 5 and 9 <= hour_pht < 16
+    n = datetime.now()  # server clock is Asia/Manila (TZ env var on Render)
+    return n.weekday() < 5 and (9, 0) <= (n.hour, n.minute) <= (15, 30)
 
 
 def pse_sync_directory_if_needed():
