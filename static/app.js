@@ -1113,7 +1113,8 @@ async function loadUser() {
     const el = document.getElementById("user-menu");
     el.innerHTML =
       `<span class="muted">${esc(me.name || me.email)}</span>` +
-      (me.admin ? ' <button class="mini-btn" id="invite-btn" title="Create an invite code for a friend">+ Invite</button>' : "") +
+      (me.admin ? ' <button class="mini-btn" id="invite-btn" title="Create an invite code for a friend">+ Invite</button>'
+                + ' <button class="mini-btn" id="members-btn" title="See who has joined and which invite codes are used">Members</button>' : "") +
       ' <a class="mini-btn" href="/logout" title="Sign out">Logout</a>';
     const inv = document.getElementById("invite-btn");
     if (inv) inv.onclick = async () => {
@@ -1121,7 +1122,40 @@ async function loadUser() {
       prompt("Invite code created — copy it and send it to your friend. "
         + "They'll enter it when registering:", r.code);
     };
+    const mem = document.getElementById("members-btn");
+    if (mem) mem.onclick = showMembers;
   } catch (e) { /* the 401 handler redirects to /login */ }
+}
+
+async function showMembers() {
+  const d = await api("/api/members");
+  const old = document.getElementById("members-overlay");
+  if (old) old.remove();
+  const overlay = document.createElement("div");
+  overlay.id = "members-overlay";
+  overlay.innerHTML = `<div class="members-box">
+    <div class="panel-head"><h3>Members (${d.users.length})</h3>
+      <button class="mini-btn" id="members-close">Close</button></div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Name</th><th>Email</th><th>Joined</th><th></th></tr></thead>
+      <tbody>${d.users.map(u => `<tr><td>${esc(u.name || "")}</td><td>${esc(u.email)}</td>
+        <td class="muted">${esc(u.created || "")}</td>
+        <td>${u.is_admin ? '<span class="badge hold">ADMIN</span>' : ""}</td></tr>`).join("")}</tbody>
+    </table></div>
+    <div class="panel-head" style="margin-top:14px"><h3>Invite codes</h3></div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Code</th><th>Created</th><th>Status</th></tr></thead>
+      <tbody>${d.invites.map(i => `<tr><td><b>${esc(i.code)}</b></td>
+        <td class="muted">${esc(i.created || "")}</td>
+        <td>${i.used_by_email
+          ? '<span class="muted">used by ' + esc(i.used_by_email) + " · " + esc(i.used_at || "") + "</span>"
+          : '<span class="pos">available</span>'}</td></tr>`).join("")
+        || '<tr><td class="empty-note" colspan="3">No invite codes yet.</td></tr>'}</tbody>
+    </table></div>
+  </div>`;
+  document.body.appendChild(overlay);
+  document.getElementById("members-close").onclick = () => overlay.remove();
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
 }
 
 setupTxForm();

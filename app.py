@@ -167,6 +167,18 @@ def api_create_invite():
     return jsonify({"ok": True, "code": code})
 
 
+@app.get("/api/members")
+@admin_required
+def api_members():
+    users = [dict(r) for r in db.conn().execute(
+        "SELECT id, name, email, created, is_admin FROM users ORDER BY id").fetchall()]
+    invites = [dict(r) for r in db.conn().execute(
+        "SELECT i.code, i.created, i.used_at, u.email AS used_by_email"
+        " FROM invites i LEFT JOIN users u ON u.id = i.used_by"
+        " ORDER BY i.created DESC LIMIT 50").fetchall()]
+    return jsonify({"users": users, "invites": invites})
+
+
 @app.get("/api/invites")
 @admin_required
 def api_list_invites():
