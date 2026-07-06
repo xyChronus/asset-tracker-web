@@ -10,6 +10,7 @@ const charts = {};
 const state = {
   market: localStorage.getItem("mkt") || "crypto",
   tab: "dashboard",
+  currency: localStorage.getItem("curmode") || "native",
   editingTx: null,
   pvHours: 168,
   chartHours: 168,
@@ -40,9 +41,16 @@ function esc(s) {
     c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
+let fxRate = null; // USD -> PHP, refreshed on every screen refresh
+
 function fmtMoney(v, compact) {
   if (v == null || isNaN(v)) return "—";
-  const c = cur();
+  let c = CUR[state.market];
+  if (state.currency !== "native" && fxRate) {
+    const want = state.currency === "USD" ? "$" : "₱";
+    if (want !== c) v = (c === "$") ? v * fxRate : v / fxRate;
+    c = want;
+  }
   const a = Math.abs(v);
   if (compact) {
     if (a >= 1e12) return c + (v / 1e12).toFixed(2) + "T";
@@ -1071,6 +1079,7 @@ function switchMarket(mkt) {
 }
 
 async function refresh() {
+  try { const fx = await api("/api/fx"); fxRate = fx.rate || null; } catch (e) { }
   try { await loaders[state.tab](); }
   catch (e) { console.error(e); toast("Couldn't refresh: " + e.message); }
   loadHeader();
@@ -1094,6 +1103,14 @@ document.querySelectorAll("#chart-range button").forEach(b => b.onclick = () => 
   drawHistory();
 });
 document.getElementById("news-source").onchange = loadNews;
+
+const curSel = document.getElementById("cur-select");
+curSel.value = state.currency;
+curSel.onchange = () => {
+  state.currency = curSel.value;
+  localStorage.setItem("curmode", state.currency);
+  refresh();
+};
 
 const txCombo = setupCombo("tx-coin");
 const chartCombo = setupCombo("chart-coin", (v) => {

@@ -32,6 +32,10 @@ header {
 }
 .mkt-switch button:hover { color: var(--text); }
 .mkt-switch button.active { background: var(--accent); color: #14100a; }
+.cur-select {
+  background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+  border-radius: 8px; padding: 6px 8px; font: inherit; font-size: 12.5px;
+}
 .watch-tools { display: flex; gap: 8px; align-items: center; }
 .filter-input {
   background: var(--panel-2); color: var(--text); border: 1px solid var(--border);

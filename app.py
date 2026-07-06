@@ -286,6 +286,24 @@ def crypto_fetch_fng():
             "yesterday": int(data[1]["value"]) if len(data) > 1 else None})
 
 
+def fetch_fx():
+    """USD -> PHP rate for the display-currency switch (two free sources)."""
+    rate = None
+    try:
+        r = requests.get("https://open.er-api.com/v6/latest/USD", timeout=20)
+        rate = (r.json().get("rates") or {}).get("PHP")
+    except Exception:
+        pass
+    if not rate:
+        try:
+            r = requests.get("https://api.frankfurter.app/latest?from=USD&to=PHP", timeout=20)
+            rate = (r.json().get("rates") or {}).get("PHP")
+        except Exception:
+            pass
+    if rate:
+        db.kv_set("fx:usdphp", {"rate": float(rate), "updated": now_ms()})
+
+
 def crypto_history_tick():
     ids = tracked_ids_all_users("crypto")
     if not ids:
@@ -548,6 +566,7 @@ def scheduler():
         [lambda: iv["crypto"]["top100"], 0, crypto_fetch_top100],
         [lambda: iv["crypto"]["global"], 0, crypto_fetch_global],
         [lambda: 4 * 3600, 0, crypto_fetch_fng],
+        [lambda: 6 * 3600, 0, fetch_fx],
         [lambda: iv["crypto"]["history"], 0, crypto_history_tick],
         [lambda: iv["crypto"]["news"], 0, lambda: fetch_news("crypto")],
         [lambda: iv["crypto"]["signals"], 0, lambda: recompute_signals("crypto")],
@@ -1189,6 +1208,11 @@ def api_market(market):
     return jsonify({"kind": "global", "indices": idx.get("data", {}),
                     "gainers": list(reversed(by_chg[-6:])), "losers": by_chg[:6],
                     "summary": summary, "updated": updated})
+
+
+@app.get("/api/fx")
+def api_fx():
+    return jsonify(db.kv_get("fx:usdphp", {}))
 
 
 @app.get("/api/<market>/advisor")
