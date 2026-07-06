@@ -554,6 +554,10 @@ def scheduler():
         [lambda: iv["global"]["indices"], 0, global_fetch_indices],
         [lambda: iv["global"]["news"], 0, lambda: fetch_news("global")],
     ]
+    # stagger the first runs: on 0.1-CPU free instances a boot-time stampede
+    # of collectors starves the web server and the router marks it down
+    for i, job in enumerate(jobs):
+        job[1] = time.time() + 20 + i * 12
     while True:
         for job in jobs:
             interval_fn, next_run, fn = job
@@ -564,6 +568,7 @@ def scheduler():
                     print(f"[scheduler] {getattr(fn, '__name__', 'job')} failed:")
                     traceback.print_exc()
                 job[1] = time.time() + interval_fn()
+                time.sleep(1)  # always yield to request threads between jobs
         time.sleep(2)
 
 
