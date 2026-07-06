@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in — Asset Tracker</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📊</text></svg>">
+<style>
+  .auth-wrap { max-width: 380px; margin: 10vh auto 0; padding: 0 20px; }
+  .auth-card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 26px; }
+  .auth-card h1 { font-size: 20px; margin: 0 0 4px; }
+  .auth-card .sub { color: var(--muted); font-size: 13px; margin-bottom: 18px; }
+  .auth-card label { display: block; color: var(--muted); font-size: 12.5px; margin-bottom: 12px; }
+  .auth-card input { width: 100%; background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 9px 11px; font: inherit; margin-top: 4px; box-sizing: border-box; }
+  .auth-card .primary-btn { margin-top: 6px; }
+  .auth-alt { text-align: center; color: var(--muted); font-size: 13px; margin-top: 14px; }
+</style>
+</head>
+<body>
+<div class="auth-wrap">
+  <div class="auth-card">
+    <h1>📊 Asset Tracker</h1>
+    <div class="sub">Sign in to your portfolio</div>
+    <form id="f">
+      <label>Email <input type="email" id="email" autocomplete="email" required></label>
+      <label>Password <input type="password" id="password" autocomplete="current-password" required></label>
+      <button type="submit" class="primary-btn">Sign in</button>
+      <div class="form-msg" id="msg"></div>
+    </form>
+    <div class="auth-alt">New here? <a href="/register">Create an account</a></div>
+  </div>
+</div>
+<script>
+document.getElementById("f").onsubmit = async (e) => {
+  e.preventDefault();
+  const msg = document.getElementById("msg");
+  msg.textContent = "";
+  const r = await fetch("/api/login", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      email: document.getElementById("email").value,
+      password: document.getElementById("password").value,
+    }),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (r.ok) location.href = "/";
+  else msg.innerHTML = '<span class="neg">' + (d.error || "Sign-in failed") + "</span>";
+};
+</script>
+</body>
+</html>

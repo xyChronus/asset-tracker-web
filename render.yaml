@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: asset-tracker
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn -w 1 --threads 8 --timeout 120 -b 0.0.0.0:$PORT app:app
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.10
+      - key: DATABASE_URL
+        sync: false
+      - key: SECRET_KEY
+        generateValue: true
+      - key: FINNHUB_API_KEY
+        sync: false
+      - key: RUN_SCHEDULER
+        value: "1"

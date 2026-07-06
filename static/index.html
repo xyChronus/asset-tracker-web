@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Asset Tracker</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📊</text></svg>">
+</head>
+<body>
+
+<header>
+  <div class="brand">📊 Asset Tracker</div>
+  <div class="mkt-switch" id="mkt-switch">
+    <button data-market="crypto" class="active">🪙 Crypto</button>
+    <button data-market="pse">🇵🇭 PSE</button>
+    <button data-market="global">🌎 Global</button>
+  </div>
+  <div class="header-stats" id="header-stats"></div>
+  <div class="status-wrap"><span class="status-dot" id="status-dot"></span><span class="status-text" id="status-text">connecting…</span></div>
+  <div class="user-menu" id="user-menu"></div>
+</header>
+
+<nav id="tabs">
+  <button data-tab="dashboard" class="active">Dashboard</button>
+  <button data-tab="advisor">Advisor</button>
+  <button data-tab="portfolio">Portfolio</button>
+  <button data-tab="market">Market</button>
+  <button data-tab="watchlist">Watchlist &amp; Signals</button>
+  <button data-tab="charts">Charts</button>
+  <button data-tab="news">News</button>
+</nav>
+
+<main>
+
+<!-- ======================= DASHBOARD ======================= -->
+<section id="tab-dashboard" class="tab active">
+  <div class="panel plan-panel">
+    <div class="panel-head"><h3>📋 Today's Plan</h3><button class="link-btn" data-goto="advisor">full analysis →</button></div>
+    <div id="today-plan" class="plan-row"><span class="empty-note">Analyzing your portfolio…</span></div>
+  </div>
+  <div class="cards" id="dash-cards"></div>
+  <div class="grid2">
+    <div class="panel">
+      <div class="panel-head"><h3>Portfolio Value</h3>
+        <div class="range-btns" id="pv-range">
+          <button data-hours="24">24h</button>
+          <button data-hours="168" class="active">7d</button>
+          <button data-hours="720">30d</button>
+        </div>
+      </div>
+      <div class="chart-box"><canvas id="pv-chart"></canvas></div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h3>Allocation</h3></div>
+      <div class="chart-box"><canvas id="alloc-chart"></canvas></div>
+    </div>
+  </div>
+  <div class="panel">
+    <div class="panel-head"><h3>Holdings</h3></div>
+    <div class="table-wrap"><table id="holdings-table"></table></div>
+  </div>
+  <div class="grid2">
+    <div class="panel">
+      <div class="panel-head"><h3>Market Situation</h3></div>
+      <p id="market-summary" class="summary-text">Loading market data… the first update takes about a minute.</p>
+      <div class="mini-stats" id="global-stats"></div>
+      <div class="gl-grid">
+        <div><h4 class="pos-h">Top Gainers</h4><div id="dash-gainers" class="gl-list"></div></div>
+        <div><h4 class="neg-h">Top Losers</h4><div id="dash-losers" class="gl-list"></div></div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h3>Latest News</h3><button class="link-btn" data-goto="news">all news →</button></div>
+      <div id="dash-news" class="news-list compact"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ======================= ADVISOR ======================= -->
+<section id="tab-advisor" class="tab">
+  <div class="panel">
+    <div class="panel-head"><h3>Daily Briefing</h3><span class="muted small-note" id="advisor-updated"></span></div>
+    <p class="summary-text" id="advisor-briefing">Analyzing the market, the news and your holdings…</p>
+    <div class="mini-stats" id="advisor-stats"></div>
+  </div>
+  <div class="panel-head standalone"><h3>Suggested Actions</h3>
+    <span class="muted small-note">Automated analysis of technicals + news + fundamentals + your holdings. A strong second opinion — the final call is always yours.</span>
+  </div>
+  <div id="advisor-actions" class="rec-grid"></div>
+  <div class="panel-head standalone"><h3>Holds &amp; Watches</h3></div>
+  <div id="advisor-holds" class="rec-grid"></div>
+</section>
+
+<!-- ======================= PORTFOLIO ======================= -->
+<section id="tab-portfolio" class="tab">
+  <div class="grid2 uneven">
+    <div class="panel">
+      <div class="panel-head"><h3>💰 Wallet</h3></div>
+      <div class="wallet-box">
+        <label>Budget — total money you've put into this market
+          <div class="input-row">
+            <input type="number" step="any" min="0" id="wallet-budget" placeholder="e.g. 5000">
+            <button type="button" id="wallet-save" class="mini-btn">Save</button>
+          </div>
+        </label>
+        <div class="muted small-note">Set this once and the app tracks your cash
+          automatically: available cash = budget − money currently in positions.
+          Update it whenever you add or withdraw money. Leave empty to turn off.</div>
+        <div class="form-msg" id="wallet-msg"></div>
+      </div>
+      <div class="panel-head"><h3>Add Transaction</h3></div>
+      <form id="tx-form" class="tx-form">
+        <div class="side-toggle">
+          <button type="button" data-side="buy" class="active buy">Buy</button>
+          <button type="button" data-side="sell" class="sell">Sell</button>
+        </div>
+        <label>Asset
+          <div class="combo" id="tx-coin-combo">
+            <input type="text" class="combo-input" id="tx-coin-input" placeholder="Type a name or ticker…" autocomplete="off" spellcheck="false">
+            <input type="hidden" id="tx-coin">
+            <div class="combo-list" id="tx-coin-list"></div>
+          </div>
+        </label>
+        <label>Date &amp; time <input type="datetime-local" id="tx-ts"></label>
+        <label><span id="tx-price-label">Price per unit</span>
+          <div class="input-row"><input type="number" step="any" min="0" id="tx-price" placeholder="0.00">
+          <button type="button" id="tx-live" class="mini-btn" title="Fill with the current live price">live</button></div>
+        </label>
+        <label>Quantity (units / shares) <input type="number" step="any" min="0" id="tx-qty" placeholder="0.0"></label>
+        <label>— or — Total amount <input type="number" step="any" min="0" id="tx-value" placeholder="0.00"></label>
+        <button type="submit" class="primary-btn" id="tx-submit">Add Buy</button>
+        <button type="button" class="mini-btn" id="tx-cancel" style="display:none; width:100%; margin-top:6px;">Cancel editing</button>
+        <div class="form-msg" id="tx-msg"></div>
+      </form>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h3>Realized Profit / Loss</h3></div>
+      <div class="table-wrap"><table id="closed-table"></table></div>
+    </div>
+  </div>
+  <div class="panel">
+    <div class="panel-head"><h3>Transaction History</h3></div>
+    <div class="table-wrap"><table id="tx-table"></table></div>
+  </div>
+</section>
+
+<!-- ======================= MARKET ======================= -->
+<section id="tab-market" class="tab">
+  <div class="cards" id="market-cards"></div>
+  <p id="market-summary-2" class="summary-text"></p>
+  <div class="gl-grid panel-pad">
+    <div class="panel"><h4 class="pos-h">Top Gainers</h4><div id="market-gainers" class="gl-list"></div></div>
+    <div class="panel"><h4 class="neg-h">Top Losers</h4><div id="market-losers" class="gl-list"></div></div>
+  </div>
+  <div class="panel">
+    <div class="panel-head"><h3 id="market-table-title">Top 100 by Market Cap</h3></div>
+    <div class="table-wrap"><table id="market-table"></table></div>
+  </div>
+</section>
+
+<!-- ======================= WATCHLIST ======================= -->
+<section id="tab-watchlist" class="tab">
+  <div class="panel">
+    <div class="panel-head">
+      <h3 id="watch-title">Watchlist</h3>
+      <div class="watch-tools">
+        <input type="text" id="watch-filter" placeholder="Filter…" class="filter-input" style="display:none">
+        <form id="watch-add" class="inline-form">
+          <input type="text" id="watch-query" placeholder="Add (name or ticker)…">
+          <button type="submit" class="primary-btn small">Add</button>
+        </form>
+      </div>
+    </div>
+    <div class="muted small-note" id="watch-note"></div>
+    <div class="table-wrap tall-wrap"><table id="watch-table"></table></div>
+  </div>
+  <div class="panel-head standalone"><h3>Buy / Sell Signals</h3>
+    <span class="muted small-note">Technical indicators on stored price history — informational, not financial advice.</span>
+  </div>
+  <div class="signal-grid" id="signal-grid"></div>
+</section>
+
+<!-- ======================= CHARTS ======================= -->
+<section id="tab-charts" class="tab">
+  <div class="panel">
+    <div class="panel-head">
+      <h3>Price History</h3>
+      <div class="chart-controls">
+        <div class="combo" id="chart-coin-combo">
+          <input type="text" class="combo-input" id="chart-coin-input" placeholder="Type a name or ticker…" autocomplete="off" spellcheck="false">
+          <input type="hidden" id="chart-coin">
+          <div class="combo-list" id="chart-coin-list"></div>
+        </div>
+        <div class="range-btns" id="chart-range">
+          <button data-hours="24">24h</button>
+          <button data-hours="168" class="active">7d</button>
+          <button data-hours="720">30d</button>
+        </div>
+      </div>
+    </div>
+    <div class="chart-box tall"><canvas id="history-chart"></canvas></div>
+    <div class="mini-stats" id="chart-indicators"></div>
+  </div>
+</section>
+
+<!-- ======================= NEWS ======================= -->
+<section id="tab-news" class="tab">
+  <div class="panel">
+    <div class="panel-head">
+      <h3>News</h3>
+      <select id="news-source"><option value="">All sources</option></select>
+    </div>
+    <div id="news-list" class="news-list"></div>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  Crypto data: CoinGecko · PSE data: PSE Edge &amp; phisix · Global stocks: Finnhub &amp; Yahoo Finance · News from major outlets per market ·
+  Signals and advisor suggestions are automated heuristics, <b>not financial advice</b>. Markets are risky — never invest more than you can afford to lose.
+</footer>
+
+<div id="toast"></div>
+<script src="/static/chart.umd.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>
