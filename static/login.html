@@ -15,6 +15,7 @@
   .auth-card input { width: 100%; background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 9px 11px; font: inherit; margin-top: 4px; box-sizing: border-box; }
   .auth-card .primary-btn { margin-top: 6px; }
   .auth-alt { text-align: center; color: var(--muted); font-size: 13px; margin-top: 14px; }
+  .auth-foot { color: var(--muted); font-size: 11.5px; line-height: 1.5; text-align: center; margin: 16px auto 0; max-width: 340px; }
 </style>
 </head>
 <body>
@@ -30,6 +31,9 @@
     </form>
     <div class="auth-alt">New here? <a href="/register">Create an account</a></div>
   </div>
+  <p class="auth-foot">Values shown are estimates for tracking — prices are slightly
+  delayed and fees aren't counted, so totals differ a little from your real exchange
+  or broker. Not financial advice.</p>
 </div>
 <script>
 document.getElementById("f").onsubmit = async (e) => {

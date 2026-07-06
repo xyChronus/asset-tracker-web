@@ -6,11 +6,20 @@
 const CUR = { crypto: "$", pse: "₱", global: "$" };
 const MKT_LABEL = { crypto: "Crypto", pse: "PSE Stocks", global: "Global Stocks" };
 
+const STYLES = [
+  { v: "scalper", label: "Scalper", desc: "Very short holds. Acts on fast signals, takes small profits quickly (~4%), and barely weighs company fundamentals." },
+  { v: "day", label: "Day Trader", desc: "Intraday moves. Quick to act, takes profit around +6%, light on fundamentals." },
+  { v: "swing", label: "Swing Trader", desc: "Days to weeks. The balanced default — takes profit around +25% and blends technicals, news and fundamentals." },
+  { v: "long", label: "Long-Term Investor", desc: "Months and up. Patient and fundamentals-led; rarely sells on short-term dips, takes profit much later." },
+];
+const styleLabel = (v) => (STYLES.find(s => s.v === v) || STYLES[2]).label;
+
 const charts = {};
 const state = {
   market: localStorage.getItem("mkt") || "crypto",
   tab: "dashboard",
   currency: localStorage.getItem("curmode") || "native",
+  style: "swing",
   editingTx: null,
   pvHours: 168,
   chartHours: 168,
@@ -118,6 +127,14 @@ function sigBadge(sig) {
   if (!sig) return '<span class="badge wait">…</span>';
   const cls = sig.action.toLowerCase().replace(/ /g, "-");
   return `<span class="badge ${cls}">${sig.action}</span>`;
+}
+
+// Numbered buy/sell score: positive = buy-leaning, negative = sell-leaning.
+function scorePill(v, dp) {
+  if (v == null || isNaN(v)) return "";
+  const n = dp ? (+v).toFixed(dp) : Math.round(v);
+  const cls = v > 0 ? "pos" : v < 0 ? "neg" : "muted";
+  return `<span class="score-pill ${cls}" title="Buy/sell score — higher is more bullish, lower more bearish">${v > 0 ? "+" : ""}${n}</span>`;
 }
 
 let toastTimer;
@@ -515,7 +532,7 @@ function recCard(r) {
     <div class="sig-head">
       <div class="sig-coin">${r.image ? `<img src="${esc(r.image)}">` : ""}${esc(r.name)}
         <span class="muted">${fmtMoney(r.price)}</span></div>
-      <div class="head-right">${sigBadge(r)}${acceptBtn}${doneBtn}</div>
+      <div class="head-right">${sigBadge(r)}${scorePill(r.conviction, 1)}${acceptBtn}${doneBtn}</div>
     </div>
     ${amount}${holdLine}
     <div class="conv-bar" title="Conviction: ${conv}">
@@ -544,6 +561,7 @@ async function loadAdvisor() {
   const doneCount = actionable.length - actions.length;
   document.getElementById("advisor-stats").innerHTML = [
     ["Market", a.market_open === false ? '<span class="neg">CLOSED</span>' : '<span class="pos">OPEN</span>'],
+    ["Trading Style", esc(a.style_label || styleLabel(state.style))],
     ["News Sentiment", esc(ms.label || "—") + (ms.score != null ? ` (${ms.score > 0 ? "+" : ""}${ms.score})` : "")],
     ["Suggestions", actions.length + " action(s)"],
     ["Done Today", doneCount + " ✓"],
@@ -881,7 +899,7 @@ async function loadWatchlist() {
         <td>${pctSpan(a.chg_7d, 1)}</td><td>${pctSpan(a.chg_30d, 1)}</td>
         <td class="muted">${fmtMoney(a.market_cap, true)}</td>
         <td><canvas class="spark" id="spark-${i}"></canvas></td>
-        <td>${sigBadge(a.signal)}</td>
+        <td>${sigBadge(a.signal)}${a.signal && a.signal.action !== "WAIT" ? " " + scorePill(a.signal.score) : ""}</td>
         <td><button class="del-btn" data-rm="${esc(a.asset_id)}">✕</button></td>
       </tr>`).join("") + "</tbody>";
   } else {
@@ -900,7 +918,7 @@ async function loadWatchlist() {
         <td>${a.div_yield != null ? fmtNum(a.div_yield, 2) + "%" : "—"}</td>
         <td class="muted">${esc(a.div_ex_date || "—")}</td>
         <td><canvas class="spark" id="spark-${i}"></canvas></td>
-        <td>${sigBadge(a.signal)}</td>
+        <td>${sigBadge(a.signal)}${a.signal && a.signal.action !== "WAIT" ? " " + scorePill(a.signal.score) : ""}</td>
         ${isPse ? "" : `<td><button class="del-btn" data-rm="${esc(a.asset_id)}">✕</button></td>`}
       </tr>`).join("") + "</tbody>";
   }
@@ -929,7 +947,7 @@ async function loadWatchlist() {
       <div class="sig-head">
         <div class="sig-coin">${a.image ? `<img src="${esc(a.image)}">` : ""}${esc(a.name)}
           <span class="muted">${fmtMoney(a.price)}</span></div>
-        ${sigBadge(s)}
+        <div class="head-right">${sigBadge(s)}${s && s.action !== "WAIT" ? scorePill(s.score) : ""}</div>
       </div>
       <ul>${((s && s.reasons) || ["Waiting for data…"]).map(r => `<li>${esc(r)}</li>`).join("")}</ul>
       ${chips.length ? `<div class="sig-chips">${chips.map(x => `<div class="mini-stat">${esc(x)}</div>`).join("")}</div>` : ""}
@@ -1136,11 +1154,13 @@ document.getElementById("wallet-save").onclick = async () => {
 async function loadUser() {
   try {
     const me = await api("/api/me");
+    state.style = me.trading_style || "swing";
     const el = document.getElementById("user-menu");
     el.innerHTML =
       `<span class="muted">${esc(me.name || me.email)}</span>` +
       (me.admin ? ' <button class="mini-btn" id="invite-btn" title="Create an invite code for a friend">+ Invite</button>'
                 + ' <button class="mini-btn" id="members-btn" title="See who has joined and which invite codes are used">Members</button>' : "") +
+      ' <button class="mini-btn" id="account-btn" title="Trading style and password">Account</button>' +
       ' <a class="mini-btn" href="/logout" title="Sign out">Logout</a>';
     const inv = document.getElementById("invite-btn");
     if (inv) inv.onclick = async () => {
@@ -1150,7 +1170,73 @@ async function loadUser() {
     };
     const mem = document.getElementById("members-btn");
     if (mem) mem.onclick = showMembers;
+    document.getElementById("account-btn").onclick = showAccount;
   } catch (e) { /* the 401 handler redirects to /login */ }
+}
+
+async function showAccount() {
+  const old = document.getElementById("account-overlay");
+  if (old) old.remove();
+  const overlay = document.createElement("div");
+  overlay.id = "account-overlay";
+  overlay.className = "app-overlay";
+  overlay.innerHTML = `<div class="overlay-box">
+    <div class="panel-head"><h3>Account</h3><button class="mini-btn" id="account-close">Close</button></div>
+
+    <h4 class="acct-h">Trading style</h4>
+    <p class="muted small-note">This tells the advisor how you like to trade — it adjusts
+      how eager it is to buy, how fast it takes profit, and how much it weighs fundamentals.</p>
+    <div class="style-list">
+      ${STYLES.map(s => `<label class="style-opt">
+        <input type="radio" name="style" value="${s.v}" ${s.v === state.style ? "checked" : ""}>
+        <span><b>${esc(s.label)}</b><br><span class="muted">${esc(s.desc)}</span></span>
+      </label>`).join("")}
+    </div>
+    <div class="form-msg" id="style-msg"></div>
+
+    <h4 class="acct-h">Change password</h4>
+    <label class="acct-field">Current password
+      <input type="password" id="pw-current" autocomplete="current-password"></label>
+    <label class="acct-field">New password (8+ characters)
+      <input type="password" id="pw-new" autocomplete="new-password"></label>
+    <button class="primary-btn small" id="pw-save">Update password</button>
+    <div class="form-msg" id="pw-msg"></div>
+  </div>`;
+  document.body.appendChild(overlay);
+  document.getElementById("account-close").onclick = () => overlay.remove();
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+
+  overlay.querySelectorAll('input[name="style"]').forEach(radio => radio.onchange = async () => {
+    const msg = document.getElementById("style-msg");
+    msg.textContent = "";
+    try {
+      await api("/api/settings", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ trading_style: radio.value }),
+      });
+      state.style = radio.value;
+      msg.innerHTML = `<span class="pos">Saved — advice now tuned for ${esc(styleLabel(radio.value))}.</span>`;
+      state.watch[state.market] = null;
+      if (state.tab === "advisor" || state.tab === "dashboard") refresh();
+    } catch (e) { msg.innerHTML = `<span class="neg">${esc(e.message)}</span>`; }
+  });
+
+  document.getElementById("pw-save").onclick = async () => {
+    const msg = document.getElementById("pw-msg");
+    msg.textContent = "";
+    try {
+      await api("/api/change_password", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          current: document.getElementById("pw-current").value,
+          new: document.getElementById("pw-new").value,
+        }),
+      });
+      msg.innerHTML = '<span class="pos">Password updated ✓</span>';
+      document.getElementById("pw-current").value = "";
+      document.getElementById("pw-new").value = "";
+    } catch (e) { msg.innerHTML = `<span class="neg">${esc(e.message)}</span>`; }
+  };
 }
 
 async function showMembers() {

@@ -163,6 +163,9 @@ def now_iso():
 
 def init():
     conn().execute(SCHEMA)
+    # migrations for columns added after the initial deploy (idempotent)
+    conn().execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS trading_style TEXT DEFAULT 'swing'")
+    conn().execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS agreed_terms BOOLEAN DEFAULT FALSE")
 
 
 # --- tiny JSON key/value store ---

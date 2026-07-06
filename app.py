@@ -112,6 +112,9 @@ def api_register():
         return jsonify({"error": "Enter a valid email address."}), 400
     if len(password) < 8:
         return jsonify({"error": "Password needs at least 8 characters."}), 400
+    if not d.get("agree"):
+        return jsonify({"error": "Please tick the box confirming you understand "
+                                 "tracked values are estimates before continuing."}), 400
     c = db.conn()
     if c.execute("SELECT 1 FROM users WHERE email=%s", (email,)).fetchone():
         return jsonify({"error": "That email is already registered."}), 400
@@ -123,8 +126,8 @@ def api_register():
         if not inv:
             return jsonify({"error": "A valid invite code is required - ask "
                                      "whoever shared this site with you."}), 403
-    c.execute("INSERT INTO users (email, name, password_hash, is_admin, created)"
-              " VALUES (%s,%s,%s,%s,%s)",
+    c.execute("INSERT INTO users (email, name, password_hash, is_admin, created, agreed_terms)"
+              " VALUES (%s,%s,%s,%s,%s,TRUE)",
               (email, name or email.split("@")[0], generate_password_hash(password),
                is_admin, db.now_iso()))
     row = c.execute("SELECT * FROM users WHERE email=%s", (email,)).fetchone()
@@ -154,8 +157,38 @@ def logout():
 
 @app.get("/api/me")
 def api_me():
+    row = db.conn().execute(
+        "SELECT trading_style FROM users WHERE id=%s", (uid(),)).fetchone()
+    style = (row or {}).get("trading_style") or "swing"
     return jsonify({"email": session.get("email"), "name": session.get("name"),
-                    "admin": bool(session.get("admin"))})
+                    "admin": bool(session.get("admin")), "trading_style": style})
+
+
+@app.post("/api/change_password")
+def api_change_password():
+    d = request.get_json(force=True)
+    current = d.get("current") or ""
+    new = d.get("new") or ""
+    if len(new) < 8:
+        return jsonify({"error": "New password needs at least 8 characters."}), 400
+    row = db.conn().execute("SELECT password_hash FROM users WHERE id=%s", (uid(),)).fetchone()
+    if not row or not check_password_hash(row["password_hash"], current):
+        return jsonify({"error": "Your current password isn't right."}), 403
+    db.conn().execute("UPDATE users SET password_hash=%s WHERE id=%s",
+                      (generate_password_hash(new), uid()))
+    return jsonify({"ok": True})
+
+
+@app.post("/api/settings")
+def api_settings():
+    d = request.get_json(force=True)
+    style = (d.get("trading_style") or "").strip().lower()
+    if style not in adv.STYLE_PARAMS:
+        return jsonify({"error": "unknown trading style"}), 400
+    db.conn().execute("UPDATE users SET trading_style=%s WHERE id=%s", (style, uid()))
+    for market in config.MARKETS:  # style changes every market's advice
+        _invalidate_advisor(market, uid())
+    return jsonify({"ok": True, "trading_style": style})
 
 
 @app.post("/api/invites")
@@ -883,11 +916,14 @@ def get_advisor(market, user, force=False):
             "SELECT * FROM news WHERE market=%s AND published>=%s", (market, since)).fetchall()]
         fund = db.get_fundamentals(market) if market != "crypto" else None
         is_open, next_open = market_session(market)
+        srow = db.conn().execute(
+            "SELECT trading_style FROM users WHERE id=%s", (user,)).fetchone()
+        style = (srow or {}).get("trading_style") or "swing"
         result = adv.build(assets, signals_data, port, news_rows,
                            {"line": _market_line(market), "open": is_open,
                             "next_open": next_open}, now_ms(),
                            currency=config.CURRENCY[market], fundamentals=fund,
-                           max_ideas=config.ADVISOR_MAX_IDEAS[market])
+                           max_ideas=config.ADVISOR_MAX_IDEAS[market], style=style)
         result["updated"] = now_ms()
         result["market_open"] = is_open
         result["next_open"] = next_open

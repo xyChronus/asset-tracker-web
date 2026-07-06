@@ -15,6 +15,10 @@
   .auth-card input { width: 100%; background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 9px 11px; font: inherit; margin-top: 4px; box-sizing: border-box; }
   .auth-card .primary-btn { margin-top: 6px; }
   .auth-alt { text-align: center; color: var(--muted); font-size: 13px; margin-top: 14px; }
+  .agree-row { display: flex; gap: 9px; align-items: flex-start; margin: 4px 0 14px; line-height: 1.45; }
+  .agree-row input { width: auto; margin-top: 3px; flex-shrink: 0; }
+  .agree-row span { color: var(--muted); font-size: 12px; }
+  .agree-row b { color: var(--text); }
 </style>
 </head>
 <body>
@@ -28,6 +32,13 @@
       <label>Email <input type="email" id="email" autocomplete="email" required></label>
       <label>Password (8+ characters) <input type="password" id="password" autocomplete="new-password" required minlength="8"></label>
       <label>Invite code <input type="text" id="invite" autocomplete="off" placeholder="e.g. Xy3kPq_a"></label>
+      <label class="agree-row">
+        <input type="checkbox" id="agree" required>
+        <span>I understand the values here are <b>estimates</b>. Prices are slightly
+        delayed and fees aren't counted, so my totals and profit/loss will differ a
+        little from my real exchange or broker. This is a tracking tool, not financial
+        advice.</span>
+      </label>
       <button type="submit" class="primary-btn">Create account</button>
       <div class="form-msg" id="msg"></div>
     </form>
@@ -46,6 +57,7 @@ document.getElementById("f").onsubmit = async (e) => {
       email: document.getElementById("email").value,
       password: document.getElementById("password").value,
       invite: document.getElementById("invite").value,
+      agree: document.getElementById("agree").checked,
     }),
   });
   const d = await r.json().catch(() => ({}));

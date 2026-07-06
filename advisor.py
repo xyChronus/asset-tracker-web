@@ -216,15 +216,39 @@ MAX_ALLOC_PCT = 35
 TARGET_TRIM_PCT = 30
 BUY_CAP_PCT = 30
 
+# Trading-style presets tune how eager vs. patient the advisor is. "swing" is
+# the balanced default and reproduces the original thresholds exactly.
+#   buy_tech    - minimum technical score to act on a buy
+#   sell_hard   - technical score that triggers a sell on its own
+#   sell_soft   - technical score that triggers a sell if news/value also weak
+#   tp_pct      - profit % at which "take profit" kicks in
+#   tp_tech     - momentum-cooling threshold for take profit
+#   value_weight- how much company fundamentals matter (0 = ignore)
+#   alloc_cap   - position size (% of wallet) considered "too concentrated"
+STYLE_PARAMS = {
+    "scalper": {"label": "Scalper", "buy_tech": 2, "sell_hard": -2, "sell_soft": -1,
+                "tp_pct": 4, "tp_tech": 1, "value_weight": 0.3, "alloc_cap": 40},
+    "day": {"label": "Day Trader", "buy_tech": 2, "sell_hard": -3, "sell_soft": -2,
+            "tp_pct": 6, "tp_tech": 0, "value_weight": 0.5, "alloc_cap": 38},
+    "swing": {"label": "Swing Trader", "buy_tech": 3, "sell_hard": -4, "sell_soft": -2,
+              "tp_pct": 25, "tp_tech": -1, "value_weight": 1.0, "alloc_cap": 35},
+    "long": {"label": "Long-Term Investor", "buy_tech": 4, "sell_hard": -5, "sell_soft": -4,
+             "tp_pct": 60, "tp_tech": -1, "value_weight": 2.0, "alloc_cap": 35},
+}
+DEFAULT_STYLE = "swing"
+
 
 def _round_amt(v, floor=10):
     return max(floor, int(round(v / 5.0) * 5))
 
 
 def build(assets, signals, portfolio, news_items, market, now_ms,
-          currency="$", fundamentals=None, max_ideas=None):
+          currency="$", fundamentals=None, max_ideas=None, style=DEFAULT_STYLE):
     """Main entry. Returns {market_sentiment, briefing, recommendations}."""
     fundamentals = fundamentals or {}
+    sp = STYLE_PARAMS.get(style) or STYLE_PARAMS[DEFAULT_STYLE]
+    max_alloc = sp["alloc_cap"]
+    target_trim = sp["alloc_cap"] - 5
     per_asset_news, market_sent = _match_news(assets, news_items, now_ms)
 
     summary = portfolio.get("summary", {})
@@ -249,6 +273,7 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
         price = a.get("price") or (h or {}).get("price")
         f = fundamentals.get(aid)
         value_votes, value_reasons = _value_votes(f, price)
+        value_votes *= sp["value_weight"]  # trading style weights fundamentals
         has_value = h is not None and h.get("value") is not None
         # with a budget set, concentration is judged against the whole wallet
         # (positions + cash); without one, against invested positions only
@@ -266,9 +291,9 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
                 "assessed - review it manually.")
         elif h:  # ---------- assets you own
             headroom = (BUY_CAP_PCT / 100.0) * alloc_base - h["value"]
-            if alloc > MAX_ALLOC_PCT and n_holdings >= 3:
+            if alloc > max_alloc and n_holdings >= 3:
                 action = "TRIM"
-                t = TARGET_TRIM_PCT / 100.0
+                t = target_trim / 100.0
                 if cash is not None:
                     # sale proceeds become tracked cash, so the wallet total
                     # stays the same and the sizing is direct
@@ -282,11 +307,11 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
                 reasons.append(
                     f"{a['name']} is {alloc:.0f}% of this {wallet_word} - a lot riding "
                     f"on one position. Selling this much (keep it as cash or spread "
-                    f"it around) brings it down to about {TARGET_TRIM_PCT}%.")
+                    f"it around) brings it down to about {target_trim}%.")
                 if tech is not None and tech <= -2:
                     reasons.append("Technicals are weak too, which strengthens the case.")
-            elif tech is not None and (tech <= -4 or
-                                       (tech <= -2 and (news_score <= -1 or value_votes <= -1))):
+            elif tech is not None and (tech <= sp["sell_hard"] or
+                                       (tech <= sp["sell_soft"] and (news_score <= -1 or value_votes <= -1))):
                 action = "SELL PART"
                 amt = h["value"] * 0.5
                 reasons.append("Multiple technical indicators point down at once.")
@@ -296,13 +321,13 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
                     reasons.append(
                         f"You're down {abs(plpct):.0f}% on this position - reducing "
                         "now limits further damage if the slide continues.")
-            elif plpct is not None and plpct >= 25 and tech is not None and tech <= -1:
+            elif plpct is not None and plpct >= sp["tp_pct"] and tech is not None and tech <= sp["tp_tech"]:
                 action = "TAKE PROFIT"
                 amt = h["value"] * 0.3
                 reasons.append(
                     f"You're up {plpct:.0f}% and momentum is cooling - selling ~30% "
                     "locks in profit while keeping most of the upside.")
-            elif ((tech is not None and tech >= 3) or (tech is None and value_votes >= 3)) \
+            elif ((tech is not None and tech >= sp["buy_tech"]) or (tech is None and value_votes >= 3)) \
                     and news_score >= -0.5 and alloc < BUY_CAP_PCT and headroom >= 10 \
                     and (cash is None or cash >= 15):
                 action = "BUY MORE"
@@ -317,15 +342,15 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
                 else:
                     reasons.append("Signals don't line up strongly enough either "
                                    "way - no edge; sit tight.")
-            if alloc > MAX_ALLOC_PCT and n_holdings < 3:
+            if alloc > max_alloc and n_holdings < 3:
                 reasons.append(
                     f"Heads up: this is {alloc:.0f}% of the portfolio. With only "
                     f"{n_holdings} position(s) that's expected, but consider spreading "
                     "new money across more assets over time.")
         else:  # ---------- watchlist assets you don't own
             base = max(0.05 * capital, 25)
-            good_setup = (tech is not None and ((tech >= 4 and news_score >= 0) or
-                                                (tech >= 3 and news_score >= 1))) \
+            good_setup = (tech is not None and ((tech >= sp["buy_tech"] + 1 and news_score >= 0) or
+                                                (tech >= sp["buy_tech"] and news_score >= 1))) \
                 or (value_votes >= 3 and news_score >= 0 and (tech is None or tech >= 0)) \
                 or (value_votes >= 2 and tech is not None and tech >= 2)
             if good_setup and cash is not None and cash < 25:
@@ -466,4 +491,6 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
         "market_sentiment": {"score": round(market_sent, 2), "label": news_mood},
         "briefing": briefing,
         "recommendations": recs,
+        "style": style,
+        "style_label": sp["label"],
     }

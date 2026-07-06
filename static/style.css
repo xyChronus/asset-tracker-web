@@ -64,13 +64,33 @@ nav#tabs button:hover { color: var(--text); }
 nav#tabs button.active { color: var(--accent); border-bottom-color: var(--accent); }
 .user-menu { display: flex; gap: 8px; align-items: center; font-size: 12.5px; white-space: nowrap; }
 .user-menu a.mini-btn { text-decoration: none; }
-#members-overlay {
+#members-overlay, .app-overlay {
   position: fixed; inset: 0; background: rgba(0,0,0,.62); z-index: 60;
   display: flex; align-items: flex-start; justify-content: center; padding: 60px 16px;
 }
-.members-box {
+.members-box, .overlay-box {
   background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
   padding: 18px 20px; max-width: 680px; width: 100%; max-height: 75vh; overflow-y: auto;
+}
+.overlay-box .acct-h { font-size: 14px; margin: 20px 0 4px; }
+.overlay-box .acct-h:first-of-type { margin-top: 6px; }
+.style-list { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
+.style-opt {
+  display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px;
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 9px;
+  cursor: pointer; font-size: 13px;
+}
+.style-opt input { margin-top: 3px; flex-shrink: 0; }
+.style-opt:has(input:checked) { border-color: var(--accent); }
+.acct-field { display: block; color: var(--muted); font-size: 12.5px; margin: 10px 0; }
+.acct-field input {
+  width: 100%; background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+  border-radius: 8px; padding: 8px 10px; font: inherit; margin-top: 4px; box-sizing: border-box;
+}
+.score-pill {
+  display: inline-block; min-width: 26px; text-align: center; font-weight: 700;
+  font-size: 11.5px; padding: 1px 6px; border-radius: 6px; background: var(--panel-2);
+  border: 1px solid var(--border); font-variant-numeric: tabular-nums;
 }
 
 main { padding: 18px 22px 30px; max-width: 1400px; margin: 0 auto; }
