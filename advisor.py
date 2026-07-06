@@ -420,6 +420,12 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
         recs = sorted(held + ideas,
                       key=lambda r: (-ACTION_RANK.get(r["action"], 0), -abs(r["conviction"])))
 
+    # when the exchange is closed there is nothing to act on: suppress
+    # buy/sell suggestions entirely (crypto never closes)
+    market_open = market.get("open", True)
+    if not market_open:
+        recs = [r for r in recs if r["action"] in ("HOLD", "WATCH")]
+
     # ---------------------------------------------------------- briefing
     if market_sent > 0.4:
         news_mood = "leaning positive"
@@ -442,7 +448,11 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
     briefing = ". ".join(b[0].upper() + b[1:] for b in bits) + "."
 
     actionable = [r for r in recs if r["action"] not in ("HOLD", "WATCH")]
-    if actionable:
+    if not market_open:
+        nxt = market.get("next_open")
+        briefing += (" The market is closed right now - buy/sell suggestions "
+                     "resume when it reopens" + (f" ({nxt})." if nxt else "."))
+    elif actionable:
         top = actionable[0]
         verb = "buying" if top["action"] in ("BUY", "BUY MORE") else "selling"
         amt_txt = f" ~{currency}{top['usd']}" if top["usd"] else ""

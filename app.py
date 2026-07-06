@@ -749,6 +749,55 @@ def dismissals(user, market):
         " WHERE user_id=%s AND market=%s AND ts>=%s", (user, market, cutoff)).fetchall()}
 
 
+def market_session(market):
+    """(is_open, human 'reopens at' text). Crypto never closes.
+    PSE: 9:30-12:00 & 13:00-15:00 Manila, Mon-Fri (holidays not modeled).
+    Global: US session 9:30-16:00 Eastern, shown in Manila time."""
+    from datetime import timedelta, timezone as _tz
+    if market == "crypto":
+        return True, None
+    now = datetime.now()  # Manila clock (TZ=Asia/Manila)
+    if market == "pse":
+        wd, t = now.weekday(), (now.hour, now.minute)
+        if wd < 5 and ((9, 30) <= t < (12, 0) or (13, 0) <= t < (15, 0)):
+            return True, None
+        if wd < 5 and t < (9, 30):
+            return False, "today at 9:30 AM"
+        if wd < 5 and (12, 0) <= t < (13, 0):
+            return False, "at 1:00 PM, after the lunch break"
+        nxt = now + timedelta(days=1)
+        while nxt.weekday() >= 5:
+            nxt += timedelta(days=1)
+        label = "tomorrow" if (nxt.date() - now.date()).days == 1 else nxt.strftime("%A")
+        return False, f"{label} at 9:30 AM"
+    # global: US-listed names, NYSE/Nasdaq hours
+    try:
+        from zoneinfo import ZoneInfo
+        et = datetime.now(ZoneInfo("America/New_York"))
+        have_tz = True
+    except Exception:
+        off = -4 if 3 <= now.month <= 10 else -5  # rough EDT/EST
+        et = datetime.now(_tz.utc) + timedelta(hours=off)
+        have_tz = False
+    wd, t = et.weekday(), (et.hour, et.minute)
+    if wd < 5 and (9, 30) <= t < (16, 0):
+        return True, None
+    nxt = et
+    if wd >= 5 or t >= (16, 0):
+        nxt = et + timedelta(days=1)
+        while nxt.weekday() >= 5:
+            nxt += timedelta(days=1)
+    open_et = nxt.replace(hour=9, minute=30, second=0, microsecond=0)
+    if have_tz:
+        try:
+            from zoneinfo import ZoneInfo
+            manila = open_et.astimezone(ZoneInfo("Asia/Manila"))
+            return False, manila.strftime("%A %I:%M %p").replace(" 0", " ") + " Manila time"
+        except Exception:
+            pass
+    return False, "around 9:30-10:30 PM Manila time"
+
+
 def _market_line(market):
     if market == "crypto":
         g = db.kv_get("crypto:global", {}).get("data", {})
@@ -814,11 +863,15 @@ def get_advisor(market, user, force=False):
         news_rows = [dict(r) for r in db.conn().execute(
             "SELECT * FROM news WHERE market=%s AND published>=%s", (market, since)).fetchall()]
         fund = db.get_fundamentals(market) if market != "crypto" else None
+        is_open, next_open = market_session(market)
         result = adv.build(assets, signals_data, port, news_rows,
-                           {"line": _market_line(market)}, now_ms(),
+                           {"line": _market_line(market), "open": is_open,
+                            "next_open": next_open}, now_ms(),
                            currency=config.CURRENCY[market], fundamentals=fund,
                            max_ideas=config.ADVISOR_MAX_IDEAS[market])
         result["updated"] = now_ms()
+        result["market_open"] = is_open
+        result["next_open"] = next_open
         db.kv_set(key, result)
         return result
 

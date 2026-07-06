@@ -387,6 +387,12 @@ async function loadTodayPlan() {
   const actionable = a.recommendations.filter(r => !["HOLD", "WATCH"].includes(r.action));
   const actions = actionable.filter(r => !r.dismissed).slice(0, 3);
   const doneCount = actionable.filter(r => r.dismissed).length;
+  if (a.market_open === false) {
+    el.innerHTML = `<div class="plan-item"><span class="badge wait">MARKET CLOSED</span>
+      <span>Buy/sell suggestions pause while the market is closed — they resume
+      ${esc(a.next_open || "when it reopens")}.</span></div>`;
+    return;
+  }
   if (!actions.length) {
     el.innerHTML = `<div class="plan-item"><span class="badge hold">ALL CLEAR</span>
       <span>${doneCount ? `All ${doneCount} suggestion(s) done for today — nice work.`
@@ -529,6 +535,7 @@ async function loadAdvisor() {
   const actions = actionable.filter(r => !r.dismissed);
   const doneCount = actionable.length - actions.length;
   document.getElementById("advisor-stats").innerHTML = [
+    ["Market", a.market_open === false ? '<span class="neg">CLOSED</span>' : '<span class="pos">OPEN</span>'],
     ["News Sentiment", esc(ms.label || "—") + (ms.score != null ? ` (${ms.score > 0 ? "+" : ""}${ms.score})` : "")],
     ["Suggestions", actions.length + " action(s)"],
     ["Done Today", doneCount + " ✓"],
@@ -537,7 +544,9 @@ async function loadAdvisor() {
   const rest = a.recommendations.filter(r => ["HOLD", "WATCH"].includes(r.action));
   document.getElementById("advisor-actions").innerHTML = actions.length
     ? actions.map(recCard).join("")
-    : (doneCount
+    : (a.market_open === false
+      ? `<div class="empty-note">The market is closed — buy/sell suggestions resume ${esc(a.next_open || "when it reopens")}. (Crypto never sleeps; stocks do.)</div>`
+      : doneCount
       ? `<div class="empty-note">All ${doneCount} suggestion(s) marked done for today — nice work. New ones appear when the situation changes.</div>`
       : '<div class="empty-note">No buy or sell suggestions right now — the advisor only speaks up when several signals line up. That caution is a feature.</div>');
   document.getElementById("advisor-holds").innerHTML = rest.map(recCard).join("");
