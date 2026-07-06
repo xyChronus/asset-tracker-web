@@ -14,6 +14,8 @@ import requests
 
 FINNHUB = "https://finnhub.io/api/v1"
 YAHOO = "https://query1.finance.yahoo.com/v8/finance/chart"
+TWELVE = "https://api.twelvedata.com"
+ALPHA = "https://www.alphavantage.co/query"
 UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) portfolio-tracker/1.0"}
 SETTINGS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "settings.json")
 
@@ -25,14 +27,26 @@ last_ok = None
 last_error = None
 
 
-def _api_key():
-    key = os.environ.get("FINNHUB_API_KEY")
-    if key:
-        return key
+def _setting(env_name, settings_key):
+    """Read a key from an env var (production) or data/settings.json (local)."""
+    v = os.environ.get(env_name)
+    if v:
+        return v
     try:
         with open(SETTINGS_PATH, encoding="utf-8") as f:
-            return json.load(f).get("finnhub_api_key") or None
+            return json.load(f).get(settings_key) or None
     except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _api_key():
+    return _setting("FINNHUB_API_KEY", "finnhub_api_key")
+
+
+def _f(x):
+    try:
+        return float(x)
+    except (TypeError, ValueError):
         return None
 
 
@@ -64,8 +78,8 @@ def fh_get(path, params=None):
 
 
 def quote(symbol):
-    """{price, chg_pct, chg, high, low, open, prev_close} via Finnhub,
-    falling back to Yahoo if Finnhub fails or has no data."""
+    """Real-time-ish quote, trying sources in order of quality until one has a
+    price: Finnhub -> Yahoo -> Twelve Data -> Alpha Vantage."""
     try:
         q = fh_get("/quote", {"symbol": symbol})
         if q.get("c"):
@@ -74,7 +88,49 @@ def quote(symbol):
                     "prev_close": q.get("pc"), "src": "finnhub"}
     except Exception:
         pass
-    return yahoo_quote(symbol)
+    for fn in (yahoo_quote, twelvedata_quote, alphavantage_quote):
+        try:
+            q = fn(symbol)
+            if q and q.get("price"):
+                return q
+        except Exception:
+            pass
+    return {"price": None, "chg_pct": None, "src": "none"}
+
+
+def twelvedata_quote(symbol):
+    key = _setting("TWELVEDATA_API_KEY", "twelvedata_api_key")
+    if not key:
+        raise RuntimeError("no Twelve Data key")
+    r = requests.get(f"{TWELVE}/quote", params={"symbol": symbol, "apikey": key},
+                     headers=UA, timeout=15)
+    r.raise_for_status()
+    d = r.json()
+    price = d.get("close") or d.get("price")
+    if not price:
+        raise RuntimeError(d.get("message") or "twelvedata: no price")
+    return {"price": _f(price), "chg_pct": _f(d.get("percent_change")),
+            "chg": _f(d.get("change")), "high": _f(d.get("high")), "low": _f(d.get("low")),
+            "open": _f(d.get("open")), "prev_close": _f(d.get("previous_close")),
+            "src": "twelvedata"}
+
+
+def alphavantage_quote(symbol):
+    key = _setting("ALPHAVANTAGE_API_KEY", "alphavantage_api_key")
+    if not key:
+        raise RuntimeError("no Alpha Vantage key")
+    r = requests.get(ALPHA, params={"function": "GLOBAL_QUOTE", "symbol": symbol,
+                                    "apikey": key}, headers=UA, timeout=15)
+    r.raise_for_status()
+    g = r.json().get("Global Quote") or {}
+    price = g.get("05. price")
+    if not price:
+        raise RuntimeError("alphavantage: no price (daily limit?)")
+    pct = (g.get("10. change percent") or "").replace("%", "")
+    return {"price": _f(price), "chg_pct": _f(pct), "chg": _f(g.get("09. change")),
+            "high": _f(g.get("03. high")), "low": _f(g.get("04. low")),
+            "open": _f(g.get("02. open")), "prev_close": _f(g.get("08. previous close")),
+            "src": "alphavantage"}
 
 
 def _pick(metric, keys):

@@ -42,12 +42,13 @@ def get(path, params=None):
     global _last_call, last_ok, last_error
     with _lock:
         for attempt in range(3):
-            wait = MIN_INTERVAL - (time.monotonic() - _last_call)
+            key = _api_key()
+            interval = 2.2 if key else MIN_INTERVAL  # a demo key allows ~30/min
+            wait = interval - (time.monotonic() - _last_call)
             if wait > 0:
                 time.sleep(wait)
             _last_call = time.monotonic()
             headers = {"accept": "application/json"}
-            key = _api_key()
             if key:
                 headers["x-cg-demo-api-key"] = key
             try:
