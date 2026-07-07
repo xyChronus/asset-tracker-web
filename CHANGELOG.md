@@ -113,6 +113,10 @@ Web-only items are marked **(web)**.
 - A new **Hot & Cold strip** at the top of the Advisor tab, matching flag chips on each card, and **Heads-up** lines on the dashboard's Today plan.
 - Flags are raw-movement only and run **independent of the buy/sell call**, so a sharp drop registers even when the technical read looks oversold. They're awareness, not instructions — the final call is always yours.
 
+## [1.7.1] — 2026-07-08 — Fear & Greed explainer
+### Added
+- A small **ⓘ info bubble** next to the crypto **Fear & Greed** score (Dashboard and Market tab). Hover it for a plain-language explanation: what the 0–100 score means, the Extreme Fear → Extreme Greed scale, and the contrarian read — with the reminder that it's one input among many, not a signal on its own.
+
 ## [1.7.0] — 2026-07-08 — Sortable tables
 ### Added
 - **Click any column header to sort** — on the Dashboard's Holdings table and on every Watchlist tab (Crypto, PSE, Global). Click once for high→low, again to reverse; a ▲/▼ arrow marks the active column and blanks always sink to the bottom. Sort by value, price, day change, P/E, dividend yield, market cap, signal score — whatever you're comparing at the moment.

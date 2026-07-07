@@ -163,11 +163,25 @@ function linkHtml(url, text) {
     : `<span>${esc(text)}</span>`;
 }
 
+// Small hoverable "i" bubble. `html` is trusted markup (not user input).
+function infoBubble(html) {
+  return `<button type="button" class="info-i" aria-label="More information">i` +
+    `<span class="info-pop">${html}</span></button>`;
+}
+
+const FNG_HELP =
+  "<b>Crypto Fear &amp; Greed Index</b><br>" +
+  "A daily read on overall market emotion from 0 (extreme fear) to 100 (extreme greed), " +
+  "blending volatility, momentum, volume, social buzz and Bitcoin dominance.<br><br>" +
+  "0–24 Extreme Fear · 25–44 Fear · 45–55 Neutral · 56–75 Greed · 76–100 Extreme Greed<br><br>" +
+  "Often read as a contrarian gauge: extreme fear can flag a buying opportunity, " +
+  "extreme greed a reason for caution. One input among many — not a signal on its own.";
+
 function fngSpan(fng) {
   if (!fng || fng.value == null) return "";
   const v = fng.value;
   const cls = v < 45 ? "neg" : v <= 55 ? "muted" : "pos";
-  return `<span class="${cls}"><b>${v}</b> — ${esc(fng.label)}</span>`;
+  return `<span class="${cls}"><b>${v}</b> — ${esc(fng.label)}</span>${infoBubble(FNG_HELP)}`;
 }
 
 function sigBadge(sig) {
