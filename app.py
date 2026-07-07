@@ -20,6 +20,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 import advisor as adv
 import coingecko
+import coinmarketcap
 import config
 import db
 import global_data
@@ -282,10 +283,51 @@ def crypto_fetch_markets():
     ids = tracked_ids_all_users("crypto")
     if not ids:
         return
-    data = coingecko.get("/coins/markets", {
-        "vs_currency": "usd", "ids": ",".join(ids[:250]), "per_page": 250,
-        "price_change_percentage": "1h,24h,7d,30d", "sparkline": "true"})
-    db.kv_set("crypto:watch_markets", {"updated": now_ms(), "data": data})
+    try:
+        data = coingecko.get("/coins/markets", {
+            "vs_currency": "usd", "ids": ",".join(ids[:250]), "per_page": 250,
+            "price_change_percentage": "1h,24h,7d,30d", "sparkline": "true"})
+        db.kv_set("crypto:watch_markets", {"updated": now_ms(), "data": data})
+    except Exception:
+        # CoinGecko unavailable: keep prices alive from CoinMarketCap
+        fallback = _cmc_markets_fallback(ids)
+        if not fallback:
+            raise
+        db.kv_set("crypto:watch_markets",
+                  {"updated": now_ms(), "data": fallback, "degraded": "coinmarketcap"})
+        print(f"[crypto] CoinGecko down - served {len(fallback)} prices from CoinMarketCap")
+
+
+def _cmc_markets_fallback(ids):
+    """Build a CoinGecko-markets-shaped snapshot from CoinMarketCap so live
+    prices survive a CoinGecko outage. Richer fields (sparkline, 1h/7d/30d,
+    image) are left empty until CoinGecko recovers."""
+    rows = db.conn().execute(
+        "SELECT DISTINCT asset_id, symbol, name FROM watchlist WHERE market='crypto'").fetchall()
+    id_meta = {r["asset_id"]: (r["symbol"], r["name"]) for r in rows}
+    symbols = [id_meta[i][0] for i in ids if i in id_meta and id_meta[i][0]]
+    q = coinmarketcap.quotes_by_symbol(symbols)
+    if not q:
+        return None
+    out = []
+    for i in ids:
+        sym, nm = id_meta.get(i, (None, None))
+        c = q.get((sym or "").upper())
+        if not c:
+            continue
+        out.append({
+            "id": i, "symbol": (sym or "").lower(), "name": c.get("name") or nm or i,
+            "image": None, "market_cap_rank": None,
+            "current_price": c["price"], "market_cap": c.get("market_cap"),
+            "total_volume": c.get("volume"),
+            "price_change_percentage_24h_in_currency": c.get("pct_24h"),
+            "price_change_percentage_1h_in_currency": None,
+            "price_change_percentage_7d_in_currency": None,
+            "price_change_percentage_30d_in_currency": None,
+            "high_24h": None, "low_24h": None,
+            "sparkline_in_7d": {"price": []},
+        })
+    return out or None
 
 
 def crypto_fetch_top100():
