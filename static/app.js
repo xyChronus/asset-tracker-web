@@ -1090,15 +1090,28 @@ function renderMarkdown(md) {
   return html;
 }
 
-async function loadChangelog() {
-  const el = document.getElementById("changelog-body");
+async function showChangelog() {
+  const old = document.getElementById("changelog-overlay");
+  if (old) old.remove();
+  const overlay = document.createElement("div");
+  overlay.id = "changelog-overlay";
+  overlay.className = "app-overlay";
+  overlay.innerHTML = `<div class="overlay-box">
+    <div class="panel-head"><h3>What's New</h3><button class="mini-btn" id="changelog-close">Close</button></div>
+    <div id="changelog-body" class="changelog-body"><div class="empty-note">Loading…</div></div>
+  </div>`;
+  document.body.appendChild(overlay);
+  document.getElementById("changelog-close").onclick = () => overlay.remove();
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
   try {
     const d = await api("/api/changelog");
     const parts = (d.markdown || "").split(/\n(?=## )/);   // split on version headers
     const head = parts.shift();                             // title + intro
-    el.innerHTML = renderMarkdown([head, ...parts.reverse()].join("\n"));  // newest first
+    document.getElementById("changelog-body").innerHTML =
+      renderMarkdown([head, ...parts.reverse()].join("\n"));  // newest first
   } catch (e) {
-    el.innerHTML = '<div class="empty-note">Could not load the changelog.</div>';
+    document.getElementById("changelog-body").innerHTML =
+      '<div class="empty-note">Could not load the changelog.</div>';
   }
 }
 
@@ -1110,7 +1123,6 @@ const loaders = {
   watchlist: loadWatchlist,
   charts: loadCharts,
   news: loadNews,
-  changelog: loadChangelog,
 };
 
 function switchTab(name) {
@@ -1202,6 +1214,7 @@ async function loadUser() {
       (me.admin ? ' <button class="mini-btn" id="invite-btn" title="Create an invite code for a friend">+ Invite</button>'
                 + ' <button class="mini-btn" id="members-btn" title="See who has joined and which invite codes are used">Members</button>' : "") +
       ' <button class="mini-btn" id="account-btn" title="Trading style and password">Account</button>' +
+      ' <a class="ulink" id="changelog-btn" title="What\'s new">Changelog</a>' +
       ' <a class="mini-btn" href="/logout" title="Sign out">Logout</a>';
     const inv = document.getElementById("invite-btn");
     if (inv) inv.onclick = async () => {
@@ -1212,6 +1225,7 @@ async function loadUser() {
     const mem = document.getElementById("members-btn");
     if (mem) mem.onclick = showMembers;
     document.getElementById("account-btn").onclick = showAccount;
+    document.getElementById("changelog-btn").onclick = showChangelog;
   } catch (e) { /* the 401 handler redirects to /login */ }
 }
 

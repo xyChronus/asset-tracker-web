@@ -242,7 +242,10 @@ footer {
 canvas.spark { width: 110px; height: 30px; }
 .empty-note { color: var(--muted); padding: 14px 4px; font-size: 13px; }
 
-/* ---- changelog tab ---- */
+.ulink { color: var(--muted); text-decoration: underline; cursor: pointer; font-size: 12.5px; white-space: nowrap; }
+.ulink:hover { color: var(--text); }
+
+/* ---- changelog ---- */
 .changelog-body { max-width: 780px; }
 .changelog-body .cl-title { font-size: 14px; color: var(--muted); font-weight: 600; margin: 0 0 2px; }
 .changelog-body .cl-ver {
