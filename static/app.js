@@ -623,7 +623,7 @@ async function loadPortfolio() {
 
   const tt = document.getElementById("tx-table");
   tt.innerHTML = `<thead><tr><th>Date</th><th>Type</th><th>Asset</th><th>Quantity</th>
-    <th>Price</th><th>Value</th><th></th></tr></thead><tbody>` +
+    <th>Price</th><th>Value</th><th>Fee</th><th></th></tr></thead><tbody>` +
     (txs.length ? txs.map(t => `<tr>
       <td>${esc(t.ts)}</td>
       <td><span class="${t.quantity >= 0 ? "pos" : "neg"}"><b>${esc(t.type)}</b></span></td>
@@ -631,6 +631,7 @@ async function loadPortfolio() {
       <td>${fmtQty(Math.abs(t.quantity))}</td>
       <td>${fmtMoney(t.price)}</td>
       <td>${fmtMoney(Math.abs(t.value))}</td>
+      <td class="muted">${t.fee ? fmtMoney(t.fee) : "—"}</td>
       <td><button class="mini-btn" data-edit="${t.id}" title="Fix this entry">✎</button>
           <button class="del-btn" data-del="${t.id}">✕</button></td>
     </tr>`).join("") : '<tr><td class="empty-note">No transactions yet.</td></tr>') + "</tbody>";
@@ -702,6 +703,7 @@ function beginEditTx(t) {
   document.getElementById("tx-price").value = t.price;
   document.getElementById("tx-qty").value = Math.abs(t.quantity);
   document.getElementById("tx-value").value = Math.abs(t.value).toFixed(2);
+  document.getElementById("tx-fee").value = t.fee || "";
   document.getElementById("tx-submit").textContent =
     `Save Changes (${isBuy ? "Buy" : "Sell"} · ${t.name || t.asset_id})`;
   document.getElementById("tx-cancel").style.display = "block";
@@ -717,6 +719,7 @@ function endEditTx() {
   document.getElementById("tx-qty").value = "";
   document.getElementById("tx-value").value = "";
   document.getElementById("tx-price").value = "";
+  document.getElementById("tx-fee").value = "";
   document.getElementById("tx-submit").textContent =
     state.txSide === "buy" ? "Add Buy" : "Add Sell";
   document.getElementById("tx-cancel").style.display = "none";
@@ -764,6 +767,7 @@ function setupTxForm() {
         price: parseFloat(price.value || 0),
         quantity: parseFloat(qty.value || 0),
         value: parseFloat(val.value || 0),
+        fee: parseFloat(document.getElementById("tx-fee").value || 0),
       };
       if (editing) {
         await api(M() + "/transactions/" + editing, {
@@ -778,7 +782,7 @@ function setupTxForm() {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
         });
-        qty.value = ""; val.value = "";
+        qty.value = ""; val.value = ""; document.getElementById("tx-fee").value = "";
       }
       msg.innerHTML = '<span class="pos">Saved ✓</span>';
       loadPortfolio(); loadHeader();

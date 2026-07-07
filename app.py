@@ -701,7 +701,9 @@ def portfolio_state(market, user):
     w = db.conn().execute("SELECT budget FROM wallets WHERE user_id=%s AND market=%s",
                           (user, market)).fetchone()
     budget = w["budget"] if w else None
-    net_flow = sum((t["value"] or 0) for t in txs)
+    # money currently tied up = trade values + every fee paid (fees are cash out)
+    net_flow = sum((t["value"] or 0) + (t["fee"] or 0) for t in txs)
+    tot_fees = sum((t["fee"] or 0) for t in txs)
     pos = {}
     for t in txs:
         p = pos.setdefault(t["asset_id"], {
@@ -709,18 +711,20 @@ def portfolio_state(market, user):
             "qty": 0.0, "cost": 0.0, "realized": 0.0,
             "bought_usd": 0.0, "sold_usd": 0.0})
         q = t["quantity"]
+        fee = t["fee"] or 0
         val = abs(t["value"] if t["value"] else q * t["price"])
         if q >= 0:
             p["qty"] += q
-            p["cost"] += val
-            p["bought_usd"] += val
+            p["cost"] += val + fee          # buy fees fold into the cost basis
+            p["bought_usd"] += val + fee
         else:
             sell_qty = -q
             avg = p["cost"] / p["qty"] if p["qty"] > 1e-12 else t["price"]
-            p["realized"] += val - avg * sell_qty
+            proceeds = val - fee            # sell fees reduce what you receive
+            p["realized"] += proceeds - avg * sell_qty
             p["cost"] -= avg * sell_qty
             p["qty"] -= sell_qty
-            p["sold_usd"] += val
+            p["sold_usd"] += proceeds
             if p["qty"] <= 1e-9:
                 p["qty"], p["cost"] = 0.0, 0.0
     holdings, closed = [], []
@@ -760,6 +764,7 @@ def portfolio_state(market, user):
             "unrealized": tot_value - tot_cost,
             "unrealized_pct": ((tot_value - tot_cost) / tot_cost * 100) if tot_cost > 0 else 0,
             "realized": tot_realized,
+            "fees": tot_fees,
             "change_24h_usd": tot_change24,
             "change_24h_pct": (tot_change24 / (tot_value - tot_change24) * 100)
                               if tot_value - tot_change24 > 0 else 0,
@@ -1025,6 +1030,7 @@ def api_add_transaction(market):
     price = float(d.get("price") or 0)
     qty = float(d.get("quantity") or 0)
     value = float(d.get("value") or 0)
+    fee = max(0.0, float(d.get("fee") or 0))
     ts = (d.get("ts") or db.now_iso()).replace("T", " ")[:16]
     if not asset_id or price <= 0:
         return jsonify({"error": "asset and a positive price are required"}), 400
@@ -1042,10 +1048,10 @@ def api_add_transaction(market):
     signed_qty = qty if side == "buy" else -qty
     c = db.conn()
     c.execute(
-        "INSERT INTO transactions (user_id, market, ts, asset_id, quantity, price, value, type, name)"
-        " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+        "INSERT INTO transactions (user_id, market, ts, asset_id, quantity, price, value, type, name, fee)"
+        " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
         (uid(), market, ts, asset_id, signed_qty, price, signed_qty * price,
-         "Buy" if side == "buy" else "Sell", name))
+         "Buy" if side == "buy" else "Sell", name, fee))
     if not wrow and market != "pse":
         m = pm.get(asset_id, {})
         c.execute("INSERT INTO watchlist VALUES (%s,%s,%s,%s,%s,%s)"
@@ -1073,6 +1079,7 @@ def api_edit_transaction(market, tx_id):
     price = float(d.get("price") or 0)
     qty = float(d.get("quantity") or 0)
     value = float(d.get("value") or 0)
+    fee = max(0.0, float(d.get("fee") or 0))
     ts = (d.get("ts") or row["ts"]).replace("T", " ")[:16]
     if price <= 0:
         return jsonify({"error": "a positive price is required"}), 400
@@ -1082,9 +1089,9 @@ def api_edit_transaction(market, tx_id):
         return jsonify({"error": "enter a quantity or a total amount"}), 400
     sign = 1 if row["quantity"] >= 0 else -1
     db.conn().execute(
-        "UPDATE transactions SET ts=%s, quantity=%s, price=%s, value=%s"
+        "UPDATE transactions SET ts=%s, quantity=%s, price=%s, value=%s, fee=%s"
         " WHERE id=%s AND user_id=%s",
-        (ts, sign * qty, price, sign * qty * price, tx_id, uid()))
+        (ts, sign * qty, price, sign * qty * price, fee, tx_id, uid()))
     _invalidate_advisor(market, uid())
     return jsonify({"ok": True})
 

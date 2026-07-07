@@ -43,7 +43,8 @@ CREATE TABLE IF NOT EXISTS transactions (
     price DOUBLE PRECISION NOT NULL,
     value DOUBLE PRECISION NOT NULL,
     type TEXT NOT NULL,
-    name TEXT
+    name TEXT,
+    fee DOUBLE PRECISION DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_tx_user ON transactions (user_id, market);
 CREATE TABLE IF NOT EXISTS watchlist (
@@ -166,6 +167,7 @@ def init():
     # migrations for columns added after the initial deploy (idempotent)
     conn().execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS trading_style TEXT DEFAULT 'swing'")
     conn().execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS agreed_terms BOOLEAN DEFAULT FALSE")
+    conn().execute("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS fee DOUBLE PRECISION DEFAULT 0")
 
 
 # --- tiny JSON key/value store ---
