@@ -153,6 +153,28 @@ tbody tr:hover { background: var(--panel-2); }
 .badge.trim { background: rgba(247,147,26,.15); color: var(--accent); }
 .badge.take-profit { background: rgba(52,211,153,.15); color: #34d399; }
 .badge.all-clear { background: rgba(139,147,167,.15); color: var(--muted); }
+.badge.cold-badge { background: rgba(239,68,68,.15); color: var(--red); }
+
+/* ---- Hot & Cold movers ---- */
+.movers-row { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 6px; }
+.mover-chip {
+  background: var(--panel); border: 1px solid var(--border); border-left-width: 3px;
+  border-radius: 9px; padding: 8px 12px; min-width: 150px; flex: 1 1 180px; max-width: 260px;
+}
+.mover-chip.mover-cold { border-left-color: var(--red); }
+.mover-chip.mover-hot { border-left-color: var(--green); }
+.mover-top { display: flex; align-items: center; gap: 7px; font-size: 13.5px; }
+.mover-top img { width: 18px; height: 18px; border-radius: 50%; }
+.mover-top .muted { margin-left: auto; }
+.mover-flags { margin-top: 4px; display: flex; flex-direction: column; gap: 2px; }
+.mover-flags span { font-size: 11.5px; color: var(--muted); }
+.mover-cold .mover-flags span { color: #fca5a5; }
+.mover-hot .mover-flags span { color: #86efac; }
+
+.flag-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 6px; }
+.flag-chip { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 20px; }
+.flag-chip.flag-cold { background: rgba(239,68,68,.13); color: #fca5a5; }
+.flag-chip.flag-hot { background: rgba(34,197,94,.13); color: #86efac; }
 
 .gl-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 12px; }
 .gl-grid.panel-pad { margin: 0 0 16px; }

@@ -945,7 +945,9 @@ def get_advisor(market, user, force=False):
             assets.append({"asset_id": r["asset_id"],
                            "symbol": (m.get("symbol") or r["symbol"] or "").upper(),
                            "name": m.get("name") or r["name"] or r["asset_id"],
-                           "image": m.get("image"), "price": m.get("price")})
+                           "image": m.get("image"), "price": m.get("price"),
+                           "chg_24h": m.get("chg_24h"),
+                           "chg_7d": (m.get("_raw") or {}).get("price_change_percentage_7d_in_currency")})
         for r in db.conn().execute(
                 "SELECT DISTINCT asset_id, name FROM transactions"
                 " WHERE market=%s AND user_id=%s", (market, user)).fetchall():
@@ -955,7 +957,9 @@ def get_advisor(market, user, force=False):
             assets.append({"asset_id": r["asset_id"],
                            "symbol": (m.get("symbol") or r["asset_id"]).upper(),
                            "name": m.get("name") or r["name"] or r["asset_id"],
-                           "image": m.get("image"), "price": m.get("price")})
+                           "image": m.get("image"), "price": m.get("price"),
+                           "chg_24h": m.get("chg_24h"),
+                           "chg_7d": (m.get("_raw") or {}).get("price_change_percentage_7d_in_currency")})
         signals_data = db.kv_get(f"{market}:signals", {}).get("data", {})
         port = portfolio_state(market, user)
         since = now_ms() - 72 * 3600000

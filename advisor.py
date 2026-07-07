@@ -238,6 +238,12 @@ STYLE_PARAMS = {
 }
 DEFAULT_STYLE = "swing"
 
+# "Hot & cold" awareness flags - surfaced as information, NOT trade instructions.
+# Based on raw price movement, so a big drop can't be masked by an oversold RSI.
+MOVER_24H_PCT = 8     # flag a 24h price move beyond +/- this %
+MOVER_7D_PCT = 15     # flag a 7d move beyond +/- this % (where 7d data exists)
+DRAWDOWN_PCT = 15     # flag a held position down more than this % from your avg buy
+
 
 def _round_amt(v, floor=10):
     return max(floor, int(round(v / 5.0) * 5))
@@ -412,6 +418,24 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
         else:
             confidence = "Medium"
 
+        # movement flags: awareness of big moves, independent of the trade call
+        chg24 = a.get("chg_24h")
+        chg7 = a.get("chg_7d")
+        flags = []
+        if chg24 is not None and abs(chg24) >= MOVER_24H_PCT:
+            if chg24 < 0:
+                flags.append({"kind": "cold", "text": f"Down {abs(chg24):.0f}% in 24h - cooling fast"})
+            else:
+                flags.append({"kind": "hot", "text": f"Up {chg24:.0f}% in 24h - heating up"})
+        elif chg7 is not None and abs(chg7) >= MOVER_7D_PCT:
+            if chg7 < 0:
+                flags.append({"kind": "cold", "text": f"Down {abs(chg7):.0f}% this week"})
+            else:
+                flags.append({"kind": "hot", "text": f"Up {chg7:.0f}% this week"})
+        if has_value and plpct is not None and plpct <= -DRAWDOWN_PCT:
+            flags.append({"kind": "cold",
+                          "text": f"You're down {abs(plpct):.0f}% since you bought - worth reviewing"})
+
         recs.append({
             "asset_id": aid,
             "name": a.get("name") or aid,
@@ -424,6 +448,8 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
             "conviction": round(conviction, 1),
             "confidence": confidence,
             "news_score": round(news_score, 2),
+            "chg_24h": chg24,
+            "flags": flags,
             "reasons": reasons,
             "articles": articles,
             "fundamentals": ({k: f.get(k) for k in
@@ -438,11 +464,15 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
 
     recs.sort(key=lambda r: (-ACTION_RANK.get(r["action"], 0), -abs(r["conviction"])))
 
-    # big universes (PSE = 283 companies): keep every holding, cap the ideas
+    # big universes (PSE = 283 companies): keep every holding, cap the ideas,
+    # but also keep the biggest hot/cold movers so they stay visible
     if max_ideas is not None:
         held = [r for r in recs if r["holding"]]
         ideas = [r for r in recs if not r["holding"] and r["action"] != "HOLD"][:max_ideas]
-        recs = sorted(held + ideas,
+        kept_ids = {r["asset_id"] for r in held + ideas}
+        movers = sorted([r for r in recs if r["flags"] and r["asset_id"] not in kept_ids],
+                        key=lambda r: -abs(r.get("chg_24h") or 0))[:10]
+        recs = sorted(held + ideas + movers,
                       key=lambda r: (-ACTION_RANK.get(r["action"], 0), -abs(r["conviction"])))
 
     # when the exchange is closed there is nothing to act on: suppress

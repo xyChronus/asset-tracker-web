@@ -412,6 +412,14 @@ async function loadTodayPlan() {
   const actionable = a.recommendations.filter(r => !["HOLD", "WATCH"].includes(r.action));
   const actions = actionable.filter(r => !r.dismissed).slice(0, 3);
   const doneCount = actionable.filter(r => r.dismissed).length;
+  const coldHtml = a.recommendations
+    .filter(r => (r.flags || []).some(f => f.kind === "cold"))
+    .slice(0, 3)
+    .map(r => {
+      const fl = r.flags.find(f => f.kind === "cold");
+      return `<div class="plan-item"><span class="badge cold-badge">HEADS UP</span>
+        <span><b>${esc(r.name)}</b> <span class="muted">· ${esc(fl.text)}</span></span></div>`;
+    }).join("");
   if (a.market_open === false) {
     el.innerHTML = `<div class="plan-item"><span class="badge wait">MARKET CLOSED</span>
       <span>Buy/sell suggestions pause while the market is closed — they resume
@@ -419,12 +427,12 @@ async function loadTodayPlan() {
     return;
   }
   if (!actions.length) {
-    el.innerHTML = `<div class="plan-item"><span class="badge hold">ALL CLEAR</span>
+    el.innerHTML = coldHtml + `<div class="plan-item"><span class="badge hold">ALL CLEAR</span>
       <span>${doneCount ? `All ${doneCount} suggestion(s) done for today — nice work.`
         : `No strong buy or sell setups in ${MKT_LABEL[state.market]} right now — sitting tight is the play.`}</span></div>`;
     return;
   }
-  el.innerHTML = actions.map(r => `<div class="plan-item">
+  el.innerHTML = coldHtml + actions.map(r => `<div class="plan-item">
     ${sigBadge(r)}
     <span><b>${esc(r.name)}</b>${r.usd ? " — about " + fmtMoney(r.usd) : ""}
       <span class="muted">· ${esc((r.reasons && r.reasons[0]) || "")}</span></span>
@@ -528,13 +536,17 @@ function recCard(r) {
     ? `<button class="done-btn" data-done="${esc(r.asset_id)}" data-action="${esc(r.action)}"
          title="Hide this suggestion for today without logging anything">✓ Done</button>`
     : "";
+  const flagRow = (r.flags || []).length
+    ? `<div class="flag-row">${r.flags.map(fl =>
+        `<span class="flag-chip ${fl.kind === "cold" ? "flag-cold" : "flag-hot"}">${fl.kind === "cold" ? "🔻" : "🔺"} ${esc(fl.text)}</span>`).join("")}</div>`
+    : "";
   return `<div class="rec-card">
     <div class="sig-head">
       <div class="sig-coin">${r.image ? `<img src="${esc(r.image)}">` : ""}${esc(r.name)}
         <span class="muted">${fmtMoney(r.price)}</span></div>
       <div class="head-right">${sigBadge(r)}${scorePill(r.conviction, 1)}${acceptBtn}${doneBtn}</div>
     </div>
-    ${amount}${holdLine}
+    ${flagRow}${amount}${holdLine}
     <div class="conv-bar" title="Conviction: ${conv}">
       <div class="conv-marker" style="left:${pos}%"></div>
     </div>
@@ -542,6 +554,16 @@ function recCard(r) {
     ${chips.length ? `<div class="sig-chips">${chips.map(x => `<div class="mini-stat">${x}</div>`).join("")}</div>` : ""}
     <ul>${(r.reasons || []).map(x => `<li>${esc(x)}</li>`).join("")}</ul>
     ${arts ? `<div class="rec-arts">${arts}</div>` : ""}
+  </div>`;
+}
+
+function moverChip(r) {
+  const cold = (r.flags || []).some(f => f.kind === "cold");
+  return `<div class="mover-chip ${cold ? "mover-cold" : "mover-hot"}">
+    <div class="mover-top">${r.image ? `<img src="${esc(r.image)}">` : ""}<b>${esc((r.symbol || r.name || "").toUpperCase())}</b>
+      <span class="muted">${fmtMoney(r.price)}</span></div>
+    <div class="mover-flags">${(r.flags || []).map(f =>
+      `<span>${f.kind === "cold" ? "🔻" : "🔺"} ${esc(f.text)}</span>`).join("")}</div>
   </div>`;
 }
 
@@ -566,6 +588,19 @@ async function loadAdvisor() {
     ["Suggestions", actions.length + " action(s)"],
     ["Done Today", doneCount + " ✓"],
   ].map(x => `<div class="mini-stat"><span>${x[0]}</span><b>${x[1]}</b></div>`).join("");
+
+  const movers = a.recommendations.filter(r => (r.flags || []).length);
+  const moversHead = document.getElementById("movers-head");
+  const moversEl = document.getElementById("advisor-movers");
+  if (movers.length) {
+    moversHead.style.display = "";
+    moversEl.style.display = "";
+    moversEl.innerHTML = movers.map(moverChip).join("");
+  } else {
+    moversHead.style.display = "none";
+    moversEl.style.display = "none";
+    moversEl.innerHTML = "";
+  }
 
   const rest = a.recommendations.filter(r => ["HOLD", "WATCH"].includes(r.action));
   document.getElementById("advisor-actions").innerHTML = actions.length
