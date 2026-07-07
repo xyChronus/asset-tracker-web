@@ -1174,6 +1174,7 @@ document.querySelectorAll("#chart-range button").forEach(b => b.onclick = () => 
   drawHistory();
 });
 document.getElementById("news-source").onchange = loadNews;
+document.getElementById("changelog-btn").onclick = showChangelog;
 
 const curSel = document.getElementById("cur-select");
 curSel.value = state.currency;
@@ -1214,7 +1215,6 @@ async function loadUser() {
       (me.admin ? ' <button class="mini-btn" id="invite-btn" title="Create an invite code for a friend">+ Invite</button>'
                 + ' <button class="mini-btn" id="members-btn" title="See who has joined and which invite codes are used">Members</button>' : "") +
       ' <button class="mini-btn" id="account-btn" title="Trading style and password">Account</button>' +
-      ' <a class="ulink" id="changelog-btn" title="What\'s new">Changelog</a>' +
       ' <a class="mini-btn" href="/logout" title="Sign out">Logout</a>';
     const inv = document.getElementById("invite-btn");
     if (inv) inv.onclick = async () => {
@@ -1225,7 +1225,6 @@ async function loadUser() {
     const mem = document.getElementById("members-btn");
     if (mem) mem.onclick = showMembers;
     document.getElementById("account-btn").onclick = showAccount;
-    document.getElementById("changelog-btn").onclick = showChangelog;
   } catch (e) { /* the 401 handler redirects to /login */ }
 }
 
