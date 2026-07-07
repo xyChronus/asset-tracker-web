@@ -106,3 +106,9 @@ Web-only items are marked **(web)**.
 ### Added
 - Optional **Fee** field on every buy/sell (in the market's currency). Buy fees fold into your cost basis; sell fees come off your proceeds; both reduce available cash — so profit/loss and cash reflect what you actually paid.
 - Fee column in the transaction history; total fees paid tracked in the portfolio summary.
+
+## [1.5.0] — 2026-07-07 — Hot & Cold
+### Added
+- **Hot & Cold movement flags** on the advisor: big moves get surfaced as awareness flags — up/down **8%+ in 24h**, **15%+ over the week**, or a held position down **15%+ from your average buy**.
+- A new **Hot & Cold strip** at the top of the Advisor tab, matching flag chips on each card, and **Heads-up** lines on the dashboard's Today plan.
+- Flags are raw-movement only and run **independent of the buy/sell call**, so a sharp drop registers even when the technical read looks oversold. They're awareness, not instructions — the final call is always yours.
