@@ -242,6 +242,27 @@ footer {
 canvas.spark { width: 110px; height: 30px; }
 .empty-note { color: var(--muted); padding: 14px 4px; font-size: 13px; }
 
+/* ---- changelog tab ---- */
+.changelog-body { max-width: 780px; }
+.changelog-body .cl-title { font-size: 14px; color: var(--muted); font-weight: 600; margin: 0 0 2px; }
+.changelog-body .cl-ver {
+  font-size: 15.5px; color: var(--accent); margin: 24px 0 4px;
+  border-top: 1px solid var(--border); padding-top: 16px;
+}
+.changelog-body .cl-ver:first-of-type { border-top: none; padding-top: 4px; }
+.changelog-body .cl-sub {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .6px;
+  color: var(--muted); margin: 10px 0 2px;
+}
+.changelog-body ul.cl-list { margin: 4px 0 4px 20px; padding: 0; }
+.changelog-body li { margin-bottom: 4px; font-size: 13.5px; }
+.changelog-body li.cl-nested { margin-left: 22px; list-style: circle; color: var(--muted); }
+.changelog-body p { color: var(--muted); font-size: 13px; margin: 4px 0; }
+.changelog-body code {
+  background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: 4px; padding: 0 5px; font-size: 12px;
+}
+
 /* ---- searchable asset picker ---- */
 .combo { position: relative; min-width: 240px; }
 .combo-input {

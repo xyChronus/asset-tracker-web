@@ -1300,6 +1300,16 @@ def api_fx():
     return jsonify(db.kv_get("fx:usdphp", {}))
 
 
+@app.get("/api/changelog")
+def api_changelog():
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "CHANGELOG.md")
+    try:
+        with open(path, encoding="utf-8") as f:
+            return jsonify({"markdown": f.read()})
+    except OSError:
+        return jsonify({"markdown": ""})
+
+
 @app.get("/api/<market>/advisor")
 def api_advisor(market):
     _check(market)

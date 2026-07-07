@@ -1066,6 +1066,42 @@ async function loadNews() {
 
 /* ---------------------------------------------------------- tabs & boot */
 
+// minimal markdown renderer for the changelog (headers, bullets, bold, code)
+function renderMarkdown(md) {
+  const inline = (s) => esc(s)
+    .replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")
+    .replace(/`([^`]+)`/g, "<code>$1</code>");
+  let html = "", inList = false;
+  const closeList = () => { if (inList) { html += "</ul>"; inList = false; } };
+  (md || "").replace(/\r/g, "").split("\n").forEach(raw => {
+    const line = raw.replace(/\s+$/, "");
+    const m = line.match(/^(\s*)-\s+(.*)$/);
+    if (!line.trim()) { closeList(); return; }
+    if (/^#\s+/.test(line)) { closeList(); html += `<h2 class="cl-title">${inline(line.slice(2))}</h2>`; }
+    else if (/^##\s+/.test(line)) { closeList(); html += `<h3 class="cl-ver">${inline(line.slice(3))}</h3>`; }
+    else if (/^###\s+/.test(line)) { closeList(); html += `<h4 class="cl-sub">${inline(line.slice(4))}</h4>`; }
+    else if (/^-{3,}\s*$/.test(line)) { closeList(); }
+    else if (m) {
+      if (!inList) { html += '<ul class="cl-list">'; inList = true; }
+      html += `<li${m[1].length >= 2 ? ' class="cl-nested"' : ""}>${inline(m[2])}</li>`;
+    } else { closeList(); html += `<p>${inline(line)}</p>`; }
+  });
+  closeList();
+  return html;
+}
+
+async function loadChangelog() {
+  const el = document.getElementById("changelog-body");
+  try {
+    const d = await api("/api/changelog");
+    const parts = (d.markdown || "").split(/\n(?=## )/);   // split on version headers
+    const head = parts.shift();                             // title + intro
+    el.innerHTML = renderMarkdown([head, ...parts.reverse()].join("\n"));  // newest first
+  } catch (e) {
+    el.innerHTML = '<div class="empty-note">Could not load the changelog.</div>';
+  }
+}
+
 const loaders = {
   dashboard: loadDashboard,
   advisor: loadAdvisor,
@@ -1074,6 +1110,7 @@ const loaders = {
   watchlist: loadWatchlist,
   charts: loadCharts,
   news: loadNews,
+  changelog: loadChangelog,
 };
 
 function switchTab(name) {
