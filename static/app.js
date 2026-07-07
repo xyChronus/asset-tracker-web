@@ -27,10 +27,57 @@ const state = {
   txSide: "buy",
   watch: {},             // per-market watchlist cache
   filter: "",
+  sort: {},              // per-table sort: { <tableKey>: {key, dir} }
 };
 
 const M = () => "/api/" + state.market;
 const cur = () => CUR[state.market];
+
+/* ---------------------------------------------------- sortable tables */
+
+function getPath(obj, path) {
+  return path.split(".").reduce((o, k) => (o == null ? undefined : o[k]), obj);
+}
+
+// Sort a copy of `rows` by the sort state stored under `tableKey`. Blanks sink
+// to the bottom regardless of direction. Returns rows unchanged if no active sort.
+function applySort(rows, tableKey) {
+  const st = state.sort[tableKey];
+  if (!st || !st.key) return rows;
+  const { key, dir } = st;
+  return [...rows].sort((a, b) => {
+    let x = getPath(a, key), y = getPath(b, key);
+    const xb = x == null || x === "", yb = y == null || y === "";
+    if (xb && yb) return 0;
+    if (xb) return 1;
+    if (yb) return -1;
+    if (typeof x === "string" || typeof y === "string") {
+      return dir * String(x).localeCompare(String(y), undefined, { numeric: true });
+    }
+    return dir * (x - y);
+  });
+}
+
+// Build a clickable, sortable <th>. `field` may be a dotted path (e.g. signal.score).
+function th(label, field, tableKey, extra = "") {
+  const st = state.sort[tableKey] || {};
+  const active = st.key === field;
+  const ind = active ? (st.dir < 0 ? "▼" : "▲") : "⇅";
+  return `<th class="sortable${active ? " sorted" : ""}" data-sort="${esc(field)}"${extra}>` +
+    `${label} <span class="sort-ind">${ind}</span></th>`;
+}
+
+// Wire header clicks: same column toggles direction, a new column starts descending.
+function bindSort(tableEl, tableKey, reload) {
+  tableEl.querySelectorAll("th.sortable").forEach(h => h.onclick = () => {
+    const field = h.dataset.sort;
+    const st = state.sort[tableKey] || { key: null, dir: -1 };
+    if (st.key === field) st.dir = -st.dir;
+    else { st.key = field; st.dir = -1; }
+    state.sort[tableKey] = st;
+    reload();
+  });
+}
 
 /* ---------------------------------------------------------- helpers */
 
@@ -383,9 +430,13 @@ async function loadDashboard() {
   if (!p.holdings.length) {
     ht.innerHTML = `<tr><td class="empty-note">No open positions in ${MKT_LABEL[state.market]} yet. Add a buy on the Portfolio tab.</td></tr>`;
   } else {
-    ht.innerHTML = `<thead><tr><th>Asset</th><th>Quantity</th><th>Avg Buy</th><th>Price</th>
-      <th>Day</th><th>Value</th><th>Unrealized P/L</th><th>P/L %</th></tr></thead><tbody>` +
-      p.holdings.map(h => `<tr>
+    ht.innerHTML = `<thead><tr>` +
+      th("Asset", "name", "holdings") + th("Quantity", "qty", "holdings") +
+      th("Avg Buy", "avg_buy", "holdings") + th("Price", "price", "holdings") +
+      th("Day", "chg_24h", "holdings") + th("Value", "value", "holdings") +
+      th("Unrealized P/L", "unrealized", "holdings") + th("P/L %", "unrealized_pct", "holdings") +
+      `</tr></thead><tbody>` +
+      applySort(p.holdings, "holdings").map(h => `<tr>
         <td><div class="coin-cell">${h.image ? `<img src="${esc(h.image)}">` : ""}<span class="nm">${esc(h.name)}</span><span class="sym">${esc(h.symbol)}</span></div></td>
         <td>${fmtQty(h.qty)}</td>
         <td>${fmtMoney(h.avg_buy)}</td>
@@ -395,6 +446,7 @@ async function loadDashboard() {
         <td>${moneySpan(h.unrealized)}</td>
         <td>${pctSpan(h.unrealized_pct)}</td>
       </tr>`).join("") + "</tbody>";
+    bindSort(ht, "holdings", loadDashboard);
   }
 
   loadMarketPanels("dash");
@@ -910,7 +962,10 @@ function cardHtml(c) {
 
 async function loadWatchlist() {
   state.watch[state.market] = null;
-  const assets = await ensureWatch();
+  renderWatchlist(await ensureWatch());
+}
+
+function renderWatchlist(assets) {
   const isPse = state.market === "pse";
   const isCrypto = state.market === "crypto";
 
@@ -924,13 +979,18 @@ async function loadWatchlist() {
     : "";
 
   const wt = document.getElementById("watch-table");
+  const sortKey = "watch:" + state.market;
   const filter = (state.filter || "").toUpperCase();
-  const rows = assets.filter(a => !filter ||
-    a.symbol.toUpperCase().includes(filter) || (a.name || "").toUpperCase().includes(filter));
+  const rows = applySort(assets.filter(a => !filter ||
+    a.symbol.toUpperCase().includes(filter) || (a.name || "").toUpperCase().includes(filter)), sortKey);
 
   if (isCrypto) {
-    wt.innerHTML = `<thead><tr><th>Coin</th><th>Price</th><th>1h</th><th>24h</th><th>7d</th><th>30d</th>
-      <th>Market Cap</th><th>7d Trend</th><th>Signal</th><th></th></tr></thead><tbody>` +
+    wt.innerHTML = `<thead><tr>` +
+      th("Coin", "name", sortKey) + th("Price", "price", sortKey) +
+      th("1h", "chg_1h", sortKey) + th("24h", "chg_24h", sortKey) +
+      th("7d", "chg_7d", sortKey) + th("30d", "chg_30d", sortKey) +
+      th("Market Cap", "market_cap", sortKey) +
+      `<th>7d Trend</th>` + th("Signal", "signal.score", sortKey) + `<th></th></tr></thead><tbody>` +
       rows.map((a, i) => `<tr>
         <td><div class="coin-cell">${a.image ? `<img src="${esc(a.image)}">` : ""}<span class="nm">${esc(a.name)}</span><span class="sym">${esc(a.symbol)}</span></div></td>
         <td><b>${fmtMoney(a.price)}</b></td>
@@ -943,9 +1003,14 @@ async function loadWatchlist() {
       </tr>`).join("") + "</tbody>";
   } else {
     const rm = isPse ? "" : "<th></th>";
-    wt.innerHTML = `<thead><tr><th>${isPse ? "Company" : "Stock"}</th><th>Price</th><th>Day</th>
-      ${isPse ? "<th>Value Traded</th>" : ""}<th>EPS</th><th>P/E</th><th>Div/Share</th><th>Div Yield</th><th>Ex-Date</th>
-      <th>Trend</th><th>Signal</th>${rm}</tr></thead><tbody>` +
+    wt.innerHTML = `<thead><tr>` +
+      th(isPse ? "Company" : "Stock", "name", sortKey) + th("Price", "price", sortKey) +
+      th("Day", "chg_24h", sortKey) +
+      (isPse ? th("Value Traded", "value_traded", sortKey) : "") +
+      th("EPS", "eps", sortKey) + th("P/E", "pe", sortKey) +
+      th("Div/Share", "div_ps", sortKey) + th("Div Yield", "div_yield", sortKey) +
+      th("Ex-Date", "div_ex_date", sortKey) +
+      `<th>Trend</th>` + th("Signal", "signal.score", sortKey) + rm + `</tr></thead><tbody>` +
       rows.map((a, i) => `<tr>
         <td><div class="coin-cell">${a.image ? `<img src="${esc(a.image)}">` : ""}<span class="nm">${esc(a.name)}</span><span class="sym">${esc(a.symbol)}</span></div></td>
         <td><b>${fmtMoney(a.price)}</b></td>
@@ -970,6 +1035,7 @@ async function loadWatchlist() {
     await api(M() + "/watchlist/" + encodeURIComponent(b.dataset.rm), { method: "DELETE" });
     loadWatchlist();
   });
+  bindSort(wt, sortKey, () => renderWatchlist(assets));
 
   // signal cards: holdings + anything with a non-HOLD signal (capped)
   const withSig = assets.filter(a => a.signal && a.signal.action !== "WAIT");
