@@ -430,17 +430,50 @@ def pse_sync_directory_if_needed():
     print(f"[pse] directory synced: {len(companies)} companies")
 
 
+def _pse_write_price_history(quotes):
+    """Record the current hour's close for known symbols, when the market's open."""
+    if not _pse_open():
+        return
+    hour = now_ms() // 3600000 * 3600000
+    c = db.conn()
+    known = {r["symbol"] for r in c.execute("SELECT symbol FROM pse_companies").fetchall()}
+    c.executemany("INSERT INTO price_history VALUES ('pse',%s,%s,%s)"
+                  " ON CONFLICT (market, asset_id, ts) DO UPDATE SET price=EXCLUDED.price",
+                  [(s, hour, q["price"]) for s, q in quotes.items()
+                   if s in known and q.get("price")])
+
+
 def pse_fetch_quotes():
-    quotes, as_of = pse_data.fetch_quotes()
-    db.kv_set("pse:quotes", {"updated": now_ms(), "data": quotes, "as_of": as_of})
-    if _pse_open():
-        hour = now_ms() // 3600000 * 3600000
-        c = db.conn()
-        known = {r["symbol"] for r in c.execute("SELECT symbol FROM pse_companies").fetchall()}
-        c.executemany("INSERT INTO price_history VALUES ('pse',%s,%s,%s)"
-                      " ON CONFLICT (market, asset_id, ts) DO UPDATE SET price=EXCLUDED.price",
-                      [(s, hour, q["price"]) for s, q in quotes.items()
-                       if s in known and q.get("price")])
+    try:
+        quotes, as_of = pse_data.fetch_quotes()
+        db.kv_set("pse:quotes", {"updated": now_ms(), "data": quotes, "as_of": as_of})
+        _pse_write_price_history(quotes)
+        return
+    except Exception as e:
+        print(f"[pse] phisix quotes failed: {e}; falling back to Finnhub for held/watched names")
+    # phisix is down - keep the last full snapshot but refresh the symbols people
+    # actually hold (a small set) from Finnhub, so portfolios still value correctly.
+    # Market-browse prices for the rest stay at their last-known values until phisix
+    # recovers. Capped so a large book can't hammer the Finnhub rate budget.
+    syms = [r["a"] for r in db.conn().execute(
+        "SELECT DISTINCT asset_id AS a FROM transactions WHERE market='pse'").fetchall()]
+    if len(syms) > 60:
+        print(f"[pse] fallback capping {len(syms)} held names to 60")
+        syms = syms[:60]
+    prev = db.kv_get("pse:quotes", {}).get("data", {})
+    fresh = {}
+    for s in syms:
+        q = global_data.pse_quote(s)
+        if q:
+            row = dict(prev.get(s) or {})
+            row.update(price=q["price"], chg_pct=q.get("chg_pct"))
+            fresh[s] = row
+    if not fresh:
+        return  # nothing recovered; the last cached snapshot stays in place
+    merged = dict(prev)
+    merged.update(fresh)
+    db.kv_set("pse:quotes", {"updated": now_ms(), "data": merged, "as_of": None})
+    _pse_write_price_history(fresh)
 
 
 def pse_fundamentals_tick():
@@ -451,12 +484,25 @@ def pse_fundamentals_tick():
         ORDER BY upd ASC LIMIT 1""").fetchone()
     if not row or now_ms() - row["upd"] < config.FUNDAMENTALS_REFRESH_DAYS * 86400000:
         return
-    sd = pse_data.fetch_stock_data(row["cmpy_id"])
-    eps = sd["price"] / sd["pe"] if sd.get("pe") and sd.get("price") and sd["pe"] > 0 else None
-    db.set_fundamentals("pse", row["symbol"], pe=sd.get("pe"),
-                        sector_pe=sd.get("sector_pe"), wk52_high=sd.get("wk52_high"),
-                        wk52_low=sd.get("wk52_low"), book_value=sd.get("book_value"),
-                        eps=eps, updated=now_ms())
+    sym = row["symbol"]
+    fields = {}
+    try:
+        fields = global_data.pse_fundamentals(sym)  # Finnhub .PM - reliable primary
+    except Exception as e:
+        print(f"[pse] finnhub fundamentals {sym}: {e}")
+    if not fields:
+        # Finnhub had nothing - fall back to scraping PSE Edge (also gives sector P/E)
+        try:
+            sd = pse_data.fetch_stock_data(row["cmpy_id"])
+            eps = sd["price"] / sd["pe"] if sd.get("pe") and sd.get("price") and sd["pe"] > 0 else None
+            fields = {"pe": sd.get("pe"), "sector_pe": sd.get("sector_pe"),
+                      "wk52_high": sd.get("wk52_high"), "wk52_low": sd.get("wk52_low"),
+                      "book_value": sd.get("book_value"), "eps": eps}
+        except Exception as e:
+            print(f"[pse] edge fundamentals {sym}: {e}")
+    # Always stamp 'updated' - even on total failure - so a persistently broken
+    # symbol rotates to the back and doesn't starve the rest of the list.
+    db.set_fundamentals("pse", sym, updated=now_ms(), **fields)
 
 
 def pse_backfill_tick():

@@ -163,6 +163,41 @@ def profile(symbol):
         return {}
 
 
+# ------------------------------------------------- Philippine stocks (Finnhub)
+# Finnhub lists PSE names with a ".PM" suffix (e.g. BDO.PM, SM.PM). It returns
+# clean quotes and fundamentals for them on the free tier - a far steadier
+# source than the phisix mirrors and the PSE Edge scrape.
+
+def pse_quote(symbol):
+    """Single PSE quote from Finnhub. {price, chg_pct, prev_close} or None."""
+    try:
+        q = fh_get("/quote", {"symbol": symbol + ".PM"})
+    except Exception:
+        return None
+    if q.get("c"):
+        return {"price": q["c"], "chg_pct": q.get("dp"), "prev_close": q.get("pc")}
+    return None
+
+
+def pse_fundamentals(symbol):
+    """PSE fundamentals from Finnhub: {pe, wk52_high, wk52_low, book_value, eps}.
+    Returns {} if nothing usable. No sector P/E - Finnhub doesn't expose it, so
+    the caller keeps the Edge scrape as a fallback for that one field."""
+    try:
+        m = fh_get("/stock/metric", {"symbol": symbol + ".PM",
+                                     "metric": "all"}).get("metric", {})
+    except Exception:
+        return {}
+    out = {
+        "pe": _pick(m, ["peTTM", "peBasicExclExtraTTM", "peExclExtraTTM", "peInclExtraTTM"]),
+        "wk52_high": m.get("52WeekHigh"),
+        "wk52_low": m.get("52WeekLow"),
+        "book_value": _pick(m, ["bookValuePerShareAnnual", "bookValuePerShareQuarterly"]),
+        "eps": _pick(m, ["epsTTM", "epsBasicExclExtraItemsTTM", "epsInclExtraItemsTTM"]),
+    }
+    return out if any(v is not None for v in out.values()) else {}
+
+
 # ------------------------------------------------------------------- yahoo
 
 def _yahoo_chart(symbol, interval, rng):

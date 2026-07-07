@@ -112,3 +112,10 @@ Web-only items are marked **(web)**.
 - **Hot & Cold movement flags** on the advisor: big moves get surfaced as awareness flags — up/down **8%+ in 24h**, **15%+ over the week**, or a held position down **15%+ from your average buy**.
 - A new **Hot & Cold strip** at the top of the Advisor tab, matching flag chips on each card, and **Heads-up** lines on the dashboard's Today plan.
 - Flags are raw-movement only and run **independent of the buy/sell call**, so a sharp drop registers even when the technical read looks oversold. They're awareness, not instructions — the final call is always yours.
+
+## [1.6.0] — 2026-07-07 — Sturdier Philippine-stock data
+### Changed
+- **Company figures for PSE stocks** (P/E, 52-week high/low, book value, earnings) now come from **Finnhub** first, replacing the fragile PSE Edge scrape that frequently left these fields blank. Edge stays on as an automatic fallback.
+- **Price resilience:** if the free community price feed (phisix) goes down, your PSE **holdings** now keep pricing from Finnhub instead of going blank — so your portfolio value stays correct through an outage. Prices recover to the full market feed automatically when phisix is back.
+### Notes
+- Uses the free Finnhub key already in the app — no new cost. Sets the stage for an optional paid EODHD upgrade (bulk prices, history and dividends) later.
