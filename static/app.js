@@ -449,6 +449,7 @@ async function loadDashboard() {
       th("Avg Buy", "avg_buy", "holdings") + th("Price", "price", "holdings") +
       th("Day", "chg_24h", "holdings") + th("Value", "value", "holdings") +
       th("Unrealized P/L", "unrealized", "holdings") + th("P/L %", "unrealized_pct", "holdings") +
+      th("Signal", "signal.score", "holdings") +
       `</tr></thead><tbody>` +
       applySort(p.holdings, "holdings").map(h => `<tr>
         <td><div class="coin-cell">${h.image ? `<img src="${esc(h.image)}">` : ""}<span class="nm">${esc(h.name)}</span><span class="sym">${esc(h.symbol)}</span></div></td>
@@ -459,6 +460,7 @@ async function loadDashboard() {
         <td><b>${fmtMoney(h.value)}</b></td>
         <td>${moneySpan(h.unrealized)}</td>
         <td>${pctSpan(h.unrealized_pct)}</td>
+        <td>${sigBadge(h.signal)}${h.signal && h.signal.action !== "WAIT" ? " " + scorePill(h.signal.score) : ""}</td>
       </tr>`).join("") + "</tbody>";
     bindSort(ht, "holdings", loadDashboard);
   }

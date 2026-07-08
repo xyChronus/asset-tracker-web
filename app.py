@@ -744,6 +744,7 @@ def portfolio_state(market, user):
         "SELECT * FROM transactions WHERE market=%s AND user_id=%s ORDER BY ts, id",
         (market, user)).fetchall()
     pm, updated = price_map(market)
+    signals_data = db.kv_get(f"{market}:signals", {}).get("data", {})
     w = db.conn().execute("SELECT budget FROM wallets WHERE user_id=%s AND market=%s",
                           (user, market)).fetchone()
     budget = w["budget"] if w else None
@@ -787,7 +788,7 @@ def portfolio_state(market, user):
         value = price * p["qty"] if price is not None else None
         holdings.append({**p, "symbol": m.get("symbol", ""), "image": m.get("image"),
                          "price": price, "avg_buy": p["cost"] / p["qty"], "value": value,
-                         "chg_24h": chg24,
+                         "chg_24h": chg24, "signal": signals_data.get(aid),
                          "unrealized": (value - p["cost"]) if value is not None else None,
                          "unrealized_pct": ((value - p["cost"]) / p["cost"] * 100)
                                            if value is not None and p["cost"] > 0 else None})
