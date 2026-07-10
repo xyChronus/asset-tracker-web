@@ -288,6 +288,7 @@ def crypto_fetch_markets():
             "vs_currency": "usd", "ids": ",".join(ids[:250]), "per_page": 250,
             "price_change_percentage": "1h,24h,7d,30d", "sparkline": "true"})
         db.kv_set("crypto:watch_markets", {"updated": now_ms(), "data": data})
+        _crypto_write_history(data)
     except Exception:
         # CoinGecko unavailable: keep prices alive from CoinMarketCap
         fallback = _cmc_markets_fallback(ids)
@@ -328,6 +329,32 @@ def _cmc_markets_fallback(ids):
             "sparkline_in_7d": {"price": []},
         })
     return out or None
+
+
+def _crypto_write_history(data):
+    """Maintain hourly price_history from the 7-day sparkline that /coins/markets
+    already returns, so signals and charts stay fed without any extra API calls.
+    The sparkline is ~hourly ending near now; map it onto the last N hour buckets.
+    Existing older history is preserved (retention only trims past HISTORY_KEEP_DAYS)."""
+    hour = 3600000
+    now_hr = now_ms() // hour * hour
+    rows = []
+    for m in data or []:
+        aid = m.get("id")
+        prices = (m.get("sparkline_in_7d") or {}).get("price") or []
+        if not aid or not prices:
+            continue
+        n = len(prices)
+        for i, p in enumerate(prices):
+            if p is not None:
+                rows.append(("crypto", aid, now_hr - (n - 1 - i) * hour, float(p)))
+    if not rows:
+        return
+    c = db.conn()
+    c.executemany("INSERT INTO price_history VALUES (%s,%s,%s,%s)"
+                  " ON CONFLICT (market, asset_id, ts) DO UPDATE SET price=EXCLUDED.price", rows)
+    c.execute("DELETE FROM price_history WHERE market='crypto' AND ts < %s",
+              (now_ms() - config.HISTORY_KEEP_DAYS * 86400000,))
 
 
 def crypto_fetch_top100():
@@ -379,27 +406,9 @@ def fetch_fx():
         db.kv_set("fx:usdphp", {"rate": float(rate), "updated": now_ms()})
 
 
-def crypto_history_tick():
-    ids = tracked_ids_all_users("crypto")
-    if not ids:
-        return
-    fetched = db.kv_get("crypto:history_fetched", {})
-    stalest = min(ids, key=lambda i: fetched.get(i, 0))
-    if time.time() - fetched.get(stalest, 0) < config.HISTORY_REFRESH_MINUTES["crypto"] * 60:
-        return
-    data = coingecko.get(f"/coins/{stalest}/market_chart",
-                         {"vs_currency": "usd", "days": config.HISTORY_DAYS})
-    rows = [("crypto", stalest, int(ts // 3600000 * 3600000), float(p))
-            for ts, p in data.get("prices", []) if p is not None]
-    c = db.conn()
-    c.executemany("INSERT INTO price_history VALUES (%s,%s,%s,%s)"
-                  " ON CONFLICT (market, asset_id, ts) DO UPDATE SET price=EXCLUDED.price",
-                  rows)
-    c.execute("DELETE FROM price_history WHERE ts < %s",
-              (now_ms() - config.HISTORY_KEEP_DAYS * 86400000,))
-    fetched[stalest] = time.time()
-    db.kv_set("crypto:history_fetched", fetched)
-    recompute_signals("crypto")
+# crypto_history_tick was removed: hourly crypto history now comes from the
+# 7-day sparkline already returned by /coins/markets (see _crypto_write_history),
+# which eliminated ~640 CoinGecko market_chart calls per day.
 
 
 def _pse_open():
@@ -688,7 +697,6 @@ def scheduler():
         [lambda: iv["crypto"]["global"], 0, crypto_fetch_global],
         [lambda: 4 * 3600, 0, crypto_fetch_fng],
         [lambda: 6 * 3600, 0, fetch_fx],
-        [lambda: iv["crypto"]["history"], 0, crypto_history_tick],
         [lambda: iv["crypto"]["news"], 0, lambda: fetch_news("crypto")],
         [lambda: iv["crypto"]["signals"], 0, lambda: recompute_signals("crypto")],
         [lambda: iv["pse"]["directory"], 0, pse_sync_directory_if_needed],
