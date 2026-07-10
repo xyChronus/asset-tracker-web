@@ -84,9 +84,10 @@ NEWS_FEEDS = {
 # (seconds) - tuned to stay well within each free data source's limits
 INTERVALS = {
     # crypto quotes now also feed price history (via the sparkline in the same
-    # call), so they're the main CoinGecko cost - kept modest to respect the
-    # free tier's ~10k calls/month. history job removed (folded into quotes).
-    "crypto": {"quotes": 600, "top100": 3600, "global": 3600,
+    # call), so they're the main CoinGecko cost. Budget: the whole key is the
+    # website's now (local app deleted 2026-07-08), so spend ~8.3k of the
+    # 10k/month Demo quota: 206+48+24 = ~278 calls/day, margin for searches.
+    "crypto": {"quotes": 420, "top100": 1800, "global": 3600,
                "history": 600, "news": 900, "signals": 300},
     "pse":    {"quotes": 300, "directory": 7 * 86400, "fundamentals": 25,
                "dividends": 6 * 3600, "news": 900, "signals": 300},

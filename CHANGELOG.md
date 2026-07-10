@@ -117,6 +117,10 @@ Web-only items are marked **(web)**.
 ### Changed
 - Cut background CoinGecko usage by ~90% (from ~2–3k calls/day to under ~200) to stay well within the free-tier monthly limit. Crypto price history is now taken from data the price call already returns instead of a second per-coin call, and the refresh timers were relaxed (crypto prices update roughly every 10 minutes). Signals and charts are unaffected.
 
+## [1.8.2] — 2026-07-10 — Faster crypto refresh
+### Changed
+- With the desktop app retired, the website has the whole CoinGecko allowance to itself — so crypto prices now refresh **every 7 minutes** (was 10) and the Top-100 market table **every 30 minutes** (was hourly). Uses ~8.3k of the 10k monthly quota, with margin to spare.
+
 ## [1.8.0] — 2026-07-08 — Signals on your holdings
 ### Added
 - The Dashboard's **Holdings** table now has a **Signal** column — the same BUY / HOLD / WATCH / SELL read (with its numbered score) you already see on the Watchlist, now right beside each position you own. Sort by it to line up your strongest buy-signals or weakest holds at a glance.
