@@ -1447,4 +1447,4 @@ document.querySelectorAll("#mkt-switch button").forEach(b =>
   b.classList.toggle("active", b.dataset.market === state.market));
 loadUser();
 refresh();
-setInterval(() => { state.watch[state.market] = null; refresh(); }, 60000);
+setInterval(() => { state.watch[state.market] = null; refresh(); }, 120000);

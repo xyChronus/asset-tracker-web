@@ -117,6 +117,10 @@ Web-only items are marked **(web)**.
 ### Changed
 - Cut background CoinGecko usage by ~90% (from ~2–3k calls/day to under ~200) to stay well within the free-tier monthly limit. Crypto price history is now taken from data the price call already returns instead of a second per-coin call, and the refresh timers were relaxed (crypto prices update roughly every 10 minutes). Signals and charts are unaffected.
 
+## [1.8.3] — 2026-07-10 — Database diet
+### Changed
+- Cut the site's database traffic ~15-fold after a Neon transfer-quota alert (4.1 of 5 GB used). The signal engine now reads only the recent price window it actually uses (verified: identical signals) instead of every asset's full history every few minutes; frequently-read market snapshots are served from the app's memory instead of re-fetched from the database on every page refresh; and idle background jobs stop polling for work that's already done. More headroom as more friends join.
+
 ## [1.8.2] — 2026-07-10 — Faster crypto refresh
 ### Changed
 - With the desktop app retired, the website has the whole CoinGecko allowance to itself — so crypto prices now refresh **every 7 minutes** (was 10) and the Top-100 market table **every 30 minutes** (was hourly). Uses ~8.3k of the 10k monthly quota, with margin to spare.

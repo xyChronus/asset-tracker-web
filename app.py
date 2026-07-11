@@ -34,7 +34,7 @@ app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax",
                   PERMANENT_SESSION_LIFETIME=60 * 60 * 24 * 30)
 
 _advisor_lock = threading.Lock()
-ADVISOR_CACHE_SECONDS = 180
+ADVISOR_CACHE_SECONDS = 600
 
 
 def now_ms():
@@ -436,6 +436,8 @@ def pse_sync_directory_if_needed():
                   " ON CONFLICT DO NOTHING",
                   (co["symbol"], co["symbol"], co["name"], db.now_iso()))
     db.kv_set("pse:directory_synced", now_ms())
+    global _pse_backfill_done
+    _pse_backfill_done = False  # new listings may need a history backfill
     print(f"[pse] directory synced: {len(companies)} companies")
 
 
@@ -514,12 +516,19 @@ def pse_fundamentals_tick():
     db.set_fundamentals("pse", sym, updated=now_ms(), **fields)
 
 
+_pse_backfill_done = False  # set when every company is backfilled; reset on directory sync
+
+
 def pse_backfill_tick():
+    global _pse_backfill_done
+    if _pse_backfill_done:
+        return  # nothing left - don't poll the DB every 30s for no work
     done = db.kv_get("pse:backfilled", {})
     rows = db.conn().execute(
         "SELECT symbol, cmpy_id, security_id FROM pse_companies ORDER BY symbol").fetchall()
     todo = [r for r in rows if r["symbol"] not in done]
     if not todo:
+        _pse_backfill_done = True
         return
     held = {r["asset_id"] for r in db.conn().execute(
         "SELECT DISTINCT asset_id FROM transactions WHERE market='pse'").fetchall()}
@@ -627,7 +636,8 @@ def global_history_tick():
             [(stalest, ts, p) for ts, p in pts])
     fetched[stalest] = time.time()
     db.kv_set("global:history_fetched", fetched)
-    recompute_signals("global")
+    # signals recompute happens on its own schedule - recomputing the whole
+    # market after every single-ticker fetch multiplied DB reads ~9x
 
 
 def global_metrics_tick():
@@ -672,16 +682,21 @@ def fetch_news(market):
     c.execute("""DELETE FROM news WHERE market=%s AND link NOT IN
                  (SELECT link FROM news WHERE market=%s ORDER BY published DESC LIMIT 400)""",
               (market, market))
+    _news_cache.pop(market, None)  # fresh rows -> advisor re-reads next build
     db.kv_set(f"{market}:news_updated", now_ms())
 
 
 def recompute_signals(market):
     pm, _ = price_map(market)
+    # Indicators only use the last ~7 days of closes; reading a bounded window
+    # instead of full history keeps Neon's transfer quota intact.
+    since = now_ms() - config.SIGNAL_WINDOW_DAYS[market] * 86400000
     out = {}
     for aid in tracked_ids_all_users(market):
         rows = db.conn().execute(
-            "SELECT price FROM price_history WHERE market=%s AND asset_id=%s ORDER BY ts",
-            (market, aid)).fetchall()
+            "SELECT price FROM price_history WHERE market=%s AND asset_id=%s"
+            " AND ts>=%s ORDER BY ts",
+            (market, aid, since)).fetchall()
         closes = [r["price"] for r in rows]
         out[aid] = sig.compute(closes, (pm.get(aid) or {}).get("chg_24h"))
     db.kv_set(f"{market}:signals", {"updated": now_ms(), "data": out})
@@ -708,6 +723,7 @@ def scheduler():
         [lambda: iv["pse"]["signals"], 0, lambda: recompute_signals("pse")],
         [lambda: iv["global"]["quotes"], 0, global_fetch_quotes],
         [lambda: iv["global"]["history"], 0, global_history_tick],
+        [lambda: iv["global"]["signals"], 0, lambda: recompute_signals("global")],
         [lambda: iv["global"]["metrics"], 0, global_metrics_tick],
         [lambda: iv["global"]["indices"], 0, global_fetch_indices],
         [lambda: iv["global"]["news"], 0, lambda: fetch_news("global")],
@@ -981,6 +997,24 @@ def _market_line(market):
     return f"the S&P 500 is {d} {abs(sp['chg_pct']):.1f}%"
 
 
+# Advisor rebuilds used to re-read ~100 KB of news rows from Postgres per
+# user per rebuild. News only changes when fetch_news writes, so serve the
+# 72h window from process memory and let fetch_news invalidate it.
+_news_cache = {}   # market -> (expires_monotonic, rows)
+_NEWS_TTL = 900.0  # matches the news fetch interval
+
+
+def _advisor_news(market):
+    hit = _news_cache.get(market)
+    if hit and hit[0] > time.monotonic():
+        return hit[1]
+    since = now_ms() - 72 * 3600000
+    rows = [dict(r) for r in db.conn().execute(
+        "SELECT * FROM news WHERE market=%s AND published>=%s", (market, since)).fetchall()]
+    _news_cache[market] = (time.monotonic() + _NEWS_TTL, rows)
+    return rows
+
+
 def get_advisor(market, user, force=False):
     """Per-user advisor, cached a few minutes."""
     key = f"advisor:{market}:{user}"
@@ -1017,9 +1051,7 @@ def get_advisor(market, user, force=False):
                            "chg_7d": (m.get("_raw") or {}).get("price_change_percentage_7d_in_currency")})
         signals_data = db.kv_get(f"{market}:signals", {}).get("data", {})
         port = portfolio_state(market, user)
-        since = now_ms() - 72 * 3600000
-        news_rows = [dict(r) for r in db.conn().execute(
-            "SELECT * FROM news WHERE market=%s AND published>=%s", (market, since)).fetchall()]
+        news_rows = _advisor_news(market)
         fund = db.get_fundamentals(market) if market != "crypto" else None
         is_open, next_open = market_session(market)
         srow = db.conn().execute(

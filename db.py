@@ -172,6 +172,28 @@ def init():
 
 # --- tiny JSON key/value store ---
 import json  # noqa: E402
+import time  # noqa: E402
+
+
+# In-process cache for hot, snapshot-style kv keys. We run a single gunicorn
+# worker (render.yaml: -w 1), so every write goes through this process's
+# kv_set and the cache stays coherent. This is what protects Neon's "public
+# network transfer" quota: these blobs are tens of KB and were being re-read
+# from Postgres on every API call and collector tick. The TTL is a
+# belt-and-braces bound; in steady state each collector's kv_set refreshes
+# its key before the TTL lapses, so hot reads never touch the DB at all.
+# Do NOT add advisor:* keys - _invalidate_advisor deletes rows directly,
+# which this cache would not see.
+_KV_HOT = {
+    "crypto:watch_markets", "crypto:top100", "crypto:global", "crypto:fng",
+    "crypto:signals", "crypto:history_fetched",
+    "pse:quotes", "pse:signals", "pse:backfilled",
+    "global:quotes", "global:signals", "global:profiles", "global:indices",
+    "global:history_fetched", "fx:usdphp",
+}
+_KV_TTL = 900.0
+_kv_cache = {}          # key -> (expires_monotonic, value)
+_kv_lock = threading.Lock()
 
 
 def kv_set(key, obj):
@@ -179,16 +201,28 @@ def kv_set(key, obj):
         "INSERT INTO kv (key, value) VALUES (%s,%s)"
         " ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value",
         (key, json.dumps(obj)))
+    if key in _KV_HOT:
+        with _kv_lock:
+            _kv_cache[key] = (time.monotonic() + _KV_TTL, obj)
 
 
 def kv_get(key, default=None):
+    if key in _KV_HOT:
+        with _kv_lock:
+            hit = _kv_cache.get(key)
+        if hit and hit[0] > time.monotonic():
+            return hit[1]
     row = conn().execute("SELECT value FROM kv WHERE key=%s", (key,)).fetchone()
     if row is None:
         return default
     try:
-        return json.loads(row["value"])
+        val = json.loads(row["value"])
     except (json.JSONDecodeError, TypeError):
         return default
+    if key in _KV_HOT:
+        with _kv_lock:
+            _kv_cache[key] = (time.monotonic() + _KV_TTL, val)
+    return val
 
 
 def parse_tx_ts(ts):
