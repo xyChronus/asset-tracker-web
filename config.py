@@ -92,15 +92,17 @@ INTERVALS = {
     "pse":    {"quotes": 300, "directory": 7 * 86400, "fundamentals": 25,
                "dividends": 6 * 3600, "news": 900, "signals": 3600},
     "global": {"quotes": 300, "history": 60, "metrics": 120,
-               "indices": 600, "news": 900, "signals": 1800},
+               "indices": 600, "news": 900, "signals": 3600},
 }
 
-# Signals only ever use the last ~7 days of closes (RSI-14, MACD 26+9, SMA-168h),
-# so sweeps read a bounded window instead of each asset's full stored history -
-# this is Neon egress protection, not a math change. PSE needs a much wider
-# window: most names record only ~1-2 closes/day, and signals.compute returns
-# WAIT below 48 closes (verified: 30d left BDO/AEV at ~44 points -> WAIT).
-SIGNAL_WINDOW_DAYS = {"crypto": 8, "pse": 60, "global": 8}
+# Signal sweeps read a bounded history window instead of each asset's full
+# stored history (Neon egress protection). Windows are sized so every
+# indicator keeps its exact pre-window basis: the long SMA uses up to 168
+# closes, so the window must hold >=168 closes for the densest asset -
+# crypto is hourly 24/7 (8d > 168h ✓); global has ~7 trading-hour bars/day
+# (35d ≈ 168+ bars ✓); PSE thin names record ~1 close/day, so 90d = the
+# full retention period, i.e. byte-identical to the pre-window behavior.
+SIGNAL_WINDOW_DAYS = {"crypto": 8, "pse": 90, "global": 35}
 
 HISTORY_REFRESH_MINUTES = {"crypto": 45, "global": 120}
 HISTORY_DAYS = 30            # hourly history fetched per request (crypto)

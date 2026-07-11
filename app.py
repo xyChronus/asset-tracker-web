@@ -523,7 +523,7 @@ def pse_backfill_tick():
     global _pse_backfill_done
     if _pse_backfill_done:
         return  # nothing left - don't poll the DB every 30s for no work
-    done = db.kv_get("pse:backfilled", {})
+    done = dict(db.kv_get("pse:backfilled", {}))  # copy: cache-resident object
     rows = db.conn().execute(
         "SELECT symbol, cmpy_id, security_id FROM pse_companies ORDER BY symbol").fetchall()
     todo = [r for r in rows if r["symbol"] not in done]
@@ -608,7 +608,10 @@ def global_fetch_quotes():
         "INSERT INTO price_history VALUES ('global',%s,%s,%s)"
         " ON CONFLICT (market, asset_id, ts) DO UPDATE SET price=EXCLUDED.price",
         [(s, hour, q["price"]) for s, q in data.items() if q.get("price")])
-    profiles = db.kv_get("global:profiles", {})
+    # dict() copy: kv_get returns the cache-resident object for hot keys -
+    # never mutate it before kv_set commits, or a failed write diverges
+    # cache from DB until restart
+    profiles = dict(db.kv_get("global:profiles", {}))
     missing = [s for s in data if s not in profiles]
     for symb in missing[:3]:
         profiles[symb] = global_data.profile(symb)
@@ -620,7 +623,7 @@ def global_history_tick():
     ids = tracked_ids_all_users("global")
     if not ids:
         return
-    fetched = db.kv_get("global:history_fetched", {})
+    fetched = dict(db.kv_get("global:history_fetched", {}))  # copy: cache-resident
     stalest = min(ids, key=lambda i: fetched.get(i, 0))
     if time.time() - fetched.get(stalest, 0) < config.HISTORY_REFRESH_MINUTES["global"] * 60:
         return
@@ -637,7 +640,15 @@ def global_history_tick():
     fetched[stalest] = time.time()
     db.kv_set("global:history_fetched", fetched)
     # signals recompute happens on its own schedule - recomputing the whole
-    # market after every single-ticker fetch multiplied DB reads ~9x
+    # market after every single-ticker fetch multiplied DB reads ~9x. But a
+    # NEWLY added ticker shouldn't wait up to an hour for its first signal:
+    # seed it from the closes we just fetched (no extra DB read).
+    if pts:
+        snap = db.kv_get("global:signals", None) or {"updated": 0, "data": {}}
+        if stalest not in snap.get("data", {}):
+            merged = dict(snap.get("data", {}))
+            merged[stalest] = sig.compute([p for _, p in pts])
+            db.kv_set("global:signals", {"updated": now_ms(), "data": merged})
 
 
 def global_metrics_tick():
@@ -675,15 +686,21 @@ def fetch_news(market):
     items = news.fetch_all(config.NEWS_FEEDS[market])
     if not items:
         return
-    c = db.conn()
-    c.executemany(
-        f"INSERT INTO news VALUES ('{market}',%(link)s,%(source)s,%(title)s,"
-        f"%(published)s,%(summary)s) ON CONFLICT (market, link) DO NOTHING", items)
-    c.execute("""DELETE FROM news WHERE market=%s AND link NOT IN
-                 (SELECT link FROM news WHERE market=%s ORDER BY published DESC LIMIT 400)""",
-              (market, market))
-    _news_cache.pop(market, None)  # fresh rows -> advisor re-reads next build
-    db.kv_set(f"{market}:news_updated", now_ms())
+    try:
+        c = db.conn()
+        c.executemany(
+            f"INSERT INTO news VALUES ('{market}',%(link)s,%(source)s,%(title)s,"
+            f"%(published)s,%(summary)s) ON CONFLICT (market, link) DO NOTHING", items)
+        c.execute("""DELETE FROM news WHERE market=%s AND link NOT IN
+                     (SELECT link FROM news WHERE market=%s ORDER BY published DESC LIMIT 400)""",
+                  (market, market))
+        db.kv_set(f"{market}:news_updated", now_ms())
+    finally:
+        # invalidate even if the prune/kv_set raised after the committed INSERT,
+        # and bump the generation so a concurrent _advisor_news read that started
+        # before our writes can't re-cache its stale rows
+        _news_gen[market] = _news_gen.get(market, 0) + 1
+        _news_cache.pop(market, None)
 
 
 def recompute_signals(market):
@@ -999,8 +1016,11 @@ def _market_line(market):
 
 # Advisor rebuilds used to re-read ~100 KB of news rows from Postgres per
 # user per rebuild. News only changes when fetch_news writes, so serve the
-# 72h window from process memory and let fetch_news invalidate it.
+# 72h window from process memory and let fetch_news invalidate it. The
+# generation counter closes the race where a read that started before
+# fetch_news's writes would re-cache pre-insert rows after the invalidation.
 _news_cache = {}   # market -> (expires_monotonic, rows)
+_news_gen = {}     # market -> int, bumped by fetch_news on every write
 _NEWS_TTL = 900.0  # matches the news fetch interval
 
 
@@ -1008,10 +1028,12 @@ def _advisor_news(market):
     hit = _news_cache.get(market)
     if hit and hit[0] > time.monotonic():
         return hit[1]
+    gen = _news_gen.get(market, 0)
     since = now_ms() - 72 * 3600000
     rows = [dict(r) for r in db.conn().execute(
         "SELECT * FROM news WHERE market=%s AND published>=%s", (market, since)).fetchall()]
-    _news_cache[market] = (time.monotonic() + _NEWS_TTL, rows)
+    if _news_gen.get(market, 0) == gen:  # no fetch_news write raced our SELECT
+        _news_cache[market] = (time.monotonic() + _NEWS_TTL, rows)
     return rows
 
 

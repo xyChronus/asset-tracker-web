@@ -207,6 +207,7 @@ def kv_set(key, obj):
 
 
 def kv_get(key, default=None):
+    hit = None
     if key in _KV_HOT:
         with _kv_lock:
             hit = _kv_cache.get(key)
@@ -221,7 +222,11 @@ def kv_get(key, default=None):
         return default
     if key in _KV_HOT:
         with _kv_lock:
-            _kv_cache[key] = (time.monotonic() + _KV_TTL, val)
+            # Only store if no concurrent kv_set/kv_get refreshed the entry while
+            # our SELECT was in flight - a slow read must never clobber a newer
+            # value and pin it for a full TTL.
+            if _kv_cache.get(key) is hit:
+                _kv_cache[key] = (time.monotonic() + _KV_TTL, val)
     return val
 
 
