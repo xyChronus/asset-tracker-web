@@ -21,7 +21,7 @@ SETTINGS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data",
 
 _lock = threading.Lock()
 _last_fh_call = 0.0
-FH_MIN_INTERVAL = 1.1
+FH_MIN_INTERVAL = 1.2  # ~50/min vs the 60/min cap - margin for retries (quota audit)
 
 last_ok = None
 last_error = None
