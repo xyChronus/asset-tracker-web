@@ -87,15 +87,12 @@ INTERVALS = {
     # call), so they're the main CoinGecko cost. Budget: the whole key is the
     # website's now (local app deleted 2026-07-08), so spend ~8.3k of the
     # 10k/month Demo quota: 206+48+24 = ~278 calls/day, margin for searches.
-    # EMERGENCY MODE (2026-07-12): Neon transfer meter at 4.95/5 GB - signal
-    # sweeps throttled hard to stretch the last ~50 MB until the Supabase
-    # migration lands. Revert signals to 900/3600/3600 in the cutover deploy.
     "crypto": {"quotes": 420, "top100": 1800, "global": 3600,
-               "history": 600, "news": 900, "signals": 3600},
+               "history": 600, "news": 900, "signals": 900},
     "pse":    {"quotes": 300, "directory": 7 * 86400, "fundamentals": 25,
-               "dividends": 6 * 3600, "news": 900, "signals": 14400},
+               "dividends": 6 * 3600, "news": 900, "signals": 3600},
     "global": {"quotes": 300, "history": 60, "metrics": 120,
-               "indices": 600, "news": 900, "signals": 14400},
+               "indices": 600, "news": 900, "signals": 3600},
 }
 
 # Signal sweeps read a bounded history window instead of each asset's full

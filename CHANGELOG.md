@@ -117,6 +117,10 @@ Web-only items are marked **(web)**.
 ### Changed
 - Cut background CoinGecko usage by ~90% (from ~2–3k calls/day to under ~200) to stay well within the free-tier monthly limit. Crypto price history is now taken from data the price call already returns instead of a second per-coin call, and the refresh timers were relaxed (crypto prices update roughly every 10 minutes). Signals and charts are unaffected.
 
+## [1.9.0] — 2026-07-12 — New database home
+### Changed
+- Moved the database from Neon to **Supabase (Singapore)** — same city as the app server. A full quota audit showed Neon's free plan meters how many hours the database engine runs (100/month), which an always-on tracker burns through in ~16 days; Supabase's free instance is built to run 24/7 with no such meter. All data (every transaction, watchlist, wallet and setting — 76k rows) was copied and verified row-for-row before the switch. The temporary signal-refresh slowdown from the emergency throttle is reverted.
+
 ## [1.8.4] — 2026-07-11 — Database diet, reviewed
 ### Fixed
 - An independent review of the database diet confirmed 8 subtle issues, all now fixed: the PSE/global history windows were widened so the long-term trend average keeps its exact original math (verified byte-identical for PSE), newly added global stocks get their signal right after backfill instead of waiting up to an hour, and several rare timing races in the new memory cache (a slow read overwriting a newer value; news updates being missed by the advisor for 15 minutes; failed database writes leaving memory out of sync) were closed.
