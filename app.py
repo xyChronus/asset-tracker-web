@@ -685,16 +685,18 @@ def global_fetch_indices():
 
 def supabase_keepalive():
     """Belt-and-braces against Supabase's 7-day inactivity pause: pooler SQL
-    may not register with the pause detector, so ping the REST API, which
-    definitively counts as activity. No-op until SUPABASE_ANON_KEY is set."""
+    may not register with the pause detector, so ping the project's API
+    gateway, which definitively counts as activity. The auth health endpoint
+    accepts the legacy anon key (200 verified); /rest/v1/ rejects it on
+    new-key-system projects. No-op until SUPABASE_ANON_KEY is set."""
     anon = os.environ.get("SUPABASE_ANON_KEY")
     dbu = os.environ.get("DATABASE_URL", "")
     m = re.search(r"postgres\.([a-z0-9]+):", dbu)
     if not anon or not m:
         return
-    r = requests.get(f"https://{m.group(1)}.supabase.co/rest/v1/",
+    r = requests.get(f"https://{m.group(1)}.supabase.co/auth/v1/health",
                      headers={"apikey": anon}, timeout=20)
-    print(f"[keepalive] supabase REST ping: {r.status_code}")
+    print(f"[keepalive] supabase ping: {r.status_code}")
 
 
 def fetch_news(market):
