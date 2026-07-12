@@ -6,6 +6,7 @@ Production:  gunicorn -w 1 --threads 8 -b 0.0.0.0:$PORT app:app
 """
 
 import os
+import re
 import secrets
 import threading
 import time
@@ -682,6 +683,20 @@ def global_fetch_indices():
         db.kv_set("global:indices", {"updated": now_ms(), "data": out})
 
 
+def supabase_keepalive():
+    """Belt-and-braces against Supabase's 7-day inactivity pause: pooler SQL
+    may not register with the pause detector, so ping the REST API, which
+    definitively counts as activity. No-op until SUPABASE_ANON_KEY is set."""
+    anon = os.environ.get("SUPABASE_ANON_KEY")
+    dbu = os.environ.get("DATABASE_URL", "")
+    m = re.search(r"postgres\.([a-z0-9]+):", dbu)
+    if not anon or not m:
+        return
+    r = requests.get(f"https://{m.group(1)}.supabase.co/rest/v1/",
+                     headers={"apikey": anon}, timeout=20)
+    print(f"[keepalive] supabase REST ping: {r.status_code}")
+
+
 def fetch_news(market):
     items = news.fetch_all(config.NEWS_FEEDS[market])
     if not items:
@@ -729,6 +744,7 @@ def scheduler():
         [lambda: iv["crypto"]["global"], 0, crypto_fetch_global],
         [lambda: 4 * 3600, 0, crypto_fetch_fng],
         [lambda: 6 * 3600, 0, fetch_fx],
+        [lambda: 2 * 86400, 0, supabase_keepalive],
         [lambda: iv["crypto"]["news"], 0, lambda: fetch_news("crypto")],
         [lambda: iv["crypto"]["signals"], 0, lambda: recompute_signals("crypto")],
         [lambda: iv["pse"]["directory"], 0, pse_sync_directory_if_needed],
