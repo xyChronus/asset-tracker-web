@@ -29,7 +29,9 @@ jobs:
         env:
           DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: |
-          pg_dump "$DB_URL" --no-owner --no-privileges --quote-all-identifiers -f backup.sql
+          # the runner image ships an older pg_dump that shadows v17 on PATH -
+          # call the versioned binary explicitly (server is PG 17)
+          /usr/lib/postgresql/17/bin/pg_dump "$DB_URL" --no-owner --no-privileges --quote-all-identifiers -f backup.sql
           echo "dump size: $(du -h backup.sql | cut -f1)"
           grep -c 'CREATE TABLE' backup.sql
 
