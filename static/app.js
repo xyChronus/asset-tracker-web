@@ -400,10 +400,14 @@ function showTargets(h) {
     <div class="panel-head"><h3>🎯 Plan for ${esc(h.name)}</h3><button class="mini-btn" id="tgt-close">Close</button></div>
     <p class="muted small-note">Decide your exits <b>before</b> emotions do. The tracker flags when a level
       is crossed — logging the trade stays your call. Now: ${fmtMoney(h.price)} · your avg buy: ${fmtMoney(h.avg_buy)}.</p>
+    ${h.sugg_tp ? `<div class="sugg-plan muted small-note">Suggested for your ${esc(styleLabel(state.style))} style:
+      🎯 ${fmtMoney(h.sugg_tp)} <span class="pos">(+${h.sugg_tp_pct}%)</span> ·
+      🛑 ${fmtMoney(h.sugg_sl)} <span class="neg">(−${h.sugg_sl_pct}%)</span>
+      <button class="mini-btn" id="tgt-use-sugg" type="button">Use suggested</button></div>` : ""}
     <label class="acct-field">🎯 Take-profit price — sell into strength here
-      <input type="number" step="any" min="0" id="tgt-tp" value="${h.tp_price ?? ""}" placeholder="e.g. ${h.price ? (h.price * 1.25).toPrecision(4) : ""}"></label>
+      <input type="number" step="any" min="0" id="tgt-tp" value="${h.tp_price ?? ""}" placeholder="${h.sugg_tp ? "e.g. " + h.sugg_tp.toPrecision(4) : ""}"></label>
     <label class="acct-field">🛑 Stop-loss price — cut the loss here
-      <input type="number" step="any" min="0" id="tgt-sl" value="${h.sl_price ?? ""}" placeholder="e.g. ${h.price ? (h.price * 0.9).toPrecision(4) : ""}"></label>
+      <input type="number" step="any" min="0" id="tgt-sl" value="${h.sl_price ?? ""}" placeholder="${h.sugg_sl ? "e.g. " + h.sugg_sl.toPrecision(4) : ""}"></label>
     <div class="tgt-calc muted small-note" id="tgt-calc"></div>
     <label class="acct-field">📝 Why this trade? (your future self will thank you)
       <input type="text" id="tgt-note" maxlength="300" value="${esc(h.note || "")}" placeholder="e.g. breakout above resistance, earnings play…"></label>
@@ -429,6 +433,12 @@ function showTargets(h) {
   };
   document.getElementById("tgt-tp").oninput = calc;
   document.getElementById("tgt-sl").oninput = calc;
+  const useBtn = document.getElementById("tgt-use-sugg");
+  if (useBtn) useBtn.onclick = () => {
+    document.getElementById("tgt-tp").value = h.sugg_tp.toPrecision(6);
+    document.getElementById("tgt-sl").value = h.sugg_sl.toPrecision(6);
+    calc();
+  };
   calc();
 
   const post = async (body) => {
@@ -681,6 +691,12 @@ function recCard(r) {
   const amount = r.usd
     ? `<div class="rec-amount">${r.action.includes("BUY") ? "Buy" : "Sell"} about <b>${fmtMoney(r.usd)}</b>${r.qty ? ` <span class="muted">(≈ ${fmtQty(r.qty)} ${esc(r.symbol)})</span>` : ""}</div>`
     : "";
+  const sp = r.suggested_plan;
+  const planLine = sp
+    ? `<div class="sugg-plan muted" title="A ${esc(styleLabel(state.style))}-style starting point (risk:reward 1:2) — set your own in the Plan column of the Dashboard">
+        Starting plan: 🎯 ${fmtMoney(sp.tp)} <span class="pos">(+${sp.tp_pct}%)</span> ·
+        🛑 ${fmtMoney(sp.sl)} <span class="neg">(−${sp.sl_pct}%)</span> — a starting point, not a rule</div>`
+    : "";
   const holdLine = h
     ? `<div class="rec-holding muted">You hold ${fmtMoney(h.value)} (${h.alloc_pct}% of portfolio${h.unrealized_pct != null ? ", " + (h.unrealized_pct >= 0 ? "up " : "down ") + Math.abs(h.unrealized_pct).toFixed(0) + "%" : ""})</div>`
     : "";
@@ -713,7 +729,7 @@ function recCard(r) {
         <span class="muted">${fmtMoney(r.price)}</span></div>
       <div class="head-right">${sigBadge(r)}${scorePill(r.conviction, 1)}${acceptBtn}${doneBtn}</div>
     </div>
-    ${flagRow}${amount}${holdLine}
+    ${flagRow}${amount}${planLine}${holdLine}
     <div class="conv-bar" title="Conviction: ${conv}">
       <div class="conv-marker" style="left:${pos}%"></div>
     </div>

@@ -454,6 +454,19 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
                                       + (f" - down {abs(plpct):.0f}%" if plpct is not None and plpct < 0 else "")
                                       + " - your plan says cut the loss"})
 
+        # a style-tuned starting plan for buy ideas: TP at the style's own
+        # take-profit threshold, SL at half that (risk:reward 1:2). Shown as
+        # "our suggested starting point" - the user edits or ignores it.
+        suggested_plan = None
+        if action in ("BUY", "BUY MORE") and price:
+            tp_pct = sp["tp_pct"]
+            suggested_plan = {
+                "tp": price * (1 + tp_pct / 100.0),
+                "sl": price * (1 - tp_pct / 200.0),
+                "tp_pct": tp_pct,
+                "sl_pct": tp_pct / 2.0,
+            }
+
         recs.append({
             "asset_id": aid,
             "name": a.get("name") or aid,
@@ -461,6 +474,7 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
             "image": a.get("image"),
             "price": price,
             "action": action,
+            "suggested_plan": suggested_plan,
             "usd": amt,
             "qty": (amt / price) if amt and price else None,
             "conviction": round(conviction, 1),

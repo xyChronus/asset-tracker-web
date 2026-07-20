@@ -835,6 +835,10 @@ def portfolio_state(market, user):
                 p["qty"], p["cost"] = 0.0, 0.0
     tgts = {r["asset_id"]: r for r in db.conn().execute(
         "SELECT * FROM targets WHERE user_id=%s AND market=%s", (user, market)).fetchall()}
+    srow = db.conn().execute(
+        "SELECT trading_style FROM users WHERE id=%s", (user,)).fetchone()
+    sp = adv.STYLE_PARAMS.get((srow or {}).get("trading_style") or "swing",
+                              adv.STYLE_PARAMS["swing"])
     holdings, closed = [], []
     tot_value = tot_cost = tot_realized = tot_change24 = 0.0
     for aid, p in pos.items():
@@ -856,6 +860,11 @@ def portfolio_state(market, user):
                          "price": price, "avg_buy": p["cost"] / p["qty"], "value": value,
                          "chg_24h": chg24, "signal": signals_data.get(aid),
                          "tp_price": tp, "sl_price": sl, "note": t.get("note"),
+                         # style-tuned starting suggestion, anchored on the
+                         # current price (a plan is about the future from here)
+                         "sugg_tp": price * (1 + sp["tp_pct"] / 100.0) if price else None,
+                         "sugg_sl": price * (1 - sp["tp_pct"] / 200.0) if price else None,
+                         "sugg_tp_pct": sp["tp_pct"], "sugg_sl_pct": sp["tp_pct"] / 2.0,
                          "tp_dist_pct": tp_dist, "sl_dist_pct": sl_dist,
                          "tp_hit": (price >= tp) if tp and price else False,
                          "sl_hit": (price <= sl) if sl and price else False,

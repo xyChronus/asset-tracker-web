@@ -221,6 +221,8 @@ tbody tr:hover { background: var(--panel-2); }
 .tgt-chip.tgt-hit-tp { background: rgba(52,211,153,.18); border-color: #34d399; color: #34d399; }
 .tgt-chip.tgt-hit-sl { background: rgba(239,68,68,.2); border-color: var(--red); color: #f87171; }
 .tgt-calc { min-height: 16px; margin: 2px 0 8px; }
+.sugg-plan { font-size: 12px; margin: 3px 0 6px; }
+.sugg-plan .mini-btn { margin-left: 6px; padding: 1px 8px; font-size: 11px; }
 
 .gl-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 12px; }
 .gl-grid.panel-pad { margin: 0 0 16px; }
