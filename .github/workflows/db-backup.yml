@@ -3,8 +3,10 @@ name: Weekly DB backup
 # Supabase's free plan has no automated backups, so this dumps the whole
 # database weekly, encrypts it (the repo is public - artifacts must never
 # contain raw user data), and stores it as a workflow artifact for 90 days.
-# Decrypt locally with:
-#   openssl enc -d -aes-256-cbc -pbkdf2 -pass env:BACKUP_PASSPHRASE -in backup.sql.enc -out backup.sql
+# The passphrase is machine-generated (256-bit random) and the KDF runs 1M
+# iterations - an artifact download without the secret is cryptographically
+# useless. Decrypt locally with:
+#   openssl enc -d -aes-256-cbc -pbkdf2 -iter 1000000 -md sha256 -pass env:BACKUP_PASSPHRASE -in backup.sql.enc -out backup.sql
 # (BACKUP_PASSPHRASE lives in asset-tracker-web/.env on the owner's machine.)
 
 on:
@@ -35,7 +37,7 @@ jobs:
         env:
           BACKUP_PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
         run: |
-          openssl enc -aes-256-cbc -pbkdf2 -pass env:BACKUP_PASSPHRASE -in backup.sql -out backup.sql.enc
+          openssl enc -aes-256-cbc -pbkdf2 -iter 1000000 -md sha256 -pass env:BACKUP_PASSPHRASE -in backup.sql -out backup.sql.enc
           rm backup.sql
 
       - name: Upload artifact

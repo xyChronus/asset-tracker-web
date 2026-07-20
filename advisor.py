@@ -249,6 +249,15 @@ def _round_amt(v, floor=10):
     return max(floor, int(round(v / 5.0) * 5))
 
 
+def _fmt_price(v):
+    """Human price formatting that never goes scientific: $0.00001234 stays
+    readable instead of 1.234e-05, and big prices keep their commas."""
+    if v >= 1:
+        return f"{v:,.2f}"
+    s = f"{v:.10f}".rstrip("0")
+    return s if s[-1] != "." else s + "0"
+
+
 def build(assets, signals, portfolio, news_items, market, now_ms,
           currency="$", fundamentals=None, max_ideas=None, style=DEFAULT_STYLE,
           targets=None):
@@ -445,14 +454,20 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
             tp, sl = t.get("tp_price"), t.get("sl_price")
             if tp and price >= tp:
                 flags.append({"kind": "tp",
-                              "text": f"Hit your take-profit ({currency}{tp:,.8g})"
+                              "text": f"Hit your take-profit ({currency}{_fmt_price(tp)})"
                                       + (f" - up {plpct:.0f}%" if plpct is not None and plpct > 0 else "")
                                       + " - your plan says consider selling"})
             elif sl and price <= sl:
                 flags.append({"kind": "sl",
-                              "text": f"Fell through your stop-loss ({currency}{sl:,.8g})"
+                              "text": f"Fell through your stop-loss ({currency}{_fmt_price(sl)})"
                                       + (f" - down {abs(plpct):.0f}%" if plpct is not None and plpct < 0 else "")
                                       + " - your plan says cut the loss"})
+        # the user's own triggered plan outranks a fresh buy suggestion on the
+        # same asset - never show "BUY MORE" under a tripped stop or target
+        if action in ("BUY", "BUY MORE") and any(f["kind"] in ("tp", "sl") for f in flags):
+            action, amt = "HOLD", None  # suggested_plan is derived below from the demoted action
+            reasons.insert(0, "Your own stop/target has triggered on this position - "
+                              "resolve your plan first before adding more.")
 
         # a style-tuned starting plan for buy ideas: TP at the style's own
         # take-profit threshold, SL at half that (risk:reward 1:2). Shown as
@@ -508,10 +523,14 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
                       key=lambda r: (-ACTION_RANK.get(r["action"], 0), -abs(r["conviction"])))
 
     # when the exchange is closed there is nothing to act on: suppress
-    # buy/sell suggestions entirely (crypto never closes)
+    # buy/sell suggestions entirely (crypto never closes) - but keep any rec
+    # carrying awareness flags (hot/cold moves, tripped stops/targets): a stop
+    # hit at Friday's close must not vanish for the whole weekend
     market_open = market.get("open", True)
     if not market_open:
-        recs = [r for r in recs if r["action"] in ("HOLD", "WATCH")]
+        recs = [r if r["action"] in ("HOLD", "WATCH")
+                else {**r, "action": "HOLD", "usd": None, "qty": None}
+                for r in recs if r["action"] in ("HOLD", "WATCH") or r["flags"]]
 
     # ---------------------------------------------------------- briefing
     if market_sent > 0.4:

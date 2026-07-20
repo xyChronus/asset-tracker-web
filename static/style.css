@@ -379,12 +379,12 @@ canvas.spark { width: 110px; height: 30px; }
   font: inherit; margin-top: 3px;
 }
 .wallet-box .input-row { display: flex; gap: 6px; }
-.done-btn {
+.done-btn, .pdone-btn {
   background: var(--panel-2); color: var(--muted); border: 1px solid var(--border);
   border-radius: 7px; padding: 3px 10px; font-size: 11.5px; font-weight: 600;
   cursor: pointer; white-space: nowrap;
 }
-.done-btn:hover { color: var(--green); border-color: var(--green); }
+.done-btn:hover, .pdone-btn:hover { color: var(--green); border-color: var(--green); }
 .done-btn:disabled { opacity: .5; cursor: default; }
 .plan-item .plan-btns { margin-left: auto; display: flex; gap: 6px; flex-shrink: 0; }
 .accept-btn {

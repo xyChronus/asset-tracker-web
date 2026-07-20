@@ -87,7 +87,12 @@ async function api(path, opts) {
     location.href = "/login";
     throw new Error("signed out");
   }
-  const data = await r.json().catch(() => ({}));
+  // a 200 with an unparseable body must fail loudly, not silently become {}
+  // (e.g. a stray Infinity/NaN in the payload) - downstream code relies on shape
+  const data = await r.json().catch(() => {
+    if (r.ok) throw new Error("The server sent an unreadable response - try a refresh.");
+    return {};
+  });
   if (!r.ok) throw new Error(data.error || r.status + " " + r.statusText);
   return data;
 }
@@ -425,9 +430,11 @@ function showTargets(h) {
     const tp = parseFloat(document.getElementById("tgt-tp").value);
     const sl = parseFloat(document.getElementById("tgt-sl").value);
     const parts = [];
-    if (tp && h.price) parts.push(`🎯 ${(tp / h.price * 100 - 100).toFixed(1)}% above the current price`);
-    if (sl && h.price) parts.push(`🛑 ${(100 - sl / h.price * 100).toFixed(1)}% below`);
-    if (tp && sl && h.price && h.price > sl)
+    if (tp && h.price && tp > h.price) parts.push(`🎯 ${(tp / h.price * 100 - 100).toFixed(1)}% above the current price`);
+    if (tp && h.price && tp <= h.price) parts.push(`🎯 already at/below the current price — it would trigger immediately`);
+    if (sl && h.price && sl < h.price) parts.push(`🛑 ${(100 - sl / h.price * 100).toFixed(1)}% below`);
+    if (sl && h.price && sl >= h.price) parts.push(`🛑 already at/above the current price — it would trigger immediately`);
+    if (tp && sl && h.price && h.price > sl && tp > h.price)
       parts.push(`<b>risk : reward ≈ 1 : ${((tp - h.price) / (h.price - sl)).toFixed(1)}</b>`);
     document.getElementById("tgt-calc").innerHTML = parts.join(" · ");
   };
@@ -535,7 +542,7 @@ async function loadDashboard() {
       th("Avg Buy", "avg_buy", "holdings") + th("Price", "price", "holdings") +
       th("Day", "chg_24h", "holdings") + th("Value", "value", "holdings") +
       th("Unrealized P/L", "unrealized", "holdings") + th("P/L %", "unrealized_pct", "holdings") +
-      th("Signal", "signal.score", "holdings") + th("Plan", "tp_dist_pct", "holdings") +
+      th("Signal", "signal.score", "holdings") + th("Plan", "plan_sort", "holdings") +
       `</tr></thead><tbody>` +
       applySort(p.holdings, "holdings").map(h => `<tr>
         <td><div class="coin-cell">${h.image ? `<img src="${esc(h.image)}">` : ""}<span class="nm">${esc(h.name)}</span><span class="sym">${esc(h.symbol)}</span></div></td>
@@ -574,17 +581,22 @@ async function loadTodayPlan() {
   // your own TP/SL plan triggering outranks everything else on the day's list
   const tpslHtml = a.recommendations
     .filter(r => (r.flags || []).some(f => f.kind === "tp" || f.kind === "sl"))
+    .filter(r => !planHitDismissed(r.asset_id))
     .slice(0, 4)
     .map(r => {
       const fl = r.flags.find(f => f.kind === "tp" || f.kind === "sl");
       const isTp = fl.kind === "tp";
-      const usd = r.holding && r.holding.value;
+      const qty = r.holding && r.holding.qty;
       return `<div class="plan-item">
         <span class="badge ${isTp ? "take-profit" : "strong-sell"}">${isTp ? "🎯 TARGET HIT" : "🛑 STOP HIT"}</span>
         <span><b>${esc(r.name)}</b> <span class="muted">· ${esc(fl.text)}</span></span>
-        ${usd ? `<span class="plan-btns"><button class="accept-btn" data-accept="${esc(r.asset_id)}"
-          data-action="SELL" data-usd="${usd}" data-name="${esc(r.name)}"
-          title="Log the sell at the current live price — your plan, your call">Log sell</button></span>` : ""}
+        <span class="plan-btns">
+          ${qty ? `<button class="accept-btn" data-accept="${esc(r.asset_id)}"
+            data-action="SELL" data-qty="${qty}" data-price="${r.price ?? ""}" data-name="${esc(r.name)}"
+            title="Log selling the whole position at the current live price — your plan, your call">Log sell</button>` : ""}
+          <button class="pdone-btn" data-plan-done="${esc(r.asset_id)}"
+            title="I've seen this — hide it for today (letting it run is a valid call too)">✓</button>
+        </span>
       </div>`;
     }).join("");
   const coldHtml = tpslHtml + a.recommendations
@@ -597,16 +609,18 @@ async function loadTodayPlan() {
         <span><b>${esc(r.name)}</b> <span class="muted">· ${esc(fl.text)}</span></span></div>`;
     }).join("");
   if (a.market_open === false) {
-    el.innerHTML = `<div class="plan-item"><span class="badge wait">MARKET CLOSED</span>
+    // your plan's stop/target hits stay visible even while the market sleeps
+    el.innerHTML = tpslHtml + `<div class="plan-item"><span class="badge wait">MARKET CLOSED</span>
       <span>Buy/sell suggestions pause while the market is closed — they resume
       ${esc(a.next_open || "when it reopens")}.</span></div>`;
+    bindDoneButtons("today-plan", loadTodayPlan); bindPlanDone();
     return;
   }
   if (!actions.length) {
     el.innerHTML = coldHtml + `<div class="plan-item"><span class="badge hold">ALL CLEAR</span>
       <span>${doneCount ? `All ${doneCount} suggestion(s) done for today — nice work.`
         : `No strong buy or sell setups in ${MKT_LABEL[state.market]} right now — sitting tight is the play.`}</span></div>`;
-    bindDoneButtons("today-plan", loadTodayPlan);  // TP/SL "Log sell" buttons live in coldHtml
+    bindDoneButtons("today-plan", loadTodayPlan); bindPlanDone();  // TP/SL "Log sell" buttons live in coldHtml
     return;
   }
   el.innerHTML = coldHtml + actions.map(r => `<div class="plan-item">
@@ -620,7 +634,15 @@ async function loadTodayPlan() {
         title="Hide this suggestion for today without logging anything">✓</button>
     </span>
   </div>`).join("");
-  bindDoneButtons("today-plan", loadTodayPlan);
+  bindDoneButtons("today-plan", loadTodayPlan); bindPlanDone();
+}
+
+// bind the TP/SL "seen it" buttons wherever today-plan was rendered
+function bindPlanDone() {
+  document.querySelectorAll("#today-plan .pdone-btn").forEach(b => b.onclick = () => {
+    dismissPlanHit(b.dataset.planDone);
+    loadTodayPlan();
+  });
 }
 
 function glList(list, priceKey, chgKey) {
@@ -742,6 +764,15 @@ function recCard(r) {
 
 const FLAG_ICONS = { hot: "🔺", cold: "🔻", tp: "🎯", sl: "🛑" };
 
+// "Seen it, letting it run" for triggered TP/SL alerts: hidden for the rest of
+// the day on this device (localStorage), back tomorrow while still triggered.
+function planHitDismissed(aid) {
+  return localStorage.getItem(`planhit:${state.market}:${aid}`) === new Date().toDateString();
+}
+function dismissPlanHit(aid) {
+  localStorage.setItem(`planhit:${state.market}:${aid}`, new Date().toDateString());
+}
+
 function moverChip(r) {
   // border color takes the most decisive flag: your own plan first
   const kinds = (r.flags || []).map(f => f.kind);
@@ -816,21 +847,28 @@ function bindDoneButtons(containerId, reload) {
   document.querySelectorAll(`#${containerId} .accept-btn`).forEach(b => b.onclick = async () => {
     const side = ["BUY", "BUY MORE"].includes(b.dataset.action) ? "buy" : "sell";
     const usd = parseFloat(b.dataset.usd);
+    const qty = parseFloat(b.dataset.qty);   // full-position exits carry the exact quantity
     const assets = await ensureWatch();
     const a = assets.find(x => x.asset_id === b.dataset.accept);
-    const price = a && a.price != null ? a.price : null;
-    if (!price || !usd) {
+    // held-but-unwatched assets aren't in the watchlist - fall back to the
+    // advisor snapshot's price (minutes old) rather than dead-ending
+    const price = (a && a.price != null) ? a.price : (parseFloat(b.dataset.price) || null);
+    if (!price || (!usd && !qty)) {
       toast("No live price right now — log it manually in the Portfolio tab.");
       return;
     }
-    if (!confirm(`Log this ${side.toUpperCase()}: ${fmtMoney(usd)} of ${b.dataset.name} `
+    const what = qty ? `your whole position (${fmtQty(qty)} ${esc(b.dataset.name)})`
+                     : `${fmtMoney(usd)} of ${b.dataset.name}`;
+    if (!confirm(`Log this ${side.toUpperCase()}: ${what} `
         + `at the current price of ${fmtMoney(price)}?\n\nTip: if your real fill price `
         + `differs on your exchange/broker, fix it afterwards with the ✎ button in the Portfolio tab.`)) return;
     b.disabled = true;
     try {
       await api(M() + "/transactions", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ asset_id: b.dataset.accept, side, price, value: usd }),
+        body: JSON.stringify(qty
+          ? { asset_id: b.dataset.accept, side, price, quantity: qty }
+          : { asset_id: b.dataset.accept, side, price, value: usd }),
       });
       toast(`${side === "buy" ? "Buy" : "Sell"} logged ✓ — edit it in the Portfolio tab if your real fill differed.`);
       reload(); loadHeader();
@@ -918,16 +956,19 @@ function renderTradeStats(rows, summary) {
     ["Win rate", `${(wins.length / outcomes.length * 100).toFixed(0)}%`],
     ["Avg win", wins.length ? fmtMoney(grossWin / wins.length) : "—"],
     ["Avg loss", losses.length ? fmtMoney(grossLoss / losses.length) : "—"],
-    ["Profit factor", pf === null ? "∞" : pf.toFixed(2)],
+    ["Profit factor", pf === null ? "no losses yet" : pf.toFixed(2)],
     ["Best", `${esc(best.symbol || best.name)} ${moneySpan(best.realized)}`],
     ["Worst", `${esc(worst.symbol || worst.name)} ${moneySpan(worst.realized)}`],
     ["Fees paid", fmtMoney(summary.fees || 0)],
   ];
+  const notes = [];
+  if (outcomes.length < 10)
+    notes.push(`Early days — with only ${outcomes.length} closed trade${outcomes.length > 1 ? "s" : ""}, these numbers are noise more than signal. They start meaning something around 10+.`);
+  if (pf !== null && pf < 1)
+    notes.push("Profit factor under 1 means losses outweigh wins so far — normal while learning.");
   el.innerHTML = stats.map(x =>
     `<div class="mini-stat"><span>${x[0]}</span><b>${x[1]}</b></div>`).join("") +
-    (pf !== null && pf < 1
-      ? '<div class="small-note muted" style="width:100%">Profit factor under 1 means losses outweigh wins so far — normal while learning. The stats sharpen as your trade count grows.</div>'
-      : "");
+    notes.map(n => `<div class="small-note muted" style="width:100%">${n}</div>`).join("");
 }
 
 async function ensureWatch() {

@@ -5,6 +5,7 @@ Production:  gunicorn -w 1 --threads 8 -b 0.0.0.0:$PORT app:app
              (exactly ONE worker: it hosts the shared data-collector thread)
 """
 
+import math
 import os
 import re
 import secrets
@@ -297,6 +298,15 @@ def crypto_fetch_markets():
             raise
         db.kv_set("crypto:watch_markets",
                   {"updated": now_ms(), "data": fallback, "degraded": "coinmarketcap"})
+        # no sparkline in fallback mode - record the current price as this
+        # hour's close so signals/charts keep accruing through a long outage
+        # (e.g. the monthly CoinGecko quota running dry before reset day)
+        hour = now_ms() // 3600000 * 3600000
+        db.conn().executemany(
+            "INSERT INTO price_history VALUES ('crypto',%s,%s,%s)"
+            " ON CONFLICT (market, asset_id, ts) DO UPDATE SET price=EXCLUDED.price",
+            [(m["id"], hour, float(m["current_price"])) for m in fallback
+             if m.get("current_price") is not None])
         print(f"[crypto] CoinGecko down - served {len(fallback)} prices from CoinMarketCap")
 
 
@@ -853,9 +863,19 @@ def portfolio_state(market, user):
         value = price * p["qty"] if price is not None else None
         t = tgts.get(aid) or {}
         tp, sl = t.get("tp_price"), t.get("sl_price")
+        if tp is not None and not math.isfinite(tp):
+            tp = None  # defence against any legacy bad row
+        if sl is not None and not math.isfinite(sl):
+            sl = None
         # distance to each level, % from the current price (None = not set / no price)
         tp_dist = ((tp - price) / price * 100) if tp and price else None
         sl_dist = ((sl - price) / price * 100) if sl and price else None
+        hit_tp = (price >= tp) if tp and price else False
+        hit_sl = (price <= sl) if sl and price else False
+        # sort key for the Plan column: triggered plans first (desc), then
+        # whichever level is closest; unset plans sink to the bottom
+        dists = [abs(x) for x in (tp_dist, sl_dist) if x is not None]
+        plan_sort = 999 if (hit_tp or hit_sl) else (-min(dists) if dists else None)
         holdings.append({**p, "symbol": m.get("symbol", ""), "image": m.get("image"),
                          "price": price, "avg_buy": p["cost"] / p["qty"], "value": value,
                          "chg_24h": chg24, "signal": signals_data.get(aid),
@@ -866,8 +886,8 @@ def portfolio_state(market, user):
                          "sugg_sl": price * (1 - sp["tp_pct"] / 200.0) if price else None,
                          "sugg_tp_pct": sp["tp_pct"], "sugg_sl_pct": sp["tp_pct"] / 2.0,
                          "tp_dist_pct": tp_dist, "sl_dist_pct": sl_dist,
-                         "tp_hit": (price >= tp) if tp and price else False,
-                         "sl_hit": (price <= sl) if sl and price else False,
+                         "plan_sort": plan_sort,
+                         "tp_hit": hit_tp, "sl_hit": hit_sl,
                          "unrealized": (value - p["cost"]) if value is not None else None,
                          "unrealized_pct": ((value - p["cost"]) / p["cost"] * 100)
                                            if value is not None and p["cost"] > 0 else None})
@@ -1217,6 +1237,16 @@ def api_add_transaction(market):
         if r.get("asset_id") == asset_id and _direction(r.get("action")) == side:
             dismiss_suggestion(uid(), market, asset_id, r["action"])
             break
+    if side == "sell":
+        # a sell that fully closes the position retires its TP/SL plan too -
+        # otherwise a later re-buy would instantly re-arm stale levels
+        left = c.execute(
+            "SELECT COALESCE(SUM(quantity),0) q FROM transactions"
+            " WHERE user_id=%s AND market=%s AND asset_id=%s",
+            (uid(), market, asset_id)).fetchone()["q"]
+        if left <= 1e-9:
+            c.execute("DELETE FROM targets WHERE user_id=%s AND market=%s AND asset_id=%s",
+                      (uid(), market, asset_id))
     _invalidate_advisor(market, uid())
     return jsonify({"ok": True})
 
@@ -1298,8 +1328,10 @@ def api_targets(market):
             v = float(raw)
         except (TypeError, ValueError):
             raise ValueError(f"{field}: enter a plain number")
-        if v <= 0:
-            raise ValueError(f"{field}: must be above zero")
+        # float() happily parses "nan"/"inf"/"1e999"; a stored non-finite value
+        # would poison the portfolio JSON (Infinity/NaN are not valid JSON)
+        if not math.isfinite(v) or v <= 0:
+            raise ValueError(f"{field}: must be a normal price above zero")
         return v
 
     try:

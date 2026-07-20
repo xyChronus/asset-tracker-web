@@ -117,6 +117,11 @@ Web-only items are marked **(web)**.
 ### Changed
 - Cut background CoinGecko usage by ~90% (from ~2–3k calls/day to under ~200) to stay well within the free-tier monthly limit. Crypto price history is now taken from data the price call already returns instead of a second per-coin call, and the refresh timers were relaxed (crypto prices update roughly every 10 minutes). Signals and charts are unaffected.
 
+## [1.10.1] — 2026-07-21 — TP/SL reviewed & hardened
+### Fixed
+- An independent 20-agent review of the TP/SL feature confirmed 16 issues, all fixed before launch. Highlights: plan-triggered **Log sell** now sells your exact position quantity (no rounding dust or overselling from stale numbers); stop/target hits **stay visible while the market is closed** and can be dismissed for the day ("letting it run" is a valid call); the advisor never says BUY MORE on a position whose own stop has tripped — your plan outranks its opinion; tiny-price coins display properly; malformed prices can't break the dashboard; backup encryption hardened; trading stats are honest about small sample sizes.
+- Crypto price history now keeps recording **even when CoinGecko is unavailable** (fed from the backup price source) — so signals stay alive through an outage or an exhausted monthly quota.
+
 ## [1.10.0] — 2026-07-20 — Trade like you mean it: TP/SL plans, notes & stats
 ### Added
 - **🎯 Take-profit / 🛑 stop-loss plans** on every position: click **Plan** in the Dashboard's Holdings table to set your exit prices (with live risk-to-reward math as you type). When a level is crossed, the position lights up across the app — Hot & Cold strip, advisor cards, and a **"🎯 TARGET HIT / 🛑 STOP HIT"** line at the top of Today's Plan with a one-click **Log sell**. The tracker never trades for you — it tells you when *your own plan* says act, and the call stays yours.
