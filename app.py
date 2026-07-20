@@ -833,6 +833,8 @@ def portfolio_state(market, user):
             p["sold_usd"] += proceeds
             if p["qty"] <= 1e-9:
                 p["qty"], p["cost"] = 0.0, 0.0
+    tgts = {r["asset_id"]: r for r in db.conn().execute(
+        "SELECT * FROM targets WHERE user_id=%s AND market=%s", (user, market)).fetchall()}
     holdings, closed = [], []
     tot_value = tot_cost = tot_realized = tot_change24 = 0.0
     for aid, p in pos.items():
@@ -845,9 +847,18 @@ def portfolio_state(market, user):
         price = m.get("price")
         chg24 = m.get("chg_24h")
         value = price * p["qty"] if price is not None else None
+        t = tgts.get(aid) or {}
+        tp, sl = t.get("tp_price"), t.get("sl_price")
+        # distance to each level, % from the current price (None = not set / no price)
+        tp_dist = ((tp - price) / price * 100) if tp and price else None
+        sl_dist = ((sl - price) / price * 100) if sl and price else None
         holdings.append({**p, "symbol": m.get("symbol", ""), "image": m.get("image"),
                          "price": price, "avg_buy": p["cost"] / p["qty"], "value": value,
                          "chg_24h": chg24, "signal": signals_data.get(aid),
+                         "tp_price": tp, "sl_price": sl, "note": t.get("note"),
+                         "tp_dist_pct": tp_dist, "sl_dist_pct": sl_dist,
+                         "tp_hit": (price >= tp) if tp and price else False,
+                         "sl_hit": (price <= sl) if sl and price else False,
                          "unrealized": (value - p["cost"]) if value is not None else None,
                          "unrealized_pct": ((value - p["cost"]) / p["cost"] * 100)
                                            if value is not None and p["cost"] > 0 else None})
@@ -1097,11 +1108,14 @@ def get_advisor(market, user, force=False):
         srow = db.conn().execute(
             "SELECT trading_style FROM users WHERE id=%s", (user,)).fetchone()
         style = (srow or {}).get("trading_style") or "swing"
+        tgts = {r["asset_id"]: dict(r) for r in db.conn().execute(
+            "SELECT * FROM targets WHERE user_id=%s AND market=%s", (user, market)).fetchall()}
         result = adv.build(assets, signals_data, port, news_rows,
                            {"line": _market_line(market), "open": is_open,
                             "next_open": next_open}, now_ms(),
                            currency=config.CURRENCY[market], fundamentals=fund,
-                           max_ideas=config.ADVISOR_MAX_IDEAS[market], style=style)
+                           max_ideas=config.ADVISOR_MAX_IDEAS[market], style=style,
+                           targets=tgts)
         result["updated"] = now_ms()
         result["market_open"] = is_open
         result["next_open"] = next_open
@@ -1253,6 +1267,49 @@ def api_wallet(market):
     db.conn().execute("INSERT INTO wallets VALUES (%s,%s,%s)"
                       " ON CONFLICT (user_id, market) DO UPDATE SET budget=EXCLUDED.budget",
                       (uid(), market, budget))
+    _invalidate_advisor(market, uid())
+    return jsonify({"ok": True})
+
+
+@app.post("/api/<market>/targets")
+def api_targets(market):
+    """Set/clear a position's take-profit / stop-loss plan (paper-trading
+    discipline aid - the app only ever flags these, it never trades)."""
+    _check(market)
+    d = request.get_json(force=True)
+    aid = (d.get("asset_id") or "").strip()
+    if not aid:
+        return jsonify({"error": "asset_id is required"}), 400
+
+    def _num(field):
+        raw = d.get(field)
+        if raw in (None, ""):
+            return None
+        try:
+            v = float(raw)
+        except (TypeError, ValueError):
+            raise ValueError(f"{field}: enter a plain number")
+        if v <= 0:
+            raise ValueError(f"{field}: must be above zero")
+        return v
+
+    try:
+        tp, sl = _num("tp_price"), _num("sl_price")
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    if tp is not None and sl is not None and sl >= tp:
+        return jsonify({"error": "the stop-loss must be below the take-profit"}), 400
+    note = (d.get("note") or "").strip()[:300] or None
+    if tp is None and sl is None and not note:
+        db.conn().execute("DELETE FROM targets WHERE user_id=%s AND market=%s AND asset_id=%s",
+                          (uid(), market, aid))
+    else:
+        db.conn().execute(
+            "INSERT INTO targets VALUES (%s,%s,%s,%s,%s,%s,%s)"
+            " ON CONFLICT (user_id, market, asset_id) DO UPDATE SET"
+            " tp_price=EXCLUDED.tp_price, sl_price=EXCLUDED.sl_price,"
+            " note=EXCLUDED.note, updated=EXCLUDED.updated",
+            (uid(), market, aid, tp, sl, note, db.now_iso()))
     _invalidate_advisor(market, uid())
     return jsonify({"ok": True})
 

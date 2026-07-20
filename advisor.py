@@ -250,9 +250,11 @@ def _round_amt(v, floor=10):
 
 
 def build(assets, signals, portfolio, news_items, market, now_ms,
-          currency="$", fundamentals=None, max_ideas=None, style=DEFAULT_STYLE):
+          currency="$", fundamentals=None, max_ideas=None, style=DEFAULT_STYLE,
+          targets=None):
     """Main entry. Returns {market_sentiment, briefing, recommendations}."""
     fundamentals = fundamentals or {}
+    targets = targets or {}
     sp = STYLE_PARAMS.get(style) or STYLE_PARAMS[DEFAULT_STYLE]
     max_alloc = sp["alloc_cap"]
     target_trim = sp["alloc_cap"] - 5
@@ -435,6 +437,22 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
         if has_value and plpct is not None and plpct <= -DRAWDOWN_PCT:
             flags.append({"kind": "cold",
                           "text": f"You're down {abs(plpct):.0f}% since you bought - worth reviewing"})
+        # the user's own take-profit / stop-loss plan: flag when a level is
+        # crossed. This is THEIR plan being triggered, not our advice - the
+        # strongest kind of heads-up a paper trader can get.
+        t = targets.get(aid)
+        if t and h and price:
+            tp, sl = t.get("tp_price"), t.get("sl_price")
+            if tp and price >= tp:
+                flags.append({"kind": "tp",
+                              "text": f"Hit your take-profit ({currency}{tp:,.8g})"
+                                      + (f" - up {plpct:.0f}%" if plpct is not None and plpct > 0 else "")
+                                      + " - your plan says consider selling"})
+            elif sl and price <= sl:
+                flags.append({"kind": "sl",
+                              "text": f"Fell through your stop-loss ({currency}{sl:,.8g})"
+                                      + (f" - down {abs(plpct):.0f}%" if plpct is not None and plpct < 0 else "")
+                                      + " - your plan says cut the loss"})
 
         recs.append({
             "asset_id": aid,

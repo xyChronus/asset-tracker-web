@@ -376,6 +376,82 @@ async function loadHeader() {
 
 /* ---------------------------------------------------------- dashboard */
 
+/* --------------------------------------------- take-profit / stop-loss plan */
+
+function planCell(h) {
+  if (!h.tp_price && !h.sl_price && !h.note)
+    return `<button class="mini-btn tgt-btn" data-tgt="${esc(h.asset_id)}" title="Set a take-profit / stop-loss plan">＋ plan</button>`;
+  const bits = [];
+  if (h.tp_price) bits.push(`<span class="tgt-chip ${h.tp_hit ? "tgt-hit-tp" : ""}"
+      title="Take-profit at ${fmtMoney(h.tp_price)}">🎯 ${h.tp_hit ? "HIT" : (h.tp_dist_pct != null ? "+" + h.tp_dist_pct.toFixed(0) + "%" : "")}</span>`);
+  if (h.sl_price) bits.push(`<span class="tgt-chip ${h.sl_hit ? "tgt-hit-sl" : ""}"
+      title="Stop-loss at ${fmtMoney(h.sl_price)}">🛑 ${h.sl_hit ? "HIT" : (h.sl_dist_pct != null ? h.sl_dist_pct.toFixed(0) + "%" : "")}</span>`);
+  if (h.note) bits.push(`<span class="tgt-chip" title="${esc(h.note)}">📝</span>`);
+  return `<button class="tgt-btn plain" data-tgt="${esc(h.asset_id)}" title="Edit your plan">${bits.join("")}</button>`;
+}
+
+function showTargets(h) {
+  const old = document.getElementById("targets-overlay");
+  if (old) old.remove();
+  const overlay = document.createElement("div");
+  overlay.id = "targets-overlay";
+  overlay.className = "app-overlay";
+  overlay.innerHTML = `<div class="overlay-box">
+    <div class="panel-head"><h3>🎯 Plan for ${esc(h.name)}</h3><button class="mini-btn" id="tgt-close">Close</button></div>
+    <p class="muted small-note">Decide your exits <b>before</b> emotions do. The tracker flags when a level
+      is crossed — logging the trade stays your call. Now: ${fmtMoney(h.price)} · your avg buy: ${fmtMoney(h.avg_buy)}.</p>
+    <label class="acct-field">🎯 Take-profit price — sell into strength here
+      <input type="number" step="any" min="0" id="tgt-tp" value="${h.tp_price ?? ""}" placeholder="e.g. ${h.price ? (h.price * 1.25).toPrecision(4) : ""}"></label>
+    <label class="acct-field">🛑 Stop-loss price — cut the loss here
+      <input type="number" step="any" min="0" id="tgt-sl" value="${h.sl_price ?? ""}" placeholder="e.g. ${h.price ? (h.price * 0.9).toPrecision(4) : ""}"></label>
+    <div class="tgt-calc muted small-note" id="tgt-calc"></div>
+    <label class="acct-field">📝 Why this trade? (your future self will thank you)
+      <input type="text" id="tgt-note" maxlength="300" value="${esc(h.note || "")}" placeholder="e.g. breakout above resistance, earnings play…"></label>
+    <div class="input-row">
+      <button class="primary-btn small" id="tgt-save">Save plan</button>
+      <button class="mini-btn" id="tgt-clear" title="Remove the plan for this position">Clear</button>
+    </div>
+    <div class="form-msg" id="tgt-msg"></div>
+  </div>`;
+  document.body.appendChild(overlay);
+  document.getElementById("tgt-close").onclick = () => overlay.remove();
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+
+  const calc = () => {
+    const tp = parseFloat(document.getElementById("tgt-tp").value);
+    const sl = parseFloat(document.getElementById("tgt-sl").value);
+    const parts = [];
+    if (tp && h.price) parts.push(`🎯 ${(tp / h.price * 100 - 100).toFixed(1)}% above the current price`);
+    if (sl && h.price) parts.push(`🛑 ${(100 - sl / h.price * 100).toFixed(1)}% below`);
+    if (tp && sl && h.price && h.price > sl)
+      parts.push(`<b>risk : reward ≈ 1 : ${((tp - h.price) / (h.price - sl)).toFixed(1)}</b>`);
+    document.getElementById("tgt-calc").innerHTML = parts.join(" · ");
+  };
+  document.getElementById("tgt-tp").oninput = calc;
+  document.getElementById("tgt-sl").oninput = calc;
+  calc();
+
+  const post = async (body) => {
+    const msg = document.getElementById("tgt-msg");
+    msg.textContent = "";
+    try {
+      await api(M() + "/targets", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ asset_id: h.asset_id, ...body }),
+      });
+      overlay.remove();
+      toast("Plan saved — you'll get a heads-up when a level is crossed.");
+      loadDashboard();
+    } catch (e) { msg.innerHTML = `<span class="neg">${esc(e.message)}</span>`; }
+  };
+  document.getElementById("tgt-save").onclick = () => post({
+    tp_price: document.getElementById("tgt-tp").value,
+    sl_price: document.getElementById("tgt-sl").value,
+    note: document.getElementById("tgt-note").value,
+  });
+  document.getElementById("tgt-clear").onclick = () => post({ tp_price: "", sl_price: "", note: "" });
+}
+
 async function loadDashboard() {
   const [p, hist] = await Promise.all([
     api(M() + "/portfolio"),
@@ -449,7 +525,7 @@ async function loadDashboard() {
       th("Avg Buy", "avg_buy", "holdings") + th("Price", "price", "holdings") +
       th("Day", "chg_24h", "holdings") + th("Value", "value", "holdings") +
       th("Unrealized P/L", "unrealized", "holdings") + th("P/L %", "unrealized_pct", "holdings") +
-      th("Signal", "signal.score", "holdings") +
+      th("Signal", "signal.score", "holdings") + th("Plan", "tp_dist_pct", "holdings") +
       `</tr></thead><tbody>` +
       applySort(p.holdings, "holdings").map(h => `<tr>
         <td><div class="coin-cell">${h.image ? `<img src="${esc(h.image)}">` : ""}<span class="nm">${esc(h.name)}</span><span class="sym">${esc(h.symbol)}</span></div></td>
@@ -461,8 +537,13 @@ async function loadDashboard() {
         <td>${moneySpan(h.unrealized)}</td>
         <td>${pctSpan(h.unrealized_pct)}</td>
         <td>${sigBadge(h.signal)}${h.signal && h.signal.action !== "WAIT" ? " " + scorePill(h.signal.score) : ""}</td>
+        <td>${planCell(h)}</td>
       </tr>`).join("") + "</tbody>";
     bindSort(ht, "holdings", loadDashboard);
+    ht.querySelectorAll("[data-tgt]").forEach(b => b.onclick = () => {
+      const h = p.holdings.find(x => x.asset_id === b.dataset.tgt);
+      if (h) showTargets(h);
+    });
   }
 
   loadMarketPanels("dash");
@@ -480,8 +561,25 @@ async function loadTodayPlan() {
   const actionable = a.recommendations.filter(r => !["HOLD", "WATCH"].includes(r.action));
   const actions = actionable.filter(r => !r.dismissed).slice(0, 3);
   const doneCount = actionable.filter(r => r.dismissed).length;
-  const coldHtml = a.recommendations
-    .filter(r => (r.flags || []).some(f => f.kind === "cold"))
+  // your own TP/SL plan triggering outranks everything else on the day's list
+  const tpslHtml = a.recommendations
+    .filter(r => (r.flags || []).some(f => f.kind === "tp" || f.kind === "sl"))
+    .slice(0, 4)
+    .map(r => {
+      const fl = r.flags.find(f => f.kind === "tp" || f.kind === "sl");
+      const isTp = fl.kind === "tp";
+      const usd = r.holding && r.holding.value;
+      return `<div class="plan-item">
+        <span class="badge ${isTp ? "take-profit" : "strong-sell"}">${isTp ? "🎯 TARGET HIT" : "🛑 STOP HIT"}</span>
+        <span><b>${esc(r.name)}</b> <span class="muted">· ${esc(fl.text)}</span></span>
+        ${usd ? `<span class="plan-btns"><button class="accept-btn" data-accept="${esc(r.asset_id)}"
+          data-action="SELL" data-usd="${usd}" data-name="${esc(r.name)}"
+          title="Log the sell at the current live price — your plan, your call">Log sell</button></span>` : ""}
+      </div>`;
+    }).join("");
+  const coldHtml = tpslHtml + a.recommendations
+    .filter(r => (r.flags || []).some(f => f.kind === "cold") &&
+                 !(r.flags || []).some(f => f.kind === "tp" || f.kind === "sl"))
     .slice(0, 3)
     .map(r => {
       const fl = r.flags.find(f => f.kind === "cold");
@@ -498,6 +596,7 @@ async function loadTodayPlan() {
     el.innerHTML = coldHtml + `<div class="plan-item"><span class="badge hold">ALL CLEAR</span>
       <span>${doneCount ? `All ${doneCount} suggestion(s) done for today — nice work.`
         : `No strong buy or sell setups in ${MKT_LABEL[state.market]} right now — sitting tight is the play.`}</span></div>`;
+    bindDoneButtons("today-plan", loadTodayPlan);  // TP/SL "Log sell" buttons live in coldHtml
     return;
   }
   el.innerHTML = coldHtml + actions.map(r => `<div class="plan-item">
@@ -606,7 +705,7 @@ function recCard(r) {
     : "";
   const flagRow = (r.flags || []).length
     ? `<div class="flag-row">${r.flags.map(fl =>
-        `<span class="flag-chip ${fl.kind === "cold" ? "flag-cold" : "flag-hot"}">${fl.kind === "cold" ? "🔻" : "🔺"} ${esc(fl.text)}</span>`).join("")}</div>`
+        `<span class="flag-chip flag-${esc(fl.kind)}">${FLAG_ICONS[fl.kind] || "•"} ${esc(fl.text)}</span>`).join("")}</div>`
     : "";
   return `<div class="rec-card">
     <div class="sig-head">
@@ -625,13 +724,17 @@ function recCard(r) {
   </div>`;
 }
 
+const FLAG_ICONS = { hot: "🔺", cold: "🔻", tp: "🎯", sl: "🛑" };
+
 function moverChip(r) {
-  const cold = (r.flags || []).some(f => f.kind === "cold");
-  return `<div class="mover-chip ${cold ? "mover-cold" : "mover-hot"}">
+  // border color takes the most decisive flag: your own plan first
+  const kinds = (r.flags || []).map(f => f.kind);
+  const primary = ["sl", "tp", "cold", "hot"].find(k => kinds.includes(k)) || "hot";
+  return `<div class="mover-chip mover-${primary}">
     <div class="mover-top">${r.image ? `<img src="${esc(r.image)}">` : ""}<b>${esc((r.symbol || r.name || "").toUpperCase())}</b>
       <span class="muted">${fmtMoney(r.price)}</span></div>
     <div class="mover-flags">${(r.flags || []).map(f =>
-      `<span>${f.kind === "cold" ? "🔻" : "🔺"} ${esc(f.text)}</span>`).join("")}</div>
+      `<span>${FLAG_ICONS[f.kind] || "•"} ${esc(f.text)}</span>`).join("")}</div>
   </div>`;
 }
 
@@ -760,6 +863,7 @@ async function loadPortfolio() {
         <td class="muted">${h.qty > 1e-9 ? "still holding " + fmtQty(h.qty) : "closed"}</td>
       </tr>`).join("") + "</tbody>"
     : '<tr><td class="empty-note">Sell something to see realized profit/loss here.</td></tr>';
+  renderTradeStats(rows, p.summary);
 
   fillAssetCombo(txCombo);
   const budgetEl = document.getElementById("wallet-budget");
@@ -775,6 +879,39 @@ async function loadPortfolio() {
     d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
     tsEl.value = d.toISOString().slice(0, 16);
   }
+}
+
+// Honest feedback for the paper trader: what does your record actually say?
+// "Trades" = positions with realized P/L (closed, or partly sold).
+function renderTradeStats(rows, summary) {
+  const el = document.getElementById("trade-stats");
+  const outcomes = rows.filter(h => Math.abs(h.realized) > 0.005);
+  if (!outcomes.length) {
+    el.innerHTML = '<div class="empty-note">Close a trade to start your record.</div>';
+    return;
+  }
+  const wins = outcomes.filter(h => h.realized > 0);
+  const losses = outcomes.filter(h => h.realized <= 0);
+  const grossWin = wins.reduce((s, h) => s + h.realized, 0);
+  const grossLoss = Math.abs(losses.reduce((s, h) => s + h.realized, 0));
+  const best = outcomes.reduce((a, b) => (a.realized > b.realized ? a : b));
+  const worst = outcomes.reduce((a, b) => (a.realized < b.realized ? a : b));
+  const pf = grossLoss > 0.005 ? (grossWin / grossLoss) : null;
+  const stats = [
+    ["Trades w/ outcome", outcomes.length],
+    ["Win rate", `${(wins.length / outcomes.length * 100).toFixed(0)}%`],
+    ["Avg win", wins.length ? fmtMoney(grossWin / wins.length) : "—"],
+    ["Avg loss", losses.length ? fmtMoney(grossLoss / losses.length) : "—"],
+    ["Profit factor", pf === null ? "∞" : pf.toFixed(2)],
+    ["Best", `${esc(best.symbol || best.name)} ${moneySpan(best.realized)}`],
+    ["Worst", `${esc(worst.symbol || worst.name)} ${moneySpan(worst.realized)}`],
+    ["Fees paid", fmtMoney(summary.fees || 0)],
+  ];
+  el.innerHTML = stats.map(x =>
+    `<div class="mini-stat"><span>${x[0]}</span><b>${x[1]}</b></div>`).join("") +
+    (pf !== null && pf < 1
+      ? '<div class="small-note muted" style="width:100%">Profit factor under 1 means losses outweigh wins so far — normal while learning. The stats sharpen as your trade count grows.</div>'
+      : "");
 }
 
 async function ensureWatch() {

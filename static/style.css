@@ -207,6 +207,20 @@ tbody tr:hover { background: var(--panel-2); }
 .flag-chip { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 20px; }
 .flag-chip.flag-cold { background: rgba(239,68,68,.13); color: #fca5a5; }
 .flag-chip.flag-hot { background: rgba(34,197,94,.13); color: #86efac; }
+.flag-chip.flag-tp { background: rgba(52,211,153,.16); color: #34d399; }
+.flag-chip.flag-sl { background: rgba(239,68,68,.2); color: #f87171; }
+.mover-chip.mover-tp { border-left-color: #34d399; }
+.mover-chip.mover-sl { border-left-color: var(--red); }
+
+/* ---- TP/SL plan (paper-trading discipline) ---- */
+.tgt-btn.plain { background: none; border: none; padding: 0; cursor: pointer; display: inline-flex; gap: 4px; }
+.tgt-chip {
+  font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 20px;
+  background: var(--panel-2); border: 1px solid var(--border); color: var(--muted);
+}
+.tgt-chip.tgt-hit-tp { background: rgba(52,211,153,.18); border-color: #34d399; color: #34d399; }
+.tgt-chip.tgt-hit-sl { background: rgba(239,68,68,.2); border-color: var(--red); color: #f87171; }
+.tgt-calc { min-height: 16px; margin: 2px 0 8px; }
 
 .gl-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 12px; }
 .gl-grid.panel-pad { margin: 0 0 16px; }

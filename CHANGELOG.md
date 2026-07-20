@@ -117,7 +117,11 @@ Web-only items are marked **(web)**.
 ### Changed
 - Cut background CoinGecko usage by ~90% (from ~2–3k calls/day to under ~200) to stay well within the free-tier monthly limit. Crypto price history is now taken from data the price call already returns instead of a second per-coin call, and the refresh timers were relaxed (crypto prices update roughly every 10 minutes). Signals and charts are unaffected.
 
-## [1.9.0] — 2026-07-12 — New database home
+## [1.10.0] — 2026-07-20 — Trade like you mean it: TP/SL plans, notes & stats
+### Added
+- **🎯 Take-profit / 🛑 stop-loss plans** on every position: click **Plan** in the Dashboard's Holdings table to set your exit prices (with live risk-to-reward math as you type). When a level is crossed, the position lights up across the app — Hot & Cold strip, advisor cards, and a **"🎯 TARGET HIT / 🛑 STOP HIT"** line at the top of Today's Plan with a one-click **Log sell**. The tracker never trades for you — it tells you when *your own plan* says act, and the call stays yours.
+- **📝 Position notes** — jot *why* you bought right on the plan. Future-you reviewing a trade will thank past-you.
+- **📊 Your Trading Stats** on the Portfolio tab: win rate, average win vs loss, profit factor, best & worst trades, and total fees — honest feedback from your own record, whether you're paper trading or logging real trades.
 ### Changed
 - Moved the database from Neon to **Supabase (Singapore)** — same city as the app server. A full quota audit showed Neon's free plan meters how many hours the database engine runs (100/month), which an always-on tracker burns through in ~16 days; Supabase's free instance is built to run 24/7 with no such meter. All data (every transaction, watchlist, wallet and setting — 76k rows) was copied and verified row-for-row before the switch. The temporary signal-refresh slowdown from the emergency throttle is reverted.
 

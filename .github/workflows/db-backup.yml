@@ -1,0 +1,46 @@
+name: Weekly DB backup
+
+# Supabase's free plan has no automated backups, so this dumps the whole
+# database weekly, encrypts it (the repo is public - artifacts must never
+# contain raw user data), and stores it as a workflow artifact for 90 days.
+# Decrypt locally with:
+#   openssl enc -d -aes-256-cbc -pbkdf2 -pass env:BACKUP_PASSPHRASE -in backup.sql.enc -out backup.sql
+# (BACKUP_PASSPHRASE lives in asset-tracker-web/.env on the owner's machine.)
+
+on:
+  schedule:
+    - cron: "0 18 * * 0"   # Sundays 18:00 UTC = 2:00 AM Monday Manila
+  workflow_dispatch:
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install Postgres 17 client
+        run: |
+          sudo sh -c 'echo "deb https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/pgdg.gpg
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client-17
+
+      - name: Dump database (session pooler, IPv4)
+        env:
+          DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          pg_dump "$DB_URL" --no-owner --no-privileges --quote-all-identifiers -f backup.sql
+          echo "dump size: $(du -h backup.sql | cut -f1)"
+          grep -c 'CREATE TABLE' backup.sql
+
+      - name: Encrypt dump
+        env:
+          BACKUP_PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
+        run: |
+          openssl enc -aes-256-cbc -pbkdf2 -pass env:BACKUP_PASSPHRASE -in backup.sql -out backup.sql.enc
+          rm backup.sql
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: db-backup-${{ github.run_id }}
+          path: backup.sql.enc
+          retention-days: 90

@@ -106,6 +106,16 @@ CREATE TABLE IF NOT EXISTS wallets (
     budget DOUBLE PRECISION,
     PRIMARY KEY (user_id, market)
 );
+CREATE TABLE IF NOT EXISTS targets (
+    user_id INTEGER NOT NULL,
+    market TEXT NOT NULL,
+    asset_id TEXT NOT NULL,
+    tp_price DOUBLE PRECISION,
+    sl_price DOUBLE PRECISION,
+    note TEXT,
+    updated TEXT,
+    PRIMARY KEY (user_id, market, asset_id)
+);
 CREATE TABLE IF NOT EXISTS kv (
     key TEXT PRIMARY KEY,
     value TEXT
