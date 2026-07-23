@@ -117,6 +117,10 @@ Web-only items are marked **(web)**.
 ### Changed
 - Cut background CoinGecko usage by ~90% (from ~2–3k calls/day to under ~200) to stay well within the free-tier monthly limit. Crypto price history is now taken from data the price call already returns instead of a second per-coin call, and the refresh timers were relaxed (crypto prices update roughly every 10 minutes). Signals and charts are unaffected.
 
+## [1.10.2] — 2026-07-21 — Suggestions first
+### Changed
+- The Dashboard's **Plan** column now leads with the advisor's **suggested TP/SL** for every position (shown as dashed chips) — you see the AI's numbers without clicking anything. Click them to adopt the suggestion as your own plan (the editor comes pre-filled — just hit Save) or adjust first. Your saved plan replaces the suggestion in the column.
+
 ## [1.10.1] — 2026-07-21 — TP/SL reviewed & hardened
 ### Fixed
 - An independent 20-agent review of the TP/SL feature confirmed 16 issues, all fixed before launch. Highlights: plan-triggered **Log sell** now sells your exact position quantity (no rounding dust or overselling from stale numbers); stop/target hits **stay visible while the market is closed** and can be dismissed for the day ("letting it run" is a valid call); the advisor never says BUY MORE on a position whose own stop has tripped — your plan outranks its opinion; tiny-price coins display properly; malformed prices can't break the dashboard; backup encryption hardened; trading stats are honest about small sample sizes.

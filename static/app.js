@@ -384,8 +384,13 @@ async function loadHeader() {
 /* --------------------------------------------- take-profit / stop-loss plan */
 
 function planCell(h) {
-  if (!h.tp_price && !h.sl_price && !h.note)
+  if (!h.tp_price && !h.sl_price && !h.note) {
+    // no personal plan yet: lead with the AI's style-tuned suggestion
+    if (h.sugg_tp) return `<button class="tgt-btn plain" data-tgt="${esc(h.asset_id)}"
+        title="Suggested for your trading style (+${h.sugg_tp_pct}% / −${h.sugg_sl_pct}%, risk:reward 1:2) — click to adopt or adjust it">
+      <span class="tgt-chip tgt-sugg">🎯 ${fmtMoney(h.sugg_tp)}</span><span class="tgt-chip tgt-sugg">🛑 ${fmtMoney(h.sugg_sl)}</span></button>`;
     return `<button class="mini-btn tgt-btn" data-tgt="${esc(h.asset_id)}" title="Set a take-profit / stop-loss plan">＋ plan</button>`;
+  }
   const bits = [];
   if (h.tp_price) bits.push(`<span class="tgt-chip ${h.tp_hit ? "tgt-hit-tp" : ""}"
       title="Take-profit at ${fmtMoney(h.tp_price)}">🎯 ${h.tp_hit ? "HIT" : (h.tp_dist_pct != null ? "+" + h.tp_dist_pct.toFixed(0) + "%" : "")}</span>`);
@@ -410,9 +415,13 @@ function showTargets(h) {
       🛑 ${fmtMoney(h.sugg_sl)} <span class="neg">(−${h.sugg_sl_pct}%)</span>
       <button class="mini-btn" id="tgt-use-sugg" type="button">Use suggested</button></div>` : ""}
     <label class="acct-field">🎯 Take-profit price — sell into strength here
-      <input type="number" step="any" min="0" id="tgt-tp" value="${h.tp_price ?? ""}" placeholder="${h.sugg_tp ? "e.g. " + h.sugg_tp.toPrecision(4) : ""}"></label>
+      <input type="number" step="any" min="0" id="tgt-tp"
+        value="${h.tp_price ?? (!h.sl_price && h.sugg_tp ? h.sugg_tp.toPrecision(6) : "")}"
+        placeholder="${h.sugg_tp ? "e.g. " + h.sugg_tp.toPrecision(4) : ""}"></label>
     <label class="acct-field">🛑 Stop-loss price — cut the loss here
-      <input type="number" step="any" min="0" id="tgt-sl" value="${h.sl_price ?? ""}" placeholder="${h.sugg_sl ? "e.g. " + h.sugg_sl.toPrecision(4) : ""}"></label>
+      <input type="number" step="any" min="0" id="tgt-sl"
+        value="${h.sl_price ?? (!h.tp_price && h.sugg_sl ? h.sugg_sl.toPrecision(6) : "")}"
+        placeholder="${h.sugg_sl ? "e.g. " + h.sugg_sl.toPrecision(4) : ""}"></label>
     <div class="tgt-calc muted small-note" id="tgt-calc"></div>
     <label class="acct-field">📝 Why this trade? (your future self will thank you)
       <input type="text" id="tgt-note" maxlength="300" value="${esc(h.note || "")}" placeholder="e.g. breakout above resistance, earnings play…"></label>
