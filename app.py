@@ -658,7 +658,7 @@ def global_history_tick():
         snap = db.kv_get("global:signals", None) or {"updated": 0, "data": {}}
         if stalest not in snap.get("data", {}):
             merged = dict(snap.get("data", {}))
-            merged[stalest] = sig.compute([p for _, p in pts])
+            merged[stalest] = sig.compute([p for _, p in pts], bars_per_day=BARS_PER_DAY["global"])
             db.kv_set("global:signals", {"updated": now_ms(), "data": merged})
 
 
@@ -730,11 +730,15 @@ def fetch_news(market):
         _news_cache.pop(market, None)
 
 
+BARS_PER_DAY = {"crypto": 24.0, "pse": 1.5, "global": 7.0}  # stored closes per day
+
+
 def recompute_signals(market):
     pm, _ = price_map(market)
     # Indicators only use the last ~7 days of closes; reading a bounded window
-    # instead of full history keeps Neon's transfer quota intact.
+    # instead of full history keeps the DB transfer quota intact.
     since = now_ms() - config.SIGNAL_WINDOW_DAYS[market] * 86400000
+    bpd = BARS_PER_DAY[market]
     out = {}
     for aid in tracked_ids_all_users(market):
         rows = db.conn().execute(
@@ -742,7 +746,7 @@ def recompute_signals(market):
             " AND ts>=%s ORDER BY ts",
             (market, aid, since)).fetchall()
         closes = [r["price"] for r in rows]
-        out[aid] = sig.compute(closes, (pm.get(aid) or {}).get("chg_24h"))
+        out[aid] = sig.compute(closes, (pm.get(aid) or {}).get("chg_24h"), bars_per_day=bpd)
     db.kv_set(f"{market}:signals", {"updated": now_ms(), "data": out})
 
 
@@ -847,8 +851,13 @@ def portfolio_state(market, user):
         "SELECT * FROM targets WHERE user_id=%s AND market=%s", (user, market)).fetchall()}
     srow = db.conn().execute(
         "SELECT trading_style FROM users WHERE id=%s", (user,)).fetchone()
-    sp = adv.STYLE_PARAMS.get((srow or {}).get("trading_style") or "swing",
-                              adv.STYLE_PARAMS["swing"])
+    style = (srow or {}).get("trading_style") or "swing"
+    held_ids = [aid for aid, p in pos.items() if p["qty"] > 1e-9]
+    wk52 = {}
+    if market != "crypto" and held_ids:
+        wk52 = {r["asset_id"]: r["wk52_high"] for r in db.conn().execute(
+            "SELECT asset_id, wk52_high FROM fundamentals"
+            " WHERE market=%s AND asset_id = ANY(%s)", (market, held_ids)).fetchall()}
     holdings, closed = [], []
     tot_value = tot_cost = tot_realized = tot_change24 = 0.0
     for aid, p in pos.items():
@@ -876,15 +885,19 @@ def portfolio_state(market, user):
         # whichever level is closest; unset plans sink to the bottom
         dists = [abs(x) for x in (tp_dist, sl_dist) if x is not None]
         plan_sort = 999 if (hit_tp or hit_sl) else (-min(dists) if dists else None)
+        sgn = signals_data.get(aid)
+        # data-deduced suggestion: the asset's own volatility + structure,
+        # scaled to the user's style horizon (anchored on the current price)
+        sugg = adv.suggest_plan(price, style, prim=(sgn or {}).get("plan"),
+                                wk52_high=wk52.get(aid)) if price else None
         holdings.append({**p, "symbol": m.get("symbol", ""), "image": m.get("image"),
                          "price": price, "avg_buy": p["cost"] / p["qty"], "value": value,
-                         "chg_24h": chg24, "signal": signals_data.get(aid),
+                         "chg_24h": chg24, "signal": sgn,
                          "tp_price": tp, "sl_price": sl, "note": t.get("note"),
-                         # style-tuned starting suggestion, anchored on the
-                         # current price (a plan is about the future from here)
-                         "sugg_tp": price * (1 + sp["tp_pct"] / 100.0) if price else None,
-                         "sugg_sl": price * (1 - sp["tp_pct"] / 200.0) if price else None,
-                         "sugg_tp_pct": sp["tp_pct"], "sugg_sl_pct": sp["tp_pct"] / 2.0,
+                         "sugg_tp": sugg and sugg["tp"], "sugg_sl": sugg and sugg["sl"],
+                         "sugg_tp_pct": sugg and sugg["tp_pct"],
+                         "sugg_sl_pct": sugg and sugg["sl_pct"],
+                         "sugg_rr": sugg and sugg["rr"], "sugg_why": sugg and sugg["why"],
                          "tp_dist_pct": tp_dist, "sl_dist_pct": sl_dist,
                          "plan_sort": plan_sort,
                          "tp_hit": hit_tp, "sl_hit": hit_sl,

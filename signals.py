@@ -61,7 +61,49 @@ def macd(closes):
     return line[-1], sig[-1], line[-1] - sig[-1]
 
 
-def compute(closes, chg_24h=None):
+def plan_primitives(closes, bars_per_day=24.0):
+    """Per-asset facts the TP/SL suggestion engine builds on, derived from the
+    asset's own price history:
+      vol_day    - typical 1-day move, % (std of per-bar log-ish returns,
+                   scaled by sqrt(bars/day))
+      support    - nearest meaningful swing low BELOW the current price
+      resistance - nearest meaningful swing high ABOVE the current price
+      range_low/high - window extremes, the fallback structure
+    Swing points = local extremes that held for a window of w bars each side.
+    Returns None with fewer than 24 closes (not enough to say anything)."""
+    n = len(closes)
+    if n < 24:
+        return None
+    price = closes[-1]
+    if price <= 0:
+        return None
+    rets = [(b - a) / a for a, b in zip(closes[:-1], closes[1:]) if a > 0]
+    if not rets:
+        return None
+    mean = sum(rets) / len(rets)
+    var = sum((r - mean) ** 2 for r in rets) / max(1, len(rets) - 1)
+    vol_day = (var ** 0.5) * (bars_per_day ** 0.5) * 100
+    w = max(2, n // 40)
+    swing_lows, swing_highs = [], []
+    for i in range(w, n - w):
+        seg = closes[i - w:i + w + 1]
+        if closes[i] == min(seg):
+            swing_lows.append(closes[i])
+        if closes[i] == max(seg):
+            swing_highs.append(closes[i])
+    support = max((s for s in swing_lows if s < price), default=None)
+    resistance = min((s for s in swing_highs if s > price), default=None)
+    return {
+        "vol_day": round(vol_day, 4),
+        "support": support,
+        "resistance": resistance,
+        "range_low": min(closes),
+        "range_high": max(closes),
+        "bars": n,
+    }
+
+
+def compute(closes, chg_24h=None, bars_per_day=24.0):
     """closes: hourly closing prices, oldest first."""
     if len(closes) < 48:
         return {
@@ -69,6 +111,7 @@ def compute(closes, chg_24h=None):
             "score": 0,
             "reasons": ["Still collecting hourly price history for this coin."],
             "indicators": {},
+            "plan": plan_primitives(closes, bars_per_day),
         }
 
     price = closes[-1]
@@ -144,4 +187,5 @@ def compute(closes, chg_24h=None):
     else:
         action = "HOLD"
 
-    return {"action": action, "score": score, "reasons": reasons, "indicators": ind}
+    return {"action": action, "score": score, "reasons": reasons, "indicators": ind,
+            "plan": plan_primitives(closes, bars_per_day)}

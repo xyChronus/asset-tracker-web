@@ -225,6 +225,7 @@ tbody tr:hover { background: var(--panel-2); }
 .tgt-calc { min-height: 16px; margin: 2px 0 8px; }
 .sugg-plan { font-size: 12px; margin: 3px 0 6px; }
 .sugg-plan .mini-btn { margin-left: 6px; padding: 1px 8px; font-size: 11px; }
+.sugg-why { font-size: 11px; opacity: .8; font-style: italic; }
 
 .gl-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 12px; }
 .gl-grid.panel-pad { margin: 0 0 16px; }

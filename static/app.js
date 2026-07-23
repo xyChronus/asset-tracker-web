@@ -387,7 +387,7 @@ function planCell(h) {
   if (!h.tp_price && !h.sl_price && !h.note) {
     // no personal plan yet: lead with the AI's style-tuned suggestion
     if (h.sugg_tp) return `<button class="tgt-btn plain" data-tgt="${esc(h.asset_id)}"
-        title="Suggested for your trading style (+${h.sugg_tp_pct}% / −${h.sugg_sl_pct}%, risk:reward 1:2) — click to adopt or adjust it">
+        title="Suggested (+${h.sugg_tp_pct}% / −${h.sugg_sl_pct}%, risk:reward 1:${h.sugg_rr}): ${esc(h.sugg_why || "")} — click to adopt or adjust">
       <span class="tgt-chip tgt-sugg">🎯 ${fmtMoney(h.sugg_tp)}</span><span class="tgt-chip tgt-sugg">🛑 ${fmtMoney(h.sugg_sl)}</span></button>`;
     return `<button class="mini-btn tgt-btn" data-tgt="${esc(h.asset_id)}" title="Set a take-profit / stop-loss plan">＋ plan</button>`;
   }
@@ -410,10 +410,11 @@ function showTargets(h) {
     <div class="panel-head"><h3>🎯 Plan for ${esc(h.name)}</h3><button class="mini-btn" id="tgt-close">Close</button></div>
     <p class="muted small-note">Decide your exits <b>before</b> emotions do. The tracker flags when a level
       is crossed — logging the trade stays your call. Now: ${fmtMoney(h.price)} · your avg buy: ${fmtMoney(h.avg_buy)}.</p>
-    ${h.sugg_tp ? `<div class="sugg-plan muted small-note">Suggested for your ${esc(styleLabel(state.style))} style:
+    ${h.sugg_tp ? `<div class="sugg-plan muted small-note">Suggested:
       🎯 ${fmtMoney(h.sugg_tp)} <span class="pos">(+${h.sugg_tp_pct}%)</span> ·
-      🛑 ${fmtMoney(h.sugg_sl)} <span class="neg">(−${h.sugg_sl_pct}%)</span>
-      <button class="mini-btn" id="tgt-use-sugg" type="button">Use suggested</button></div>` : ""}
+      🛑 ${fmtMoney(h.sugg_sl)} <span class="neg">(−${h.sugg_sl_pct}%)</span> · risk:reward 1:${h.sugg_rr}
+      <button class="mini-btn" id="tgt-use-sugg" type="button">Use suggested</button>
+      <br><span class="sugg-why">${esc(h.sugg_why || "")}</span></div>` : ""}
     <label class="acct-field">🎯 Take-profit price — sell into strength here
       <input type="number" step="any" min="0" id="tgt-tp"
         value="${h.tp_price ?? (!h.sl_price && h.sugg_tp ? h.sugg_tp.toPrecision(6) : "")}"
@@ -724,9 +725,9 @@ function recCard(r) {
     : "";
   const sp = r.suggested_plan;
   const planLine = sp
-    ? `<div class="sugg-plan muted" title="A ${esc(styleLabel(state.style))}-style starting point (risk:reward 1:2) — set your own in the Plan column of the Dashboard">
+    ? `<div class="sugg-plan muted" title="${esc(sp.why || "")} — set your own in the Plan column of the Dashboard">
         Starting plan: 🎯 ${fmtMoney(sp.tp)} <span class="pos">(+${sp.tp_pct}%)</span> ·
-        🛑 ${fmtMoney(sp.sl)} <span class="neg">(−${sp.sl_pct}%)</span> — a starting point, not a rule</div>`
+        🛑 ${fmtMoney(sp.sl)} <span class="neg">(−${sp.sl_pct}%)</span> · r:r 1:${sp.rr} — a starting point, not a rule</div>`
     : "";
   const holdLine = h
     ? `<div class="rec-holding muted">You hold ${fmtMoney(h.value)} (${h.alloc_pct}% of portfolio${h.unrealized_pct != null ? ", " + (h.unrealized_pct >= 0 ? "up " : "down ") + Math.abs(h.unrealized_pct).toFixed(0) + "%" : ""})</div>`

@@ -258,6 +258,96 @@ def _fmt_price(v):
     return s if s[-1] != "." else s + "0"
 
 
+# ------------------------------------------------- suggested TP/SL engine
+# Levels are DEDUCED per asset instead of flat style percentages:
+#   1. Volatility base: the asset's own typical daily move, scaled to the
+#      style's holding horizon (sqrt-of-time), sets the stop distance; the
+#      target starts at 2x that (risk:reward 1:2).
+#   2. Structure snapping: if a real swing-low support sits near the stop,
+#      tuck the stop just below it (stops belong behind support, not in the
+#      middle of nowhere); likewise the target snaps to a nearby swing-high
+#      resistance or the 52-week high (stocks).
+#   3. Style guardrails clamp the result so no suggestion is ever absurd.
+# Every suggestion carries a plain-language "why".
+PLAN_STYLE = {
+    #        horizon(d)  sl%   min-max     tp% min-max
+    "scalper": {"h": 0.5,  "sl": (1.5, 6.0),  "tp": (3.0, 12.0)},
+    "day":     {"h": 1.5,  "sl": (2.0, 9.0),  "tp": (4.0, 18.0)},
+    "swing":   {"h": 10.0, "sl": (5.0, 18.0), "tp": (10.0, 36.0)},
+    "long":    {"h": 45.0, "sl": (10.0, 32.0), "tp": (20.0, 70.0)},
+}
+_SL_Z = 1.4          # stop sits ~1.4 typical horizon-moves away
+_SNAP_GAP = 0.25     # snapped levels sit this fraction of a daily move beyond the structure
+
+
+def suggest_plan(price, style, prim=None, wk52_high=None, style_label=None):
+    """Data-deduced TP/SL suggestion. Returns
+    {tp, sl, tp_pct, sl_pct, rr, why} or None (no price)."""
+    if not price or price <= 0:
+        return None
+    ps = PLAN_STYLE.get(style) or PLAN_STYLE[DEFAULT_STYLE]
+    sp = STYLE_PARAMS.get(style) or STYLE_PARAMS[DEFAULT_STYLE]
+    label = style_label or sp["label"]
+    vol = (prim or {}).get("vol_day")
+    why = []
+
+    if vol and vol > 0.05:
+        sl_pct = _SL_Z * vol * (ps["h"] ** 0.5)
+        base = f"sized to this asset's own volatility (typical day: ±{vol:.1f}%)"
+    else:
+        sl_pct = sp["tp_pct"] / 2.0
+        base = f"style default - not enough price history yet to measure this asset"
+    tp_pct = 2.0 * sl_pct
+
+    # structure snapping
+    sl_price = price * (1 - sl_pct / 100)
+    support = (prim or {}).get("support")
+    snapped_sl = None
+    if support and vol and 0 < price - support < price * sl_pct / 100 * 1.8:
+        cand = support * (1 - _SNAP_GAP * vol / 100)
+        cand_pct = (1 - cand / price) * 100
+        # only snap when the snapped stop still keeps a meaningful distance
+        # for this style - a support 1% away is noise, not structure
+        if cand < price * 0.995 and cand_pct >= ps["sl"][0]:
+            snapped_sl = cand
+    if snapped_sl:
+        sl_price = snapped_sl
+        sl_pct = (1 - sl_price / price) * 100
+        why.append("stop tucked below the nearest support level")
+
+    tp_price = price * (1 + tp_pct / 100)
+    res_cands = [r for r in [(prim or {}).get("resistance"), wk52_high]
+                 if r and r > price * 1.01]
+    snapped_tp = None
+    if res_cands and vol:
+        res = min(res_cands)
+        if price * (1 + tp_pct / 100 * 0.4) < res < price * (1 + tp_pct / 100 * 2.0):
+            snapped_tp = res * (1 - _SNAP_GAP * vol / 100)
+    if snapped_tp and snapped_tp > price * 1.01:
+        tp_price = snapped_tp
+        tp_pct = (tp_price / price - 1) * 100
+        which = "the 52-week high" if wk52_high and abs(min(res_cands) - wk52_high) < 1e-9 \
+            else "the nearest resistance level"
+        why.append(f"target set just under {which}")
+
+    # guardrails, then keep risk:reward honest (>= 1.3 or say so)
+    sl_pct = min(max(sl_pct, ps["sl"][0]), ps["sl"][1])
+    tp_pct = min(max(tp_pct, ps["tp"][0]), ps["tp"][1])
+    if tp_pct / sl_pct < 1.3:
+        tp_pct = min(1.5 * sl_pct, ps["tp"][1])
+        why.append("target widened to keep the reward worth the risk")
+    rr = tp_pct / sl_pct
+    why.insert(0, f"{label} horizon, {base}")
+    return {
+        "tp": price * (1 + tp_pct / 100),
+        "sl": price * (1 - sl_pct / 100),
+        "tp_pct": round(tp_pct, 1),
+        "sl_pct": round(sl_pct, 1),
+        "rr": round(rr, 1),
+        "why": "; ".join(why),
+    }
+
+
 def build(assets, signals, portfolio, news_items, market, now_ms,
           currency="$", fundamentals=None, max_ideas=None, style=DEFAULT_STYLE,
           targets=None):
@@ -469,18 +559,14 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
             reasons.insert(0, "Your own stop/target has triggered on this position - "
                               "resolve your plan first before adding more.")
 
-        # a style-tuned starting plan for buy ideas: TP at the style's own
-        # take-profit threshold, SL at half that (risk:reward 1:2). Shown as
-        # "our suggested starting point" - the user edits or ignores it.
+        # a data-deduced starting plan for buy ideas: the asset's own
+        # volatility and structure, scaled to the user's style horizon.
+        # Shown as "our suggested starting point" - the user edits or ignores it.
         suggested_plan = None
         if action in ("BUY", "BUY MORE") and price:
-            tp_pct = sp["tp_pct"]
-            suggested_plan = {
-                "tp": price * (1 + tp_pct / 100.0),
-                "sl": price * (1 - tp_pct / 200.0),
-                "tp_pct": tp_pct,
-                "sl_pct": tp_pct / 2.0,
-            }
+            suggested_plan = suggest_plan(
+                price, style, prim=sig.get("plan"),
+                wk52_high=(f or {}).get("wk52_high"), style_label=sp["label"])
 
         recs.append({
             "asset_id": aid,
