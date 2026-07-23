@@ -294,47 +294,52 @@ def suggest_plan(price, style, prim=None, wk52_high=None, style_label=None):
     if vol and vol > 0.05:
         sl_pct = _SL_Z * vol * (ps["h"] ** 0.5)
         base = f"sized to this asset's own volatility (typical day: ±{vol:.1f}%)"
+    elif vol is not None:
+        # history exists and was measured - the asset just barely moves
+        # (stablecoins, ultra-thin names): tightest stop for the style
+        sl_pct = ps["sl"][0]
+        base = (f"this asset barely moves (typical day: ±{vol:.2f}%) - "
+                "using your style's tightest levels")
     else:
         sl_pct = sp["tp_pct"] / 2.0
-        base = f"style default - not enough price history yet to measure this asset"
-    tp_pct = 2.0 * sl_pct
+        base = "style default - not enough price history yet to measure this asset"
+    # clamp the volatility base into the style band BEFORE structure snapping,
+    # so "near the stop" is judged from a sane distance and a snap that the
+    # guardrails would move can never be accepted (the why must stay true)
+    sl_pct = min(max(sl_pct, ps["sl"][0]), ps["sl"][1])
+    tp_pct = min(max(2.0 * sl_pct, ps["tp"][0]), ps["tp"][1])
 
-    # structure snapping
-    sl_price = price * (1 - sl_pct / 100)
+    # structure snapping - accepted only when the snapped level itself lies
+    # inside the style band, so later clamps can never un-snap it
     support = (prim or {}).get("support")
-    snapped_sl = None
     if support and vol and 0 < price - support < price * sl_pct / 100 * 1.8:
         cand = support * (1 - _SNAP_GAP * vol / 100)
         cand_pct = (1 - cand / price) * 100
-        # only snap when the snapped stop still keeps a meaningful distance
-        # for this style - a support 1% away is noise, not structure
-        if cand < price * 0.995 and cand_pct >= ps["sl"][0]:
-            snapped_sl = cand
-    if snapped_sl:
-        sl_price = snapped_sl
-        sl_pct = (1 - sl_price / price) * 100
-        why.append("stop tucked below the nearest support level")
+        if cand < price * 0.995 and ps["sl"][0] <= cand_pct <= ps["sl"][1]:
+            sl_pct = cand_pct
+            why.append("stop tucked below the nearest support level")
 
-    tp_price = price * (1 + tp_pct / 100)
     res_cands = [r for r in [(prim or {}).get("resistance"), wk52_high]
                  if r and r > price * 1.01]
-    snapped_tp = None
+    tp_snapped = False
     if res_cands and vol:
         res = min(res_cands)
         if price * (1 + tp_pct / 100 * 0.4) < res < price * (1 + tp_pct / 100 * 2.0):
-            snapped_tp = res * (1 - _SNAP_GAP * vol / 100)
-    if snapped_tp and snapped_tp > price * 1.01:
-        tp_price = snapped_tp
-        tp_pct = (tp_price / price - 1) * 100
-        which = "the 52-week high" if wk52_high and abs(min(res_cands) - wk52_high) < 1e-9 \
-            else "the nearest resistance level"
-        why.append(f"target set just under {which}")
+            cand = res * (1 - _SNAP_GAP * vol / 100)
+            cand_pct = (cand / price - 1) * 100
+            if cand > price * 1.01 and ps["tp"][0] <= cand_pct <= ps["tp"][1]:
+                tp_pct = cand_pct
+                tp_snapped = True
+                which = ("the 52-week high" if wk52_high is not None and res == wk52_high
+                         else "the nearest resistance level")
+                why.append(f"target set just under {which}")
 
-    # guardrails, then keep risk:reward honest (>= 1.3 or say so)
-    sl_pct = min(max(sl_pct, ps["sl"][0]), ps["sl"][1])
-    tp_pct = min(max(tp_pct, ps["tp"][0]), ps["tp"][1])
+    # keep risk:reward honest (>= 1.3); if this widens a snapped target, the
+    # snap rationale no longer holds - drop it rather than mislead
     if tp_pct / sl_pct < 1.3:
         tp_pct = min(1.5 * sl_pct, ps["tp"][1])
+        if tp_snapped:
+            why = [w for w in why if not w.startswith("target set just under")]
         why.append("target widened to keep the reward worth the risk")
     rr = tp_pct / sl_pct
     why.insert(0, f"{label} horizon, {base}")

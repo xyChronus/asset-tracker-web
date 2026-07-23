@@ -614,11 +614,14 @@ def global_fetch_quotes():
     if not data:
         return
     db.kv_set("global:quotes", {"updated": now_ms(), "data": data})
-    hour = now_ms() // 3600000 * 3600000
-    db.conn().executemany(
-        "INSERT INTO price_history VALUES ('global',%s,%s,%s)"
-        " ON CONFLICT (market, asset_id, ts) DO UPDATE SET price=EXCLUDED.price",
-        [(s, hour, q["price"]) for s, q in data.items() if q.get("price")])
+    # record history only while the US market trades - overnight/weekend the
+    # quote is a stale echo, and flat echo-bars would dilute measured volatility
+    if market_session("global")[0]:
+        hour = now_ms() // 3600000 * 3600000
+        db.conn().executemany(
+            "INSERT INTO price_history VALUES ('global',%s,%s,%s)"
+            " ON CONFLICT (market, asset_id, ts) DO UPDATE SET price=EXCLUDED.price",
+            [(s, hour, q["price"]) for s, q in data.items() if q.get("price")])
     # dict() copy: kv_get returns the cache-resident object for hot keys -
     # never mutate it before kv_set commits, or a failed write diverges
     # cache from DB until restart
@@ -658,7 +661,9 @@ def global_history_tick():
         snap = db.kv_get("global:signals", None) or {"updated": 0, "data": {}}
         if stalest not in snap.get("data", {}):
             merged = dict(snap.get("data", {}))
-            merged[stalest] = sig.compute([p for _, p in pts], bars_per_day=BARS_PER_DAY["global"])
+            merged[stalest] = sig.compute(
+                [p for _, p in pts], bars_per_day=BARS_PER_DAY["global"],
+                plan_closes=_daily_closes(pts), plan_bars_per_day=1.0)
             db.kv_set("global:signals", {"updated": now_ms(), "data": merged})
 
 
@@ -733,6 +738,21 @@ def fetch_news(market):
 BARS_PER_DAY = {"crypto": 24.0, "pse": 1.5, "global": 7.0}  # stored closes per day
 
 
+def _daily_closes(ts_price_rows):
+    """Resample (ts_ms, price) rows to one close per weekday: the last price of
+    each UTC day, skipping Sat/Sun (only stale quote echoes live there). Makes
+    volatility a true std of daily returns regardless of how backfill bars,
+    intraday bars and closed-market echoes are mixed in the raw series."""
+    by_day = {}
+    for ts, p in ts_price_rows:
+        day = ts // 86400000
+        # 1970-01-01 was a Thursday: (day+3)%7 gives Mon=0..Sun=6; skip Sat/Sun
+        if (day + 3) % 7 >= 5:
+            continue
+        by_day[day] = p  # rows arrive ts-ordered, so last write is the close
+    return [by_day[d] for d in sorted(by_day)]
+
+
 def recompute_signals(market):
     pm, _ = price_map(market)
     # Indicators only use the last ~7 days of closes; reading a bounded window
@@ -742,11 +762,15 @@ def recompute_signals(market):
     out = {}
     for aid in tracked_ids_all_users(market):
         rows = db.conn().execute(
-            "SELECT price FROM price_history WHERE market=%s AND asset_id=%s"
+            "SELECT ts, price FROM price_history WHERE market=%s AND asset_id=%s"
             " AND ts>=%s ORDER BY ts",
             (market, aid, since)).fetchall()
         closes = [r["price"] for r in rows]
-        out[aid] = sig.compute(closes, (pm.get(aid) or {}).get("chg_24h"), bars_per_day=bpd)
+        # stock markets: plan math runs on clean daily closes (crypto is a
+        # uniform 24/7 hourly series already - no resample needed)
+        pc = _daily_closes([(r["ts"], r["price"]) for r in rows]) if market != "crypto" else None
+        out[aid] = sig.compute(closes, (pm.get(aid) or {}).get("chg_24h"), bars_per_day=bpd,
+                               plan_closes=pc, plan_bars_per_day=1.0 if pc is not None else None)
     db.kv_set(f"{market}:signals", {"updated": now_ms(), "data": out})
 
 

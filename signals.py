@@ -77,9 +77,15 @@ def plan_primitives(closes, bars_per_day=24.0):
     price = closes[-1]
     if price <= 0:
         return None
-    rets = [(b - a) / a for a, b in zip(closes[:-1], closes[1:]) if a > 0]
+    rets = [(b - a) / a for a, b in zip(closes[:-1], closes[1:]) if a > 0 and b > 0]
     if not rets:
         return None
+    # winsorize: one split/stock-dividend/bad-tick bar must not poison the
+    # whole window's volatility - cap outliers at 6x the median absolute move
+    med = sorted(abs(r) for r in rets)[len(rets) // 2]
+    if med > 0:
+        cap = 6 * med
+        rets = [max(-cap, min(cap, r)) for r in rets]
     mean = sum(rets) / len(rets)
     var = sum((r - mean) ** 2 for r in rets) / max(1, len(rets) - 1)
     vol_day = (var ** 0.5) * (bars_per_day ** 0.5) * 100
@@ -103,15 +109,21 @@ def plan_primitives(closes, bars_per_day=24.0):
     }
 
 
-def compute(closes, chg_24h=None, bars_per_day=24.0):
-    """closes: hourly closing prices, oldest first."""
+def compute(closes, chg_24h=None, bars_per_day=24.0,
+            plan_closes=None, plan_bars_per_day=None):
+    """closes: hourly closing prices, oldest first.
+    plan_closes: optional separate (e.g. daily-resampled) series for the TP/SL
+    plan primitives - stock markets mix daily backfill bars with intraday bars
+    and closed-market flat bars, which would poison a per-bar volatility."""
+    plan = plan_primitives(plan_closes if plan_closes is not None else closes,
+                           plan_bars_per_day or bars_per_day)
     if len(closes) < 48:
         return {
             "action": "WAIT",
             "score": 0,
             "reasons": ["Still collecting hourly price history for this coin."],
             "indicators": {},
-            "plan": plan_primitives(closes, bars_per_day),
+            "plan": plan,
         }
 
     price = closes[-1]
@@ -188,4 +200,4 @@ def compute(closes, chg_24h=None, bars_per_day=24.0):
         action = "HOLD"
 
     return {"action": action, "score": score, "reasons": reasons, "indicators": ind,
-            "plan": plan_primitives(closes, bars_per_day)}
+            "plan": plan}

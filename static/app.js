@@ -387,7 +387,7 @@ function planCell(h) {
   if (!h.tp_price && !h.sl_price && !h.note) {
     // no personal plan yet: lead with the AI's style-tuned suggestion
     if (h.sugg_tp) return `<button class="tgt-btn plain" data-tgt="${esc(h.asset_id)}"
-        title="Suggested (+${h.sugg_tp_pct}% / −${h.sugg_sl_pct}%, risk:reward 1:${h.sugg_rr}): ${esc(h.sugg_why || "")} — click to adopt or adjust">
+        title="Suggested (+${h.sugg_tp_pct}% / −${h.sugg_sl_pct}%${h.sugg_rr ? ", risk:reward 1:" + h.sugg_rr : ""}): ${esc(h.sugg_why || "")} — click to adopt or adjust">
       <span class="tgt-chip tgt-sugg">🎯 ${fmtMoney(h.sugg_tp)}</span><span class="tgt-chip tgt-sugg">🛑 ${fmtMoney(h.sugg_sl)}</span></button>`;
     return `<button class="mini-btn tgt-btn" data-tgt="${esc(h.asset_id)}" title="Set a take-profit / stop-loss plan">＋ plan</button>`;
   }
@@ -412,7 +412,7 @@ function showTargets(h) {
       is crossed — logging the trade stays your call. Now: ${fmtMoney(h.price)} · your avg buy: ${fmtMoney(h.avg_buy)}.</p>
     ${h.sugg_tp ? `<div class="sugg-plan muted small-note">Suggested:
       🎯 ${fmtMoney(h.sugg_tp)} <span class="pos">(+${h.sugg_tp_pct}%)</span> ·
-      🛑 ${fmtMoney(h.sugg_sl)} <span class="neg">(−${h.sugg_sl_pct}%)</span> · risk:reward 1:${h.sugg_rr}
+      🛑 ${fmtMoney(h.sugg_sl)} <span class="neg">(−${h.sugg_sl_pct}%)</span>${h.sugg_rr ? " · risk:reward 1:" + h.sugg_rr : ""}
       <button class="mini-btn" id="tgt-use-sugg" type="button">Use suggested</button>
       <br><span class="sugg-why">${esc(h.sugg_why || "")}</span></div>` : ""}
     <label class="acct-field">🎯 Take-profit price — sell into strength here
@@ -727,7 +727,7 @@ function recCard(r) {
   const planLine = sp
     ? `<div class="sugg-plan muted" title="${esc(sp.why || "")} — set your own in the Plan column of the Dashboard">
         Starting plan: 🎯 ${fmtMoney(sp.tp)} <span class="pos">(+${sp.tp_pct}%)</span> ·
-        🛑 ${fmtMoney(sp.sl)} <span class="neg">(−${sp.sl_pct}%)</span> · r:r 1:${sp.rr} — a starting point, not a rule</div>`
+        🛑 ${fmtMoney(sp.sl)} <span class="neg">(−${sp.sl_pct}%)</span>${sp.rr ? " · r:r 1:" + sp.rr : ""} — a starting point, not a rule</div>`
     : "";
   const holdLine = h
     ? `<div class="rec-holding muted">You hold ${fmtMoney(h.value)} (${h.alloc_pct}% of portfolio${h.unrealized_pct != null ? ", " + (h.unrealized_pct >= 0 ? "up " : "down ") + Math.abs(h.unrealized_pct).toFixed(0) + "%" : ""})</div>`
