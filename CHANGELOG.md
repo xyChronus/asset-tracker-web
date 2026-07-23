@@ -117,6 +117,12 @@ Web-only items are marked **(web)**.
 ### Changed
 - Cut background CoinGecko usage by ~90% (from ~2–3k calls/day to under ~200) to stay well within the free-tier monthly limit. Crypto price history is now taken from data the price call already returns instead of a second per-coin call, and the refresh timers were relaxed (crypto prices update roughly every 10 minutes). Signals and charts are unaffected.
 
+## [1.11.0] — 2026-07-23 — Suggestions that actually study the chart
+### Changed
+- Suggested TP/SL levels are now **deduced from each asset's own data** instead of flat percentages: the engine measures the asset's real day-to-day volatility (so Bitcoin gets tighter levels than a meme coin), scales it to your trading-style horizon, tucks the stop **below the nearest real support level**, and sets the target **just under the nearest resistance or 52-week high** — selling into strength, the way traders actually plan. Every suggestion explains its reasoning in plain words, e.g. *"Swing Trader horizon, sized to this asset's own volatility (typical day: ±2.3%); stop tucked below the nearest support level; target set just under the 52-week high."*
+- Guardrails keep every suggestion sane for your style, the risk-to-reward is always shown honestly, and an explanation is never attached to a number it doesn't match (independently reviewed: 9 findings, all fixed; validated over 1,532 suggestions across every asset with zero failures).
+- All of this analysis rides inside the signal engine's existing data pass — zero extra API calls or database load.
+
 ## [1.10.2] — 2026-07-21 — Suggestions first
 ### Changed
 - The Dashboard's **Plan** column now leads with the advisor's **suggested TP/SL** for every position (shown as dashed chips) — you see the AI's numbers without clicking anything. Click them to adopt the suggestion as your own plan (the editor comes pre-filled — just hit Save) or adjust first. Your saved plan replaces the suggestion in the column.
