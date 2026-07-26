@@ -553,7 +553,7 @@ async function loadDashboard() {
       th("Day", "chg_24h", "holdings") + th("Value", "value", "holdings") +
       th("Unrealized P/L", "unrealized", "holdings") + th("P/L %", "unrealized_pct", "holdings") +
       th("Signal", "signal.score", "holdings") + th("Plan", "plan_sort", "holdings") +
-      `</tr></thead><tbody>` +
+      `<th></th></tr></thead><tbody>` +
       applySort(p.holdings, "holdings").map(h => `<tr>
         <td><div class="coin-cell">${h.image ? `<img src="${esc(h.image)}">` : ""}<span class="nm">${esc(h.name)}</span><span class="sym">${esc(h.symbol)}</span></div></td>
         <td>${fmtQty(h.qty)}</td>
@@ -565,8 +565,12 @@ async function loadDashboard() {
         <td>${pctSpan(h.unrealized_pct)}</td>
         <td>${sigBadge(h.signal)}${h.signal && h.signal.action !== "WAIT" ? " " + scorePill(h.signal.score) : ""}</td>
         <td>${planCell(h)}</td>
+        <td>${h.qty && h.price ? `<button class="accept-btn sellall-btn" data-accept="${esc(h.asset_id)}"
+          data-action="SELL" data-qty="${h.qty}" data-price="${h.price}" data-name="${esc(h.name)}"
+          title="Log selling this entire position at the current live price — asks for confirmation first">Sell all</button>` : ""}</td>
       </tr>`).join("") + "</tbody>";
     bindSort(ht, "holdings", loadDashboard);
+    bindDoneButtons("holdings-table", loadDashboard);  // wires the Sell-all buttons
     ht.querySelectorAll("[data-tgt]").forEach(b => b.onclick = () => {
       const h = p.holdings.find(x => x.asset_id === b.dataset.tgt);
       if (h) showTargets(h);

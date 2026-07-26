@@ -113,24 +113,44 @@ Web-only items are marked **(web)**.
 - A new **Hot & Cold strip** at the top of the Advisor tab, matching flag chips on each card, and **Heads-up** lines on the dashboard's Today plan.
 - Flags are raw-movement only and run **independent of the buy/sell call**, so a sharp drop registers even when the technical read looks oversold. They're awareness, not instructions — the final call is always yours.
 
+## [1.6.0] — 2026-07-07 — Sturdier Philippine-stock data
+### Changed
+- **Company figures for PSE stocks** (P/E, 52-week high/low, book value, earnings) now come from **Finnhub** first, replacing the fragile PSE Edge scrape that frequently left these fields blank. Edge stays on as an automatic fallback.
+- **Price resilience:** if the free community price feed (phisix) goes down, your PSE **holdings** now keep pricing from Finnhub instead of going blank — so your portfolio value stays correct through an outage. Prices recover to the full market feed automatically when phisix is back.
+### Notes
+- Uses the free Finnhub key already in the app — no new cost. Sets the stage for an optional paid EODHD upgrade (bulk prices, history and dividends) later.
+
+## [1.7.0] — 2026-07-08 — Sortable tables
+### Added
+- **Click any column header to sort** — on the Dashboard's Holdings table and on every Watchlist tab (Crypto, PSE, Global). Click once for high→low, again to reverse; a ▲/▼ arrow marks the active column and blanks always sink to the bottom. Sort by value, price, day change, P/E, dividend yield, market cap, signal score — whatever you're comparing at the moment.
+
+## [1.7.1] — 2026-07-08 — Fear & Greed explainer
+### Added
+- A small **ⓘ info bubble** next to the crypto **Fear & Greed** score (Dashboard and Market tab). Hover it for a plain-language explanation: what the 0–100 score means, the Extreme Fear → Extreme Greed scale, and the contrarian read — with the reminder that it's one input among many, not a signal on its own.
+
+## [1.8.0] — 2026-07-08 — Signals on your holdings
+### Added
+- The Dashboard's **Holdings** table now has a **Signal** column — the same BUY / HOLD / WATCH / SELL read (with its numbered score) you already see on the Watchlist, now right beside each position you own. Sort by it to line up your strongest buy-signals or weakest holds at a glance.
+
 ## [1.8.1] — 2026-07-08 — Leaner on the crypto data API
 ### Changed
 - Cut background CoinGecko usage by ~90% (from ~2–3k calls/day to under ~200) to stay well within the free-tier monthly limit. Crypto price history is now taken from data the price call already returns instead of a second per-coin call, and the refresh timers were relaxed (crypto prices update roughly every 10 minutes). Signals and charts are unaffected.
 
-## [1.11.0] — 2026-07-23 — Suggestions that actually study the chart
+## [1.8.2] — 2026-07-10 — Faster crypto refresh
 ### Changed
-- Suggested TP/SL levels are now **deduced from each asset's own data** instead of flat percentages: the engine measures the asset's real day-to-day volatility (so Bitcoin gets tighter levels than a meme coin), scales it to your trading-style horizon, tucks the stop **below the nearest real support level**, and sets the target **just under the nearest resistance or 52-week high** — selling into strength, the way traders actually plan. Every suggestion explains its reasoning in plain words, e.g. *"Swing Trader horizon, sized to this asset's own volatility (typical day: ±2.3%); stop tucked below the nearest support level; target set just under the 52-week high."*
-- Guardrails keep every suggestion sane for your style, the risk-to-reward is always shown honestly, and an explanation is never attached to a number it doesn't match (independently reviewed: 9 findings, all fixed; validated over 1,532 suggestions across every asset with zero failures).
-- All of this analysis rides inside the signal engine's existing data pass — zero extra API calls or database load.
+- With the desktop app retired, the website has the whole CoinGecko allowance to itself — so crypto prices now refresh **every 7 minutes** (was 10) and the Top-100 market table **every 30 minutes** (was hourly). Uses ~8.3k of the 10k monthly quota, with margin to spare.
 
-## [1.10.2] — 2026-07-21 — Suggestions first
+## [1.8.3] — 2026-07-10 — Database diet
 ### Changed
-- The Dashboard's **Plan** column now leads with the advisor's **suggested TP/SL** for every position (shown as dashed chips) — you see the AI's numbers without clicking anything. Click them to adopt the suggestion as your own plan (the editor comes pre-filled — just hit Save) or adjust first. Your saved plan replaces the suggestion in the column.
+- Cut the site's database traffic ~15-fold after a Neon transfer-quota alert (4.1 of 5 GB used). The signal engine now reads only the recent price window it actually uses (verified: identical signals) instead of every asset's full history every few minutes; frequently-read market snapshots are served from the app's memory instead of re-fetched from the database on every page refresh; and idle background jobs stop polling for work that's already done. More headroom as more friends join.
 
-## [1.10.1] — 2026-07-21 — TP/SL reviewed & hardened
+## [1.8.4] — 2026-07-11 — Database diet, reviewed
 ### Fixed
-- An independent 20-agent review of the TP/SL feature confirmed 16 issues, all fixed before launch. Highlights: plan-triggered **Log sell** now sells your exact position quantity (no rounding dust or overselling from stale numbers); stop/target hits **stay visible while the market is closed** and can be dismissed for the day ("letting it run" is a valid call); the advisor never says BUY MORE on a position whose own stop has tripped — your plan outranks its opinion; tiny-price coins display properly; malformed prices can't break the dashboard; backup encryption hardened; trading stats are honest about small sample sizes.
-- Crypto price history now keeps recording **even when CoinGecko is unavailable** (fed from the backup price source) — so signals stay alive through an outage or an exhausted monthly quota.
+- An independent review of the database diet confirmed 8 subtle issues, all now fixed: the PSE/global history windows were widened so the long-term trend average keeps its exact original math (verified byte-identical for PSE), newly added global stocks get their signal right after backfill instead of waiting up to an hour, and several rare timing races in the new memory cache (a slow read overwriting a newer value; news updates being missed by the advisor for 15 minutes; failed database writes leaving memory out of sync) were closed.
+
+## [1.9.0] — 2026-07-12 — New database home
+### Changed
+- Moved the database from Neon to **Supabase (Singapore)** — same city as the app server. A full quota audit showed Neon's free plan meters how many hours the database engine runs (100/month), which an always-on tracker burns through in ~16 days; Supabase's free instance is built to run 24/7 with no such meter. All data (every transaction, watchlist, wallet and setting — 76k rows) was copied and verified row-for-row before the switch. The temporary signal-refresh slowdown from the emergency throttle is reverted.
 
 ## [1.10.0] — 2026-07-20 — Trade like you mean it: TP/SL plans, notes & stats
 ### Added
@@ -138,36 +158,24 @@ Web-only items are marked **(web)**.
 - **📝 Position notes** — jot *why* you bought right on the plan. Future-you reviewing a trade will thank past-you.
 - **📊 Your Trading Stats** on the Portfolio tab: win rate, average win vs loss, profit factor, best & worst trades, and total fees — honest feedback from your own record, whether you're paper trading or logging real trades.
 - **Suggested TP/SL** *(user request)*: every advisor **BUY / BUY MORE** idea now shows a starting plan tuned to your trading style (e.g. Swing: 🎯 +25% / 🛑 −12.5%, always risk:reward 1:2), and the plan editor offers a one-click **Use suggested** — a starting point, not a rule.
-### Changed
-- Moved the database from Neon to **Supabase (Singapore)** — same city as the app server. A full quota audit showed Neon's free plan meters how many hours the database engine runs (100/month), which an always-on tracker burns through in ~16 days; Supabase's free instance is built to run 24/7 with no such meter. All data (every transaction, watchlist, wallet and setting — 76k rows) was copied and verified row-for-row before the switch. The temporary signal-refresh slowdown from the emergency throttle is reverted.
 
-## [1.8.4] — 2026-07-11 — Database diet, reviewed
+## [1.10.1] — 2026-07-21 — TP/SL reviewed & hardened
 ### Fixed
-- An independent review of the database diet confirmed 8 subtle issues, all now fixed: the PSE/global history windows were widened so the long-term trend average keeps its exact original math (verified byte-identical for PSE), newly added global stocks get their signal right after backfill instead of waiting up to an hour, and several rare timing races in the new memory cache (a slow read overwriting a newer value; news updates being missed by the advisor for 15 minutes; failed database writes leaving memory out of sync) were closed.
+- An independent 20-agent review of the TP/SL feature confirmed 16 issues, all fixed before launch. Highlights: plan-triggered **Log sell** now sells your exact position quantity (no rounding dust or overselling from stale numbers); stop/target hits **stay visible while the market is closed** and can be dismissed for the day ("letting it run" is a valid call); the advisor never says BUY MORE on a position whose own stop has tripped — your plan outranks its opinion; tiny-price coins display properly; malformed prices can't break the dashboard; backup encryption hardened; trading stats are honest about small sample sizes.
+- Crypto price history now keeps recording **even when CoinGecko is unavailable** (fed from the backup price source) — so signals stay alive through an outage or an exhausted monthly quota.
 
-## [1.8.3] — 2026-07-10 — Database diet
+## [1.10.2] — 2026-07-21 — Suggestions first
 ### Changed
-- Cut the site's database traffic ~15-fold after a Neon transfer-quota alert (4.1 of 5 GB used). The signal engine now reads only the recent price window it actually uses (verified: identical signals) instead of every asset's full history every few minutes; frequently-read market snapshots are served from the app's memory instead of re-fetched from the database on every page refresh; and idle background jobs stop polling for work that's already done. More headroom as more friends join.
+- The Dashboard's **Plan** column now leads with the advisor's **suggested TP/SL** for every position (shown as dashed chips) — you see the AI's numbers without clicking anything. Click them to adopt the suggestion as your own plan (the editor comes pre-filled — just hit Save) or adjust first. Your saved plan replaces the suggestion in the column.
 
-## [1.8.2] — 2026-07-10 — Faster crypto refresh
+## [1.11.0] — 2026-07-23 — Suggestions that actually study the chart
 ### Changed
-- With the desktop app retired, the website has the whole CoinGecko allowance to itself — so crypto prices now refresh **every 7 minutes** (was 10) and the Top-100 market table **every 30 minutes** (was hourly). Uses ~8.3k of the 10k monthly quota, with margin to spare.
+- Suggested TP/SL levels are now **deduced from each asset's own data** instead of flat percentages: the engine measures the asset's real day-to-day volatility (so Bitcoin gets tighter levels than a meme coin), scales it to your trading-style horizon, tucks the stop **below the nearest real support level**, and sets the target **just under the nearest resistance or 52-week high** — selling into strength, the way traders actually plan. Every suggestion explains its reasoning in plain words, e.g. *"Swing Trader horizon, sized to this asset's own volatility (typical day: ±2.3%); stop tucked below the nearest support level; target set just under the 52-week high."*
+- Guardrails keep every suggestion sane for your style, the risk-to-reward is always shown honestly, and an explanation is never attached to a number it doesn't match (independently reviewed: 9 findings, all fixed; validated over 1,532 suggestions across every asset with zero failures).
+- All of this analysis rides inside the signal engine's existing data pass — zero extra API calls or database load.
 
-## [1.8.0] — 2026-07-08 — Signals on your holdings
+## [1.11.1] — 2026-07-25 — Sell All & a tidier changelog
 ### Added
-- The Dashboard's **Holdings** table now has a **Signal** column — the same BUY / HOLD / WATCH / SELL read (with its numbered score) you already see on the Watchlist, now right beside each position you own. Sort by it to line up your strongest buy-signals or weakest holds at a glance.
-
-## [1.7.1] — 2026-07-08 — Fear & Greed explainer
-### Added
-- A small **ⓘ info bubble** next to the crypto **Fear & Greed** score (Dashboard and Market tab). Hover it for a plain-language explanation: what the 0–100 score means, the Extreme Fear → Extreme Greed scale, and the contrarian read — with the reminder that it's one input among many, not a signal on its own.
-
-## [1.7.0] — 2026-07-08 — Sortable tables
-### Added
-- **Click any column header to sort** — on the Dashboard's Holdings table and on every Watchlist tab (Crypto, PSE, Global). Click once for high→low, again to reverse; a ▲/▼ arrow marks the active column and blanks always sink to the bottom. Sort by value, price, day change, P/E, dividend yield, market cap, signal score — whatever you're comparing at the moment.
-
-## [1.6.0] — 2026-07-07 — Sturdier Philippine-stock data
-### Changed
-- **Company figures for PSE stocks** (P/E, 52-week high/low, book value, earnings) now come from **Finnhub** first, replacing the fragile PSE Edge scrape that frequently left these fields blank. Edge stays on as an automatic fallback.
-- **Price resilience:** if the free community price feed (phisix) goes down, your PSE **holdings** now keep pricing from Finnhub instead of going blank — so your portfolio value stays correct through an outage. Prices recover to the full market feed automatically when phisix is back.
-### Notes
-- Uses the free Finnhub key already in the app — no new cost. Sets the stage for an optional paid EODHD upgrade (bulk prices, history and dividends) later.
+- A **Sell all** button on every Dashboard holding — one click to log dumping the entire position at the current live price (with a confirmation first, exact quantity, no leftover dust). Any take-profit/stop-loss plan on the position retires automatically once it's closed.
+### Fixed
+- This changelog is back in strict oldest-first order, and the missing v1.9.0 "New database home" entry (the Supabase move) was restored — it had been accidentally merged into v1.10.0.
