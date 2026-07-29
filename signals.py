@@ -188,6 +188,17 @@ def compute(closes, chg_24h=None, bars_per_day=24.0,
             score -= 1
             reasons.append(f"Down {abs(chg_24h):.1f}% in 24h")
 
+    # entry-timing anchors for the advisor's anti-chasing gate. Stock markets
+    # use the clean daily series (plan_closes); for crypto the 168-hour SMA is
+    # already a true 7-day average. These are informational - no votes here.
+    if plan_closes:
+        if len(plan_closes) >= 22 and plan_closes[-22] > 0:
+            ind["chg_30d"] = (plan_closes[-1] / plan_closes[-22] - 1) * 100  # ~22 trading days
+        ind["sma20d"] = sma(plan_closes, 20)
+        ind["anchor7"] = sma(plan_closes, 7)
+    else:
+        ind["anchor7"] = s_long if len(closes) > 24 else None
+
     if score >= 4:
         action = "STRONG BUY"
     elif score >= 2:

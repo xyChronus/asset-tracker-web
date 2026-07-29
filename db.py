@@ -178,6 +178,8 @@ def init():
     conn().execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS trading_style TEXT DEFAULT 'swing'")
     conn().execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS agreed_terms BOOLEAN DEFAULT FALSE")
     conn().execute("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS fee DOUBLE PRECISION DEFAULT 0")
+    for col in ("eps_growth", "rev_growth", "net_margin", "debt_equity", "pb", "roe"):
+        conn().execute(f"ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS {col} DOUBLE PRECISION")
 
 
 # --- tiny JSON key/value store ---
@@ -200,6 +202,7 @@ _KV_HOT = {
     "pse:quotes", "pse:signals", "pse:backfilled",
     "global:quotes", "global:signals", "global:profiles", "global:indices",
     "global:history_fetched", "fx:usdphp",
+    "earnings:cal", "global:regime", "pse:regime",
 }
 _KV_TTL = 900.0
 _kv_cache = {}          # key -> (expires_monotonic, value)
@@ -252,7 +255,8 @@ def parse_tx_ts(ts):
 def set_fundamentals(market, asset_id, **fields):
     allowed = ("eps", "pe", "sector_pe", "book_value", "div_ps", "div_yield",
                "div_rate", "div_ex_date", "div_record_date", "div_pay_date",
-               "wk52_high", "wk52_low", "sector", "updated")
+               "wk52_high", "wk52_low", "sector", "updated",
+               "eps_growth", "rev_growth", "net_margin", "debt_equity", "pb", "roe")
     fields = {k: v for k, v in fields.items() if k in allowed}
     if not fields:
         return

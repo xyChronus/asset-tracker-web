@@ -141,8 +141,28 @@ def _pick(metric, keys):
     return None
 
 
+def _norm_debt_equity(v):
+    """Finnhub sometimes reports debt/equity as a percent (e.g. 180 for 1.8x);
+    values above 10 are treated as percent and scaled to a ratio."""
+    if v is None:
+        return None
+    return v / 100.0 if v > 10 else v
+
+
+def _growth_quality(m):
+    """Growth/quality fields shared by global and PSE metric responses."""
+    return {
+        "eps_growth": m.get("epsGrowthTTMYoy"),
+        "rev_growth": m.get("revenueGrowthTTMYoy"),
+        "net_margin": m.get("netProfitMarginTTM"),
+        "debt_equity": _norm_debt_equity(m.get("totalDebt/totalEquityQuarterly")),
+        "pb": m.get("pb"),
+        "roe": m.get("roeTTM"),
+    }
+
+
 def metrics(symbol):
-    """EPS / P/E / dividend per share / dividend yield / 52-week range."""
+    """EPS / P/E / dividends / 52-week range + growth & quality fields."""
     m = fh_get("/stock/metric", {"symbol": symbol, "metric": "all"}).get("metric", {})
     return {
         "eps": _pick(m, ["epsTTM", "epsBasicExclExtraItemsTTM", "epsInclExtraItemsTTM"]),
@@ -151,6 +171,7 @@ def metrics(symbol):
         "div_yield": _pick(m, ["dividendYieldIndicatedAnnual", "currentDividendYieldTTM"]),
         "wk52_high": m.get("52WeekHigh"),
         "wk52_low": m.get("52WeekLow"),
+        **_growth_quality(m),
     }
 
 
@@ -194,6 +215,7 @@ def pse_fundamentals(symbol):
         "wk52_low": m.get("52WeekLow"),
         "book_value": _pick(m, ["bookValuePerShareAnnual", "bookValuePerShareQuarterly"]),
         "eps": _pick(m, ["epsTTM", "epsBasicExclExtraItemsTTM", "epsInclExtraItemsTTM"]),
+        **_growth_quality(m),
     }
     return out if any(v is not None for v in out.values()) else {}
 

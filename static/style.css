@@ -209,6 +209,8 @@ tbody tr:hover { background: var(--panel-2); }
 .flag-chip.flag-hot { background: rgba(34,197,94,.13); color: #86efac; }
 .flag-chip.flag-tp { background: rgba(52,211,153,.16); color: #34d399; }
 .flag-chip.flag-sl { background: rgba(239,68,68,.2); color: #f87171; }
+.flag-chip.flag-event { background: rgba(96,165,250,.14); color: var(--blue); }
+.mover-chip.mover-event { border-left-color: var(--blue); }
 .mover-chip.mover-tp { border-left-color: #34d399; }
 .mover-chip.mover-sl { border-left-color: var(--red); }
 

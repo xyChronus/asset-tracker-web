@@ -12,7 +12,7 @@ import secrets
 import threading
 import time
 import traceback
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import wraps
 
 import requests
@@ -686,6 +686,55 @@ def global_metrics_tick():
     db.set_fundamentals("global", stalest, updated=now_ms(), **m)
 
 
+def earnings_calendar_tick():
+    """Upcoming earnings dates for tracked stocks - ONE ranged Finnhub call
+    covers every symbol (a dated future event is a genuinely leading input)."""
+    try:
+        frm = datetime.now().strftime("%Y-%m-%d")
+        to = (datetime.now() + timedelta(days=21)).strftime("%Y-%m-%d")
+        data = global_data.fh_get("/calendar/earnings", {"from": frm, "to": to})
+    except Exception as e:
+        print(f"[earnings] calendar: {e}")
+        return
+    tracked = set(tracked_ids_all_users("global"))
+    tracked |= {s + ".PM" for s in tracked_ids_all_users("pse")}  # best-effort PSE
+    cal = {}
+    for e in data.get("earningsCalendar", []):
+        sym, dt = e.get("symbol"), e.get("date")
+        if sym in tracked and dt and (sym not in cal or dt < cal[sym]["date"]):
+            cal[sym] = {"date": dt, "eps_est": e.get("epsEstimate")}
+    db.kv_set("earnings:cal", {"updated": now_ms(), "data": cal})
+    print(f"[earnings] calendar: {len(cal)} tracked names reporting within 21d")
+
+
+def spx_daily_tick():
+    """Daily market-weather for global stocks: S&P 500 below its 50-day trend
+    (with a 1% hysteresis band) = caution regime. Fail-neutral on any gap."""
+    try:
+        pts = global_data.yahoo_history("^GSPC", "1d", "6mo")
+    except Exception as e:
+        print(f"[global] spx daily: {e}")
+        return
+    closes = [p for _, p in pts]
+    if len(closes) < 55:
+        return
+    sma50 = sum(closes[-50:]) / 50
+    last = closes[-1]
+    prev = (db.kv_get("global:regime", {}).get("regime") or {}).get("state", "normal")
+    if last < sma50 * 0.99:
+        state = "caution"
+    elif last > sma50:
+        state = "normal"
+    else:
+        state = prev  # inside the hysteresis band: keep the previous read
+    reg = {"state": state}
+    if state == "caution":
+        reg["why"] = ("The S&P 500 is trading below its 50-day trend - a cautious "
+                      "stretch. New buy ideas need a stronger case and half the "
+                      "usual size until the trend recovers.")
+    db.kv_set("global:regime", {"updated": now_ms(), "regime": reg})
+
+
 def global_fetch_indices():
     out = {}
     for symb, label in (("^GSPC", "S&P 500"), ("^IXIC", "Nasdaq"), ("^DJI", "Dow Jones")):
@@ -760,6 +809,7 @@ def recompute_signals(market):
     since = now_ms() - config.SIGNAL_WINDOW_DAYS[market] * 86400000
     bpd = BARS_PER_DAY[market]
     out = {}
+    breadth_above = breadth_total = 0
     for aid in tracked_ids_all_users(market):
         rows = db.conn().execute(
             "SELECT ts, price FROM price_history WHERE market=%s AND asset_id=%s"
@@ -771,7 +821,27 @@ def recompute_signals(market):
         pc = _daily_closes([(r["ts"], r["price"]) for r in rows]) if market != "crypto" else None
         out[aid] = sig.compute(closes, (pm.get(aid) or {}).get("chg_24h"), bars_per_day=bpd,
                                plan_closes=pc, plan_bars_per_day=1.0 if pc is not None else None)
+        if market == "pse" and pc and len(pc) >= 30:
+            breadth_total += 1
+            if pc[-1] > sum(pc[-30:]) / 30:
+                breadth_above += 1
     db.kv_set(f"{market}:signals", {"updated": now_ms(), "data": out})
+    if market == "pse" and breadth_total >= 20:
+        # market weather from breadth: what share of names are above their own
+        # one-month trend? Broad weakness = caution regime (with hysteresis).
+        breadth = breadth_above / breadth_total
+        prev = (db.kv_get("pse:regime", {}).get("regime") or {}).get("state", "normal")
+        if breadth < 0.35:
+            state = "caution"
+        elif breadth > 0.45:
+            state = "normal"
+        else:
+            state = prev
+        reg = {"state": state, "breadth": round(breadth, 3)}
+        if state == "caution":
+            reg["why"] = (f"Only {breadth:.0%} of PSE names are above their own 1-month "
+                          "trend - broad weakness; being pickier and smaller on new buys.")
+        db.kv_set("pse:regime", {"updated": now_ms(), "regime": reg})
 
 
 # ------------------------------------------------------------------ scheduler
@@ -797,6 +867,8 @@ def scheduler():
         [lambda: iv["global"]["quotes"], 0, global_fetch_quotes],
         [lambda: iv["global"]["history"], 0, global_history_tick],
         [lambda: iv["global"]["signals"], 0, lambda: recompute_signals("global")],
+        [lambda: 43200, 0, earnings_calendar_tick],
+        [lambda: 86400, 0, spx_daily_tick],
         [lambda: iv["global"]["metrics"], 0, global_metrics_tick],
         [lambda: iv["global"]["indices"], 0, global_fetch_indices],
         [lambda: iv["global"]["news"], 0, lambda: fetch_news("global")],
@@ -1080,6 +1152,40 @@ def market_session(market):
     return False, "around 9:30-10:30 PM Manila time"
 
 
+def _regime(market):
+    """Market-weather dial for the advisor: 'caution' raises the bar and halves
+    sizing for FRESH buys only - it can only ever make the guide more careful.
+    Every input fails neutral (stale data can never stick the dial on caution)."""
+    try:
+        now = now_ms()
+        if market in ("global", "pse"):
+            snap = db.kv_get(f"{market}:regime", {})
+            if not snap.get("updated") or now - snap["updated"] > 5 * 86400000:
+                return {"state": "normal"}
+            return snap.get("regime") or {"state": "normal"}
+        # crypto: derived from already-cached snapshots, each ignored when stale
+        fng = db.kv_get("crypto:fng", {})
+        glob = db.kv_get("crypto:global", {})
+        v = fng.get("value") if fng.get("updated") and now - fng["updated"] < 86400000 else None
+        mc = ((glob.get("data") or {}).get("market_cap_change_percentage_24h_usd")
+              if glob.get("updated") and now - glob["updated"] < 86400000 else None)
+        if v is not None and v <= 20:
+            return {"state": "caution",
+                    "why": f"Fear & Greed is {v} (extreme fear) - washouts cut both ways; "
+                           "new buys need a stronger case and half the usual size."}
+        if v is not None and v >= 75:
+            return {"state": "caution",
+                    "why": f"Fear & Greed is {v} (extreme greed) - the market itself is "
+                           "chasing; new buys need a stronger case and half the usual size."}
+        if mc is not None and mc <= -5:
+            return {"state": "caution",
+                    "why": f"The whole crypto market is down {abs(mc):.1f}% in 24h - "
+                           "being pickier and smaller on new buys until it stabilises."}
+        return {"state": "normal"}
+    except Exception:
+        return {"state": "normal"}
+
+
 def _market_line(market):
     if market == "crypto":
         g = db.kv_get("crypto:global", {}).get("data", {})
@@ -1153,7 +1259,8 @@ def get_advisor(market, user, force=False):
                            "name": m.get("name") or r["name"] or r["asset_id"],
                            "image": m.get("image"), "price": m.get("price"),
                            "chg_24h": m.get("chg_24h"),
-                           "chg_7d": (m.get("_raw") or {}).get("price_change_percentage_7d_in_currency")})
+                           "chg_7d": (m.get("_raw") or {}).get("price_change_percentage_7d_in_currency"),
+                           "chg_30d": (m.get("_raw") or {}).get("price_change_percentage_30d_in_currency")})
         for r in db.conn().execute(
                 "SELECT DISTINCT asset_id, name FROM transactions"
                 " WHERE market=%s AND user_id=%s", (market, user)).fetchall():
@@ -1165,7 +1272,8 @@ def get_advisor(market, user, force=False):
                            "name": m.get("name") or r["name"] or r["asset_id"],
                            "image": m.get("image"), "price": m.get("price"),
                            "chg_24h": m.get("chg_24h"),
-                           "chg_7d": (m.get("_raw") or {}).get("price_change_percentage_7d_in_currency")})
+                           "chg_7d": (m.get("_raw") or {}).get("price_change_percentage_7d_in_currency"),
+                           "chg_30d": (m.get("_raw") or {}).get("price_change_percentage_30d_in_currency")})
         signals_data = db.kv_get(f"{market}:signals", {}).get("data", {})
         port = portfolio_state(market, user)
         news_rows = _advisor_news(market)
@@ -1176,12 +1284,21 @@ def get_advisor(market, user, force=False):
         style = (srow or {}).get("trading_style") or "swing"
         tgts = {r["asset_id"]: dict(r) for r in db.conn().execute(
             "SELECT * FROM targets WHERE user_id=%s AND market=%s", (user, market)).fetchall()}
+        cal = db.kv_get("earnings:cal", {}).get("data", {})
+        if market == "global":
+            earn = {a["asset_id"]: cal[a["asset_id"]] for a in assets if a["asset_id"] in cal}
+        elif market == "pse":
+            earn = {a["asset_id"]: cal[a["asset_id"] + ".PM"] for a in assets
+                    if a["asset_id"] + ".PM" in cal}
+        else:
+            earn = {}
         result = adv.build(assets, signals_data, port, news_rows,
                            {"line": _market_line(market), "open": is_open,
-                            "next_open": next_open}, now_ms(),
+                            "next_open": next_open, "name": market,
+                            "regime": _regime(market)}, now_ms(),
                            currency=config.CURRENCY[market], fundamentals=fund,
                            max_ideas=config.ADVISOR_MAX_IDEAS[market], style=style,
-                           targets=tgts)
+                           targets=tgts, earnings=earn)
         result["updated"] = now_ms()
         result["market_open"] = is_open
         result["next_open"] = next_open

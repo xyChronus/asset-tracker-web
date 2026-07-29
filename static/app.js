@@ -739,6 +739,9 @@ function recCard(r) {
   const f = r.fundamentals || {};
   const chips = [];
   if (f.pe != null) chips.push("P/E " + fmtNum(f.pe, 1));
+  if (f.eps_growth != null) chips.push("EPS gr " + (f.eps_growth > 0 ? "+" : "") + fmtNum(f.eps_growth, 0) + "%");
+  if (f.roe != null) chips.push("ROE " + fmtNum(f.roe, 0) + "%");
+  if (f.debt_equity != null) chips.push("D/E " + fmtNum(f.debt_equity, 1));
   if (f.div_yield != null) chips.push("Yield " + fmtNum(f.div_yield, 2) + "%");
   if (f.div_ex_date) chips.push("Ex-div " + esc(f.div_ex_date));
   const arts = (r.articles || []).map(a =>
@@ -776,7 +779,7 @@ function recCard(r) {
   </div>`;
 }
 
-const FLAG_ICONS = { hot: "🔺", cold: "🔻", tp: "🎯", sl: "🛑" };
+const FLAG_ICONS = { hot: "🔺", cold: "🔻", tp: "🎯", sl: "🛑", event: "📅" };
 
 // "Seen it, letting it run" for triggered TP/SL alerts: hidden for the rest of
 // the day on this device (localStorage), back tomorrow while still triggered.
