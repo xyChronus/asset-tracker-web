@@ -14,6 +14,7 @@ reasoning spelled out. Automated heuristics, not financial advice.
 import datetime
 import math
 import re
+from zoneinfo import ZoneInfo
 
 # ---------------------------------------------------------------- sentiment
 
@@ -211,8 +212,12 @@ def _value_votes(f, price):
     if eg is not None:
         if eg >= 15 and (rg is None or rg > 0):
             votes += 1
-            reasons.append(f"Profits growing {eg:.0f}% year-on-year on rising revenue - "
-                           "the business itself is expanding, not just the chart")
+            if rg is not None and rg > 0:
+                reasons.append(f"Profits growing {eg:.0f}% year-on-year on rising revenue - "
+                               "the business itself is expanding, not just the chart")
+            else:
+                reasons.append(f"Profits growing {eg:.0f}% year-on-year - "
+                               "the business is earning more, not just charting higher")
         elif eg <= -15:
             if pe is not None and 0 < pe <= 10:
                 votes -= 2  # cancels the cheap-P/E bonus: cheap + shrinking = trap risk
@@ -402,7 +407,11 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
     is_crypto = market.get("name") == "crypto"
     regime = market.get("regime") or {}
     caution = regime.get("state") == "caution"
-    today = datetime.date.fromtimestamp(now_ms / 1000)
+    # earnings dates are US-market dates: compare in the market's own timezone,
+    # or the gate would lift at Manila midnight = noon ET, hours before an
+    # after-close report (the exact window it exists to protect)
+    tz = ZoneInfo("America/New_York" if market.get("name") == "global" else "Asia/Manila")
+    today = datetime.datetime.fromtimestamp(now_ms / 1000, tz).date()
     sp = STYLE_PARAMS.get(style) or STYLE_PARAMS[DEFAULT_STYLE]
     max_alloc = sp["alloc_cap"]
     target_trim = sp["alloc_cap"] - 5
@@ -441,6 +450,7 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
 
         reasons = []
         action, amt = "HOLD", None
+        pullback = False  # set by the watchlist buy path; read by the chase gate
 
         if h and not has_value:
             reasons.append(
@@ -516,7 +526,6 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
             # pullback-in-uptrend: the entry the short-horizon votes wrongly
             # skip - a solid month-long trend resting at its recent average.
             # Buying the dip in strength beats buying the breakout.
-            pullback = False
             if (not good_setup and style in ("swing", "long") and price
                     and tech is not None and tech >= 0
                     and news_score >= (0.5 if caution else 0)):
@@ -526,10 +535,17 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
                 prim_pb = sig.get("plan") or {}
                 rl_pb, rh_pb = prim_pb.get("range_low"), prim_pb.get("range_high")
                 rpos = ((price - rl_pb) / (rh_pb - rl_pb)) if rl_pb and rh_pb and rh_pb > rl_pb else None
+                # "resting AT its average" means near it - a price far BELOW
+                # the anchor is a decline, not a rest (two-sided band)
                 if (chg30p is not None and anchor7 and rsi_v is not None
-                        and price <= anchor7 * 1.005 and rsi_v < 55):
+                        and anchor7 * 0.98 <= price <= anchor7 * 1.005 and rsi_v < 55):
                     if is_crypto:
-                        pullback = chg30p >= 15 and (rpos is None or rpos <= 0.70)
+                        # chg_7d floor = the medium-trend check crypto's short
+                        # window can't provide via a 20d SMA: a coin two weeks
+                        # into a collapse is not "resting", it's falling
+                        pullback = (chg30p >= 15
+                                    and (a.get("chg_7d") or 0) >= -5
+                                    and rpos is not None and 0.40 <= rpos <= 0.70)
                     else:
                         sma20 = ind.get("sma20d")
                         pullback = (chg30p >= 10 and sma20 and price > sma20
@@ -563,9 +579,10 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
                 action = "HOLD"
                 reasons.append("Nothing actionable here right now.")
 
-        # ---- entry-timing guard: don't chase extended moves (all markets) ----
+        # ---- entry-timing guard: don't chase extended moves (FRESH buys only;
+        # held positions and pullback entries - already timing-checked - exempt)
         conf_cap = False
-        if action in ("BUY", "BUY MORE") and style != "scalper" and price:
+        if action == "BUY" and not pullback and style != "scalper" and price:
             chg30 = a.get("chg_30d") if is_crypto else ind.get("chg_30d")
             prim_x = sig.get("plan") or {}
             rl_x, rh_x = prim_x.get("range_low"), prim_x.get("range_high")
@@ -583,26 +600,41 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
             if chg30 is not None and thr is not None and \
                     ((chg30 >= thr and near_high) or chg30 >= extreme):
                 anchor = ind.get("anchor7")
+                # the "calmer entry" price is only honest when it IS calmer
                 anch_txt = (f" near ~{currency}{_fmt_price(anchor)} (its recent average)"
-                            if anchor else "")
-                if value_votes >= 3:
-                    reasons.insert(0, "Near its highs after a strong run, but the fundamentals "
-                                      "are strong enough that this looks like growth, not froth.")
+                            if anchor and anchor < price * 0.995 else "")
+                # phrase from what actually tripped - never claim an unchecked fact
+                if is_crypto:
+                    pos_txt = ("still climbing" if (a.get("chg_7d") or 0) > 0
+                               else "after an outsized run")
+                elif range_pos is not None and range_pos >= 0.85:
+                    pos_txt = "near the top of its recent range"
+                elif wk52_pos is not None and wk52_pos >= 0.90:
+                    pos_txt = "near its 52-week high"
+                else:
+                    pos_txt = "an outsized run in that time"
+                growth_backed = (f or {}).get("eps_growth") is not None and f["eps_growth"] >= 15
+                if value_votes >= 3 and growth_backed:
+                    reasons.insert(0, "Near its highs after a strong run, but profits are "
+                                      "genuinely growing underneath - this looks like "
+                                      "growth, not froth.")
                 elif style == "day":
                     conf_cap = True
+                    if amt is not None:
+                        amt = amt / 2.0  # "keep it small" must actually be smaller
                     reasons.insert(0, f"Up {chg30:.0f}% in a month - fine for a quick trade, but "
-                                      "this is a chase, not a fresh setup; keep it small and nimble.")
+                                      "this is a chase, not a fresh setup; suggested size is "
+                                      "halved - stay nimble.")
                 elif is_crypto:
                     action, amt = "WATCH", None
-                    reasons.insert(0, f"Already up {chg30:.0f}% in the past month and still "
-                                      "climbing - most of that move is behind it. Watching for "
+                    reasons.insert(0, f"Already up {chg30:.0f}% in the past month and {pos_txt} - "
+                                      "most of that move is behind it. Watching for "
                                       f"a cooler entry{anch_txt}.")
                 else:
                     action, amt = "WATCH", None
-                    reasons.insert(0, f"Already up {chg30:.0f}% in the past month and near the "
-                                      "top of its recent range - buying now is chasing someone "
-                                      f"else's rally. Watching instead; a rest{anch_txt} would "
-                                      "be a calmer entry.")
+                    reasons.insert(0, f"Already up {chg30:.0f}% in the past month, {pos_txt} - "
+                                      "buying now is chasing someone else's rally. Watching "
+                                      f"instead; a rest{anch_txt} would be a calmer entry.")
 
         # ---- earnings-event gate: a report date is a coin flip, not a setup ----
         earn = earnings.get(aid)
@@ -614,14 +646,15 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
             except (ValueError, TypeError):
                 earn_days = earn_date = None
         if earn_days is not None and 0 <= earn_days <= EARNINGS_GATE_DAYS \
-                and style != "long" and action in ("BUY", "BUY MORE"):
+                and style != "long" and action == "BUY":
             action, amt = "WATCH", None
             reasons.insert(0, f"Earnings report due {earn_date} ({earn_days} day(s) away) - "
                               "results can gap the price sharply either way. This guide would "
                               "rather react to real numbers than guess them; check back after "
                               "the report.")
-        if earn_days is not None and 0 <= earn_days <= EARNINGS_FLAG_DAYS:
-            conf_cap = True
+        if earn_days is not None and 0 <= earn_days <= EARNINGS_FLAG_DAYS \
+                and action in ("BUY", "WATCH"):
+            conf_cap = True  # never dampen sell-side decisiveness over event risk
 
         # ---- market weather: in a caution regime, half-size any fresh buys ----
         if caution and action in ("BUY", "BUY MORE") and amt is not None:

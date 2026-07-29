@@ -202,6 +202,7 @@ tbody tr:hover { background: var(--panel-2); }
 .mover-flags span { font-size: 11.5px; color: var(--muted); }
 .mover-cold .mover-flags span { color: #fca5a5; }
 .mover-hot .mover-flags span { color: #86efac; }
+.mover-event .mover-flags span { color: var(--blue); }
 
 .flag-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 6px; }
 .flag-chip { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 20px; }

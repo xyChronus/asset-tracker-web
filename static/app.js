@@ -793,7 +793,7 @@ function dismissPlanHit(aid) {
 function moverChip(r) {
   // border color takes the most decisive flag: your own plan first
   const kinds = (r.flags || []).map(f => f.kind);
-  const primary = ["sl", "tp", "cold", "hot"].find(k => kinds.includes(k)) || "hot";
+  const primary = ["sl", "tp", "cold", "hot", "event"].find(k => kinds.includes(k)) || "hot";
   return `<div class="mover-chip mover-${primary}">
     <div class="mover-top">${r.image ? `<img src="${esc(r.image)}">` : ""}<b>${esc((r.symbol || r.name || "").toUpperCase())}</b>
       <span class="muted">${fmtMoney(r.price)}</span></div>

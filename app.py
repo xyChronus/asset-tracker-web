@@ -513,13 +513,17 @@ def pse_fundamentals_tick():
     except Exception as e:
         print(f"[pse] finnhub fundamentals {sym}: {e}")
     if not fields:
-        # Finnhub had nothing - fall back to scraping PSE Edge (also gives sector P/E)
+        # Finnhub had nothing - fall back to scraping PSE Edge (also gives sector P/E).
+        # Edge has no growth data: explicitly NULL those fields so stale
+        # Finnhub-era votes can't survive under a fresh 'updated' stamp.
         try:
             sd = pse_data.fetch_stock_data(row["cmpy_id"])
             eps = sd["price"] / sd["pe"] if sd.get("pe") and sd.get("price") and sd["pe"] > 0 else None
             fields = {"pe": sd.get("pe"), "sector_pe": sd.get("sector_pe"),
                       "wk52_high": sd.get("wk52_high"), "wk52_low": sd.get("wk52_low"),
-                      "book_value": sd.get("book_value"), "eps": eps}
+                      "book_value": sd.get("book_value"), "eps": eps,
+                      "eps_growth": None, "rev_growth": None, "net_margin": None,
+                      "debt_equity": None, "pb": None, "roe": None}
         except Exception as e:
             print(f"[pse] edge fundamentals {sym}: {e}")
     # Always stamp 'updated' - even on total failure - so a persistently broken
@@ -822,9 +826,14 @@ def recompute_signals(market):
         out[aid] = sig.compute(closes, (pm.get(aid) or {}).get("chg_24h"), bars_per_day=bpd,
                                plan_closes=pc, plan_bars_per_day=1.0 if pc is not None else None)
         if market == "pse" and pc and len(pc) >= 30:
-            breadth_total += 1
-            if pc[-1] > sum(pc[-30:]) / 30:
-                breadth_above += 1
+            window = pc[-30:]
+            # a name that never traded in the window (flat quote echoes) says
+            # nothing about breadth - counting it as "below trend" would bias
+            # the dial toward chronic false caution
+            if max(window) > min(window):
+                breadth_total += 1
+                if pc[-1] > sum(window) / 30:
+                    breadth_above += 1
     db.kv_set(f"{market}:signals", {"updated": now_ms(), "data": out})
     if market == "pse" and breadth_total >= 20:
         # market weather from breadth: what share of names are above their own
@@ -1169,14 +1178,15 @@ def _regime(market):
         v = fng.get("value") if fng.get("updated") and now - fng["updated"] < 86400000 else None
         mc = ((glob.get("data") or {}).get("market_cap_change_percentage_24h_usd")
               if glob.get("updated") and now - glob["updated"] < 86400000 else None)
+        # (the briefing's market line already quotes the F&G number - don't repeat it)
         if v is not None and v <= 20:
             return {"state": "caution",
-                    "why": f"Fear & Greed is {v} (extreme fear) - washouts cut both ways; "
+                    "why": "Extreme-fear territory - washouts cut both ways; "
                            "new buys need a stronger case and half the usual size."}
         if v is not None and v >= 75:
             return {"state": "caution",
-                    "why": f"Fear & Greed is {v} (extreme greed) - the market itself is "
-                           "chasing; new buys need a stronger case and half the usual size."}
+                    "why": "Extreme-greed territory - the market itself is chasing; "
+                           "new buys need a stronger case and half the usual size."}
         if mc is not None and mc <= -5:
             return {"state": "caution",
                     "why": f"The whole crypto market is down {abs(mc):.1f}% in 24h - "

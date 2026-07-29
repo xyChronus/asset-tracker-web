@@ -142,11 +142,17 @@ def _pick(metric, keys):
 
 
 def _norm_debt_equity(v):
-    """Finnhub sometimes reports debt/equity as a percent (e.g. 180 for 1.8x);
-    values above 10 are treated as percent and scaled to a ratio."""
-    if v is None:
+    """Finnhub sometimes reports debt/equity as a percent (e.g. 180 for 1.8x).
+    <=10 is a plausible ratio; >50 is clearly percent-form (a true >50x ratio
+    with positive equity is essentially nonexistent); 10-50 is genuinely
+    ambiguous - fail neutral (None) so no vote fires either way."""
+    if v is None or v < 0:
         return None
-    return v / 100.0 if v > 10 else v
+    if v <= 10:
+        return v
+    if v > 50:
+        return v / 100.0
+    return None
 
 
 def _growth_quality(m):
