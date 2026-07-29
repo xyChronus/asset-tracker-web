@@ -211,6 +211,20 @@ tbody tr:hover { background: var(--panel-2); }
 .flag-chip.flag-tp { background: rgba(52,211,153,.16); color: #34d399; }
 .flag-chip.flag-sl { background: rgba(239,68,68,.2); color: #f87171; }
 .flag-chip.flag-event { background: rgba(96,165,250,.14); color: var(--blue); }
+.flag-chip.flag-base { background: rgba(52,211,153,.12); color: #6ee7b7; }
+.flag-chip.flag-quiet { background: rgba(250,204,21,.12); color: #facc15; }
+.mover-chip.mover-base { border-left-color: #6ee7b7; }
+.mover-chip.mover-quiet { border-left-color: #facc15; }
+
+/* ---- full-reasoning breakdown ledger ---- */
+.breakdown { margin-top: 8px; border-top: 1px solid var(--border); padding-top: 6px; }
+.breakdown summary { cursor: pointer; font-size: 12px; color: var(--muted); user-select: none; }
+.breakdown summary:hover { color: var(--text); }
+.bd-sec { margin: 6px 0 0 4px; }
+.bd-head { font-size: 12px; font-weight: 600; color: var(--text); }
+.bd-sec ul { margin: 2px 0 0 0; }
+.bd-sec li { font-size: 12px; color: var(--muted); }
+.bd-total { margin-top: 8px; font-size: 12px; border-top: 1px dashed var(--border); padding-top: 6px; }
 .mover-chip.mover-event { border-left-color: var(--blue); }
 .mover-chip.mover-tp { border-left-color: #34d399; }
 .mover-chip.mover-sl { border-left-color: var(--red); }

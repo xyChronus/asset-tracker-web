@@ -99,12 +99,23 @@ def plan_primitives(closes, bars_per_day=24.0):
             swing_highs.append(closes[i])
     support = max((s for s in swing_lows if s < price), default=None)
     resistance = min((s for s in swing_highs if s > price), default=None)
+    # recent-action tightness: span of the last quarter of the series versus
+    # what this asset's own volatility would predict for that many days.
+    # ~1 is normal random-walk churn; well below 1 = unusually quiet (a base
+    # forming after a fall, or a coiled range going nowhere).
+    win = closes[-max(10, n // 4):]
+    win_days = max(len(win) / bars_per_day, 0.5)
+    coil_ratio = None
+    if vol_day > 0.05:
+        expected_span = vol_day * (win_days ** 0.5) * 2.5  # typical high-low spread
+        coil_ratio = round(((max(win) - min(win)) / price * 100) / expected_span, 3)
     return {
         "vol_day": round(vol_day, 4),
         "support": support,
         "resistance": resistance,
         "range_low": min(closes),
         "range_high": max(closes),
+        "coil_ratio": coil_ratio,
         "bars": n,
     }
 

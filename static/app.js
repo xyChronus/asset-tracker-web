@@ -720,6 +720,29 @@ async function loadDashNews() {
 
 /* ---------------------------------------------------------- advisor */
 
+// The full ballot behind a suggestion: every input's score and its votes,
+// plus any gates that intervened. Transparency is the product.
+function breakdownHtml(b) {
+  if (!b) return "";
+  const sec = (label, s, points) => (s == null && !(points || []).length) ? "" :
+    `<div class="bd-sec"><div class="bd-head">${label}
+       <b class="${(s || 0) > 0 ? "pos" : (s || 0) < 0 ? "neg" : "muted"}">${s == null ? "no data" : (s > 0 ? "+" : "") + s}</b></div>
+     ${(points || []).length ? `<ul>${points.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}</div>`;
+  const extras = (b.extras || []).map(e =>
+    `<div class="bd-sec"><div class="bd-head">${esc(e.label)} <b class="pos">+${e.score}</b></div></div>`).join("");
+  const gates = (b.gates || []).length
+    ? `<div class="bd-sec"><div class="bd-head">Gates applied</div>
+       <ul>${b.gates.map(g => `<li>${esc(g)}</li>`).join("")}</ul></div>` : "";
+  return `<details class="breakdown"><summary>Full reasoning - how this call was made</summary>
+    ${sec("📈 Technicals", b.tech && b.tech.score, b.tech && b.tech.points)}
+    ${sec("📰 News", b.news && b.news.score, b.news && b.news.points)}
+    ${sec("🏢 Fundamentals", b.value && b.value.score, b.value && b.value.points)}
+    ${extras}${gates}
+    <div class="bd-total">Conviction total: <b>${b.total > 0 ? "+" : ""}${b.total}</b>
+      <span class="muted">- every input above competes; the strongest side wins, and the final call is yours.</span></div>
+  </details>`;
+}
+
 function recCard(r) {
   const conv = Math.max(-10, Math.min(10, r.conviction || 0));
   const pos = ((conv + 10) / 20 * 100).toFixed(0);
@@ -775,11 +798,12 @@ function recCard(r) {
     <div class="conv-labels"><span>strong sell</span><span class="muted">confidence: ${esc(r.confidence || "")}</span><span>strong buy</span></div>
     ${chips.length ? `<div class="sig-chips">${chips.map(x => `<div class="mini-stat">${x}</div>`).join("")}</div>` : ""}
     <ul>${(r.reasons || []).map(x => `<li>${esc(x)}</li>`).join("")}</ul>
+    ${breakdownHtml(r.breakdown)}
     ${arts ? `<div class="rec-arts">${arts}</div>` : ""}
   </div>`;
 }
 
-const FLAG_ICONS = { hot: "🔺", cold: "🔻", tp: "🎯", sl: "🛑", event: "📅" };
+const FLAG_ICONS = { hot: "🔺", cold: "🔻", tp: "🎯", sl: "🛑", event: "📅", base: "🌱", quiet: "⚡" };
 
 // "Seen it, letting it run" for triggered TP/SL alerts: hidden for the rest of
 // the day on this device (localStorage), back tomorrow while still triggered.
@@ -793,7 +817,7 @@ function dismissPlanHit(aid) {
 function moverChip(r) {
   // border color takes the most decisive flag: your own plan first
   const kinds = (r.flags || []).map(f => f.kind);
-  const primary = ["sl", "tp", "cold", "hot", "event"].find(k => kinds.includes(k)) || "hot";
+  const primary = ["sl", "tp", "cold", "hot", "event", "base", "quiet"].find(k => kinds.includes(k)) || "hot";
   return `<div class="mover-chip mover-${primary}">
     <div class="mover-top">${r.image ? `<img src="${esc(r.image)}">` : ""}<b>${esc((r.symbol || r.name || "").toUpperCase())}</b>
       <span class="muted">${fmtMoney(r.price)}</span></div>

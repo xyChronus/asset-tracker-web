@@ -288,6 +288,17 @@ EXTREME_30D = {"stocks": 60, "crypto": 80}   # run-up that trips the gate on its
 EARNINGS_GATE_DAYS = 3    # no fresh buys this close to an earnings report
 EARNINGS_FLAG_DAYS = 7    # awareness flag inside this window
 
+# Basing / coiled-quiet detection (calibrated on live data 2026-07-26 so each
+# flags a handful of names, not half the market). coil_ratio = recent span vs
+# what the asset's own volatility predicts (~1 normal, well below 1 = quiet).
+BASE_CHG30 = -25          # fell at least this much over ~30d
+BASE_RANGE_POS = 0.20     # ...and sits in the bottom fifth of its range
+BASE_COIL = 0.50          # ...and recent action has gone quiet
+QUIET_CHG30 = 8           # went nowhere over ~30d (abs)
+QUIET_COIL = 0.12         # extremely tight recent action
+QUIET_MIN_VOL = 1.5       # only meaningful for assets that normally move
+BASE_MIN_VOL = 1.0
+
 
 def _round_amt(v, floor=10):
     return max(floor, int(round(v / 5.0) * 5))
@@ -446,9 +457,31 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
         alloc_base = capital if cash is not None else total
         alloc = (h["value"] / alloc_base * 100) if has_value and alloc_base > 0 else 0.0
         plpct = (h or {}).get("unrealized_pct")
-        conviction = (tech or 0) + news_score + value_votes
+
+        # basing / coiled-quiet detection (user-suggested reads, calibrated):
+        # a fall that has STOPPED falling, or an active name gone dead quiet
+        prim0 = sig.get("plan") or {}
+        cr0 = prim0.get("coil_ratio")
+        vol0 = prim0.get("vol_day")
+        chg30_0 = a.get("chg_30d") if is_crypto else (sig.get("indicators") or {}).get("chg_30d")
+        rl0, rh0 = prim0.get("range_low"), prim0.get("range_high")
+        rpos0 = ((price - rl0) / (rh0 - rl0)) if price and rl0 and rh0 and rh0 > rl0 else None
+        basing = (chg30_0 is not None and chg30_0 <= BASE_CHG30
+                  and rpos0 is not None and rpos0 <= BASE_RANGE_POS
+                  and cr0 is not None and 0 < cr0 <= BASE_COIL
+                  and vol0 is not None and vol0 >= BASE_MIN_VOL)
+        coiled = (not basing and chg30_0 is not None and abs(chg30_0) < QUIET_CHG30
+                  and cr0 is not None and 0 < cr0 <= QUIET_COIL
+                  and vol0 is not None and vol0 >= QUIET_MIN_VOL
+                  and prim0.get("bars", 0) >= 40)
+        # basing earns a modest vote only when the recovery has actually begun
+        # settling (RSI off the floor, no negative news) - bases do fail
+        base_vote = 1.0 if (basing and (ind.get("rsi") or 50) < 50
+                            and news_score >= 0) else 0.0
+        conviction = (tech or 0) + news_score + value_votes + base_vote
 
         reasons = []
+        gate_notes = []  # interventions recorded for the breakdown ledger
         action, amt = "HOLD", None
         pullback = False  # set by the watchlist buy path; read by the chase gate
 
@@ -622,16 +655,19 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
                     conf_cap = True
                     if amt is not None:
                         amt = amt / 2.0  # "keep it small" must actually be smaller
+                    gate_notes.append(f"Chase caution: +{chg30:.0f}% month - size halved, confidence capped")
                     reasons.insert(0, f"Up {chg30:.0f}% in a month - fine for a quick trade, but "
                                       "this is a chase, not a fresh setup; suggested size is "
                                       "halved - stay nimble.")
                 elif is_crypto:
                     action, amt = "WATCH", None
+                    gate_notes.append(f"Entry-timing gate: +{chg30:.0f}% month - BUY held back as WATCH")
                     reasons.insert(0, f"Already up {chg30:.0f}% in the past month and {pos_txt} - "
                                       "most of that move is behind it. Watching for "
                                       f"a cooler entry{anch_txt}.")
                 else:
                     action, amt = "WATCH", None
+                    gate_notes.append(f"Entry-timing gate: +{chg30:.0f}% month - BUY held back as WATCH")
                     reasons.insert(0, f"Already up {chg30:.0f}% in the past month, {pos_txt} - "
                                       "buying now is chasing someone else's rally. Watching "
                                       f"instead; a rest{anch_txt} would be a calmer entry.")
@@ -648,6 +684,7 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
         if earn_days is not None and 0 <= earn_days <= EARNINGS_GATE_DAYS \
                 and style != "long" and action == "BUY":
             action, amt = "WATCH", None
+            gate_notes.append(f"Earnings gate: report {earn_date} - BUY held back as WATCH")
             reasons.insert(0, f"Earnings report due {earn_date} ({earn_days} day(s) away) - "
                               "results can gap the price sharply either way. This guide would "
                               "rather react to real numbers than guess them; check back after "
@@ -659,6 +696,7 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
         # ---- market weather: in a caution regime, half-size any fresh buys ----
         if caution and action in ("BUY", "BUY MORE") and amt is not None:
             amt = amt / 2.0
+            gate_notes.append("Market weather: caution regime - buy size halved")
 
         if amt is not None:
             if action in ("TRIM", "SELL PART", "TAKE PROFIT"):
@@ -730,6 +768,14 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
                               "text": f"Fell through your stop-loss ({currency}{_fmt_price(sl)})"
                                       + (f" - down {abs(plpct):.0f}%" if plpct is not None and plpct < 0 else "")
                                       + " - your plan says cut the loss"})
+        if basing:
+            flags.append({"kind": "base",
+                          "text": f"Down {abs(chg30_0):.0f}% over the month but holding steady near "
+                                  f"{currency}{_fmt_price(rl0)} - sellers may be tiring; one to watch"})
+        elif coiled:
+            flags.append({"kind": "quiet",
+                          "text": "Unusually quiet for its normal pace - coiled; big moves often "
+                                  "follow quiet spells, in either direction"})
         if earn_days is not None and 0 <= earn_days <= EARNINGS_FLAG_DAYS:
             flags.append({"kind": "event",
                           "text": f"Earnings {earn_date} - expect a bigger-than-usual move around it"})
@@ -764,6 +810,17 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
             "news_score": round(news_score, 2),
             "chg_24h": chg24,
             "flags": flags,
+            "breakdown": {
+                "tech": {"score": tech, "points": list(sig.get("reasons") or [])},
+                "news": {"score": round(news_score, 2),
+                         "points": [("+" if x["sentiment"] > 0 else "-" if x["sentiment"] < 0 else "=")
+                                    + " " + (x.get("title") or "") for x in articles]},
+                "value": {"score": round(value_votes, 2), "points": list(value_reasons)},
+                "extras": ([{"label": "Basing pattern (fall gone quiet)", "score": base_vote}]
+                           if base_vote else []),
+                "gates": gate_notes,
+                "total": round(conviction, 1),
+            },
             "reasons": reasons,
             "articles": articles,
             "fundamentals": ({k: f.get(k) for k in
