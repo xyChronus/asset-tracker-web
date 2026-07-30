@@ -34,6 +34,7 @@
   <button data-tab="market">Market</button>
   <button data-tab="watchlist">Watchlist &amp; Signals</button>
   <button data-tab="charts">Charts</button>
+  <button data-tab="predict">🔮 Predict</button>
   <button data-tab="news">News</button>
 </nav>
 
@@ -101,6 +102,42 @@
   <div id="advisor-actions" class="rec-grid"></div>
   <div class="panel-head standalone"><h3>Holds &amp; Watches</h3></div>
   <div id="advisor-holds" class="rec-grid"></div>
+</section>
+
+<!-- ======================= PREDICT ======================= -->
+<section id="tab-predict" class="tab">
+  <div class="panel">
+    <div class="panel-head">
+      <h3>🔮 Price Projection</h3>
+      <div class="chart-controls">
+        <div class="combo" id="pred-coin-combo">
+          <input type="text" class="combo-input" id="pred-coin-input" placeholder="Type a name or ticker…" autocomplete="off" spellcheck="false">
+          <input type="hidden" id="pred-coin">
+          <div class="combo-list" id="pred-coin-list"></div>
+        </div>
+        <div class="range-btns" id="pred-range">
+          <button data-days="7">7d</button>
+          <button data-days="30" class="active">30d</button>
+          <button data-days="90">90d</button>
+        </div>
+      </div>
+    </div>
+    <p class="muted small-note">A <b>range of ordinary outcomes</b> if recent behavior persists — not a promise.
+      The bands widen with time because uncertainty genuinely grows. Sudden news, hacks and market shocks are
+      not predictable by anyone — including this tool.</p>
+    <div class="chart-box tall"><canvas id="pred-chart"></canvas></div>
+  </div>
+  <div class="grid2">
+    <div class="panel">
+      <div class="panel-head"><h3>How this projection is made</h3></div>
+      <div id="pred-method" class="empty-note">Pick an asset above.</div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h3>👔 What analysts say</h3>
+        <span class="muted small-note">Wall-Street recommendation counts (stocks only)</span></div>
+      <div id="pred-analyst" class="empty-note">—</div>
+    </div>
+  </div>
 </section>
 
 <!-- ======================= PORTFOLIO ======================= -->

@@ -1474,6 +1474,7 @@ const loaders = {
   market: loadMarket,
   watchlist: loadWatchlist,
   charts: loadCharts,
+  predict: loadPredict,
   news: loadNews,
 };
 
@@ -1537,6 +1538,107 @@ curSel.onchange = () => {
 };
 
 const txCombo = setupCombo("tx-coin");
+const predCombo = setupCombo("pred-coin", (v) => {
+  state.predAsset = state.predAsset || {};
+  state.predAsset[state.market] = v;
+  drawPrediction();
+});
+document.querySelectorAll("#pred-range button").forEach(b => b.onclick = () => {
+  document.querySelectorAll("#pred-range button").forEach(x => x.classList.toggle("active", x === b));
+  state.predDays = +b.dataset.days;
+  drawPrediction();
+});
+
+async function loadPredict() {
+  await fillAssetCombo(predCombo);
+  state.predAsset = state.predAsset || {};
+  const saved = state.predAsset[state.market];
+  if (saved) predCombo.set(saved);
+  else state.predAsset[state.market] = predCombo.value;
+  drawPrediction();
+}
+
+async function drawPrediction() {
+  const aid = (state.predAsset || {})[state.market] || document.getElementById("pred-coin").value;
+  if (!aid) return;
+  const days = state.predDays || 30;
+  const methodEl = document.getElementById("pred-method");
+  const anEl = document.getElementById("pred-analyst");
+  let d;
+  try {
+    d = await api(M() + "/predict/" + encodeURIComponent(aid) + "?days=" + days);
+  } catch (e) {
+    methodEl.innerHTML = `<div class="empty-note">${esc(e.message)}</div>`;
+    return;
+  }
+  const histN = d.history.length;
+  const labels = d.history.map(x => new Date(x[0]).toLocaleDateString([], { month: "short", day: "numeric" }))
+    .concat(d.proj.map(x => new Date(x.ts).toLocaleDateString([], { month: "short", day: "numeric" })));
+  const pad = (arr) => Array(histN - 1).fill(null).concat([d.history[histN - 1][1]]).concat(arr);
+  makeChart("pred-chart", {
+    type: "line",
+    data: { labels, datasets: [
+      { label: "History", data: d.history.map(x => x[1]).concat(Array(d.proj.length).fill(null)),
+        borderColor: "#60a5fa", pointRadius: 0, borderWidth: 2, tension: .2 },
+      { label: "wide low", data: pad(d.proj.map(x => x.lo2)), borderColor: "transparent",
+        pointRadius: 0, fill: false },
+      { label: "Wide range (~90%)", data: pad(d.proj.map(x => x.hi2)), borderColor: "transparent",
+        backgroundColor: "rgba(247,147,26,.08)", pointRadius: 0, fill: "-1" },
+      { label: "likely low", data: pad(d.proj.map(x => x.lo)), borderColor: "transparent",
+        pointRadius: 0, fill: false },
+      { label: "Likely range (~68%)", data: pad(d.proj.map(x => x.hi)), borderColor: "transparent",
+        backgroundColor: "rgba(247,147,26,.18)", pointRadius: 0, fill: "-1" },
+      { label: "Projected path", data: pad(d.proj.map(x => x.center)), borderColor: "#f7931a",
+        borderDash: [6, 4], pointRadius: 0, borderWidth: 2 },
+    ]},
+    options: {
+      maintainAspectRatio: false, interaction: { mode: "index", intersect: false },
+      plugins: { legend: { labels: { boxWidth: 12,
+          filter: (it) => it.text !== "wide low" && it.text !== "likely low" } },
+        tooltip: { callbacks: { label: c => c.dataset.label + ": " + fmtMoney(c.parsed.y) } } },
+      scales: { x: { ticks: { maxTicksLimit: 9, maxRotation: 0 } },
+                y: { ticks: { callback: v => fmtMoney(v, true) } } },
+    },
+  });
+  const m = d.method;
+  const far = d.proj[d.proj.length - 1];
+  const ts = (m.tech_score == null) ? 0 : m.tech_score;
+  methodEl.innerHTML = `
+    <ul class="bd-sec">
+      <li><b>1. The drawn line:</b> a best-fit trend over the last ${m.lookback_bars} closes
+        (the "ruler on the chart" technique, done by least-squares). Current slope
+        <b class="${m.trend_30d_pct >= 0 ? "pos" : "neg"}">${m.trend_30d_pct >= 0 ? "+" : ""}${m.trend_30d_pct.toFixed(1)}% per 30d</b>.</li>
+      <li><b>2. The cone:</b> this asset typically moves \u00b1${m.vol_day_pct.toFixed(1)}%/day, so uncertainty
+        compounds with time \u2014 the shaded bands are where roughly 68% and 90% of ordinary outcomes land.</li>
+      <li><b>3. Today's tilt:</b> news sentiment (${m.news_score >= 0 ? "+" : ""}${m.news_score}) and the
+        technical signal (${ts >= 0 ? "+" : ""}${ts}) bend the first two weeks by
+        ${m.tilt_30d_pct >= 0 ? "+" : ""}${m.tilt_30d_pct.toFixed(1)}% \u2014 deliberately small, because news
+        predicts days, not months.</li>
+    </ul>
+    <div class="bd-total">By ${new Date(far.ts).toLocaleDateString([], { month: "short", day: "numeric" })}:
+      likely ${fmtMoney(far.lo)} \u2013 ${fmtMoney(far.hi)}
+      <span class="muted">(center ${fmtMoney(far.center)})</span></div>`;
+  if (d.analyst && d.analyst.length) {
+    const a0 = d.analyst[0], a1 = d.analyst[1];
+    const tot = (x) => (x.strongBuy||0)+(x.buy||0)+(x.hold||0)+(x.sell||0)+(x.strongSell||0);
+    const bull = (x) => tot(x) ? ((x.strongBuy||0)+(x.buy||0)) / tot(x) : 0;
+    const shift = a1 ? (bull(a0) - bull(a1)) : 0;
+    anEl.innerHTML = `
+      <div class="mini-stats">
+        <div class="mini-stat"><span>Strong Buy</span><b class="pos">${a0.strongBuy||0}</b></div>
+        <div class="mini-stat"><span>Buy</span><b class="pos">${a0.buy||0}</b></div>
+        <div class="mini-stat"><span>Hold</span><b class="muted">${a0.hold||0}</b></div>
+        <div class="mini-stat"><span>Sell</span><b class="neg">${(a0.sell||0)+(a0.strongSell||0)}</b></div>
+      </div>
+      <p class="small-note muted" style="margin-top:6px">${tot(a0)} analysts covering (${esc(a0.period || "")}).
+      ${a1 ? `Versus last month the Street got <b>${shift > 0.02 ? "more bullish" : shift < -0.02 ? "less bullish" : "neither more nor less bullish"}</b>.` : ""}
+      Professional opinion for context \u2014 analysts are frequently wrong too.</p>`;
+  } else {
+    anEl.innerHTML = '<div class="empty-note">No analyst coverage data for this asset' +
+      (state.market === "crypto" ? " \u2014 analysts publish recommendations for stocks, not coins." : ".") + '</div>';
+  }
+}
+
 const chartCombo = setupCombo("chart-coin", (v) => {
   state.chartAsset[state.market] = v;
   drawHistory();

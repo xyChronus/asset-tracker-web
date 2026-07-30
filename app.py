@@ -1748,6 +1748,114 @@ def api_history(market, asset_id):
     return jsonify({"asset_id": asset_id, "points": [[r["ts"], r["price"]] for r in rows]})
 
 
+def _analyst_recs(market, asset_id):
+    """Latest two months of Wall-Street analyst recommendation counts (free on
+    Finnhub for both US and .PM names). Cached 24h per symbol. None for crypto."""
+    if market == "crypto":
+        return None
+    sym = asset_id + ".PM" if market == "pse" else asset_id
+    kvk = f"analyst:{sym}"
+    cached = db.kv_get(kvk)
+    if cached and now_ms() - cached.get("updated", 0) < 86400000:
+        return cached.get("data")
+    try:
+        recs = global_data.fh_get("/stock/recommendation", {"symbol": sym})
+        data = recs[:2] if isinstance(recs, list) and recs else None
+    except Exception:
+        return (cached or {}).get("data")
+    db.kv_set(kvk, {"updated": now_ms(), "data": data})
+    return data
+
+
+@app.get("/api/<market>/predict/<path:asset_id>")
+def api_predict(market, asset_id):
+    """Honest price projection: a trend line fitted over the price history
+    (log-linear regression - the 'draw a line over the chart' technique, done
+    statistically), a small transparent tilt from current news + technicals,
+    and an uncertainty cone from the asset's own volatility. Shown WITH the
+    method and analyst context - a range of ordinary outcomes, not a promise."""
+    _check(market)
+    days = min(120, max(3, int(request.args.get("days", 30))))
+    since = now_ms() - 90 * 86400000
+    rows = db.conn().execute(
+        "SELECT ts, price FROM price_history WHERE market=%s AND asset_id=%s AND ts>=%s"
+        " ORDER BY ts", (market, asset_id, since)).fetchall()
+    pairs = [(r["ts"], r["price"]) for r in rows if r["price"] and r["price"] > 0]
+    if market == "crypto":
+        by_day = {}
+        for ts, p in pairs:  # crypto trades every day - keep all days
+            by_day[ts // 86400000] = (ts, p)
+        daily = [by_day[d] for d in sorted(by_day)]
+    else:
+        by_day = {}
+        for ts, p in pairs:  # trading-day closes only
+            if (ts // 86400000 + 3) % 7 < 5:
+                by_day[ts // 86400000] = (ts, p)
+        daily = [by_day[d] for d in sorted(by_day)]
+    closes = [p for _, p in daily]
+    n = len(closes)
+    if n < 20:
+        return jsonify({"error": "Not enough price history yet for a projection - "
+                                 "this asset needs a few more weeks of data."}), 400
+
+    # --- the drawn line: least-squares fit of log(price) over time ---
+    logs = [math.log(p) for p in closes]
+    xm = (n - 1) / 2.0
+    ym = sum(logs) / n
+    sxx = sum((i - xm) ** 2 for i in range(n))
+    mu = sum((i - xm) * (logs[i] - ym) for i in range(n)) / sxx  # drift per bar
+    # per-bar volatility (the cone) from actual day-to-day moves, winsorized
+    rets = [logs[i + 1] - logs[i] for i in range(n - 1)]
+    med = sorted(abs(r) for r in rets)[len(rets) // 2]
+    if med > 0:
+        rets = [max(-6 * med, min(6 * med, r)) for r in rets]
+    rm = sum(rets) / len(rets)
+    vol = (sum((r - rm) ** 2 for r in rets) / max(1, len(rets) - 1)) ** 0.5
+
+    # --- small, transparent tilt from today's news + technicals (first ~14 bars) ---
+    sig_d = (db.kv_get(f"{market}:signals", {}).get("data") or {}).get(asset_id) or {}
+    tech = sig_d.get("score") if sig_d.get("action") not in (None, "WAIT") else 0
+    pm, _ = price_map(market)
+    meta = pm.get(asset_id, {})
+    a_dict = {"asset_id": asset_id, "name": meta.get("name") or asset_id,
+              "symbol": meta.get("symbol") or asset_id}
+    per, _sent = adv._match_news([a_dict], _advisor_news(market), now_ms())
+    nb = per.get(asset_id, {"raw": 0.0, "articles": []})
+    news_score = max(-3.0, min(3.0, nb["raw"] / 3.0))
+    if len(nb["articles"]) == 1:
+        news_score *= 0.5
+    tilt_bar = news_score * 0.0005 + (tech or 0) * 0.00025  # max ~±0.35%/day
+
+    # --- project (bars = trading days for stocks, calendar days for crypto) ---
+    last_ts, last_p = daily[-1]
+    bars = days if market == "crypto" else max(2, round(days * 5 / 7))
+    step_ms = 86400000 if market == "crypto" else round(86400000 * 7 / 5)
+    proj = []
+    for b in range(1, bars + 1):
+        center = last_p * math.exp(mu * b + tilt_bar * min(b, 14))
+        w1 = vol * math.sqrt(b)
+        proj.append({"ts": last_ts + b * step_ms,
+                     "center": center,
+                     "lo": center * math.exp(-1.0 * w1), "hi": center * math.exp(1.0 * w1),
+                     "lo2": center * math.exp(-1.65 * w1), "hi2": center * math.exp(1.65 * w1)})
+
+    bars30 = 30 if market == "crypto" else 22
+    return jsonify({
+        "asset_id": asset_id, "name": a_dict["name"], "price": last_p,
+        "history": [[ts, p] for ts, p in daily],
+        "proj": proj,
+        "method": {
+            "lookback_bars": n,
+            "trend_30d_pct": (math.exp(mu * bars30) - 1) * 100,
+            "vol_day_pct": vol * 100,
+            "news_score": round(news_score, 2),
+            "tech_score": tech,
+            "tilt_30d_pct": (math.exp(tilt_bar * 14) - 1) * 100,
+        },
+        "analyst": _analyst_recs(market, asset_id),
+    })
+
+
 @app.get("/api/<market>/news")
 def api_news(market):
     _check(market)
