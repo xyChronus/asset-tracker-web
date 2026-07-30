@@ -208,3 +208,10 @@ Web-only items are marked **(web)**.
 ## [1.13.2] — 2026-07-28 — Tighter profit targets across every style
 ### Changed
 - Take-profit thresholds and suggested TP/SL levels lowered across all trading styles — they were running too high, especially for fast styles. New take-profit triggers: **Scalper ~+2%** (in and out quickly, small wins, follow the momentum), **Day ~+4%**, **Swing ~+15%**, **Long-Term ~+40%**. The suggested-plan ranges tightened to match (e.g. Scalper plans now target +1.6–6% instead of +3–12%), and the deduced per-asset suggestions stay volatility-aware inside the new bands. The advisor will bank profits noticeably earlier — closer to how each style actually trades.
+
+## [1.13.3] — 2026-07-28 — Predictions convenience & swing at 10%
+### Added
+- The Predictions tab now shows **your current holdings as one-click chips** — tap any position you own to see its projection instantly, no typing.
+### Changed
+- **Swing Trader** take-profit moved from ~15% to **~10%** — 10% swings are the decision-makers now, with suggested plans re-centered to match (targets +6–20%, stops −3–10%).
+- The Dashboard's **Predicted Movers** panel expanded from 3 to **10 per side** — a fuller picture of where the market's trends are pointing.

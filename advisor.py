@@ -267,7 +267,7 @@ STYLE_PARAMS = {
     "day": {"label": "Day Trader", "buy_tech": 2, "sell_hard": -3, "sell_soft": -2,
             "tp_pct": 4, "tp_tech": 0, "value_buy": 99, "alloc_cap": 38},
     "swing": {"label": "Swing Trader", "buy_tech": 3, "sell_hard": -4, "sell_soft": -2,
-              "tp_pct": 15, "tp_tech": -1, "value_buy": 3, "alloc_cap": 35},
+              "tp_pct": 10, "tp_tech": -1, "value_buy": 3, "alloc_cap": 35},
     "long": {"label": "Long-Term Investor", "buy_tech": 4, "sell_hard": -5, "sell_soft": -4,
              "tp_pct": 40, "tp_tech": -1, "value_buy": 2, "alloc_cap": 35},
 }
@@ -328,7 +328,7 @@ PLAN_STYLE = {
     #        horizon(d)  sl%   min-max     tp% min-max
     "scalper": {"h": 0.5,  "sl": (0.8, 3.0),  "tp": (1.6, 6.0)},
     "day":     {"h": 1.5,  "sl": (1.5, 6.0),  "tp": (3.0, 12.0)},
-    "swing":   {"h": 10.0, "sl": (4.0, 12.5), "tp": (8.0, 25.0)},
+    "swing":   {"h": 10.0, "sl": (3.0, 10.0), "tp": (6.0, 20.0)},
     "long":    {"h": 45.0, "sl": (7.5, 25.0), "tp": (15.0, 50.0)},
 }
 _SL_Z = 1.4          # stop sits ~1.4 typical horizon-moves away

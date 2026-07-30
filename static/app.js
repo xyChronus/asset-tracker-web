@@ -9,7 +9,7 @@ const MKT_LABEL = { crypto: "Crypto", pse: "PSE Stocks", global: "Global Stocks"
 const STYLES = [
   { v: "scalper", label: "Scalper", desc: "Very short holds. Acts on fast signals, takes small profits quickly (~2%), and barely weighs company fundamentals." },
   { v: "day", label: "Day Trader", desc: "Intraday moves. Quick to act, takes profit around +4%, light on fundamentals." },
-  { v: "swing", label: "Swing Trader", desc: "Days to weeks. The balanced default — takes profit around +15% and blends technicals, news and fundamentals." },
+  { v: "swing", label: "Swing Trader", desc: "Days to weeks. The balanced default — takes profit around +10% and blends technicals, news and fundamentals." },
   { v: "long", label: "Long-Term Investor", desc: "Months and up. Patient and fundamentals-led; rarely sells on short-term dips, takes profit much later." },
 ];
 const styleLabel = (v) => (STYLES.find(s => s.v === v) || STYLES[2]).label;
@@ -1581,7 +1581,29 @@ async function loadPredict() {
   const saved = state.predAsset[state.market];
   if (saved) predCombo.set(saved);
   else state.predAsset[state.market] = predCombo.value;
+  loadPredHoldings();
   drawPrediction();
+}
+
+// one-click shortcuts: predictions for what the user actually holds
+async function loadPredHoldings() {
+  const el = document.getElementById("pred-holdings");
+  if (!el) return;
+  try {
+    const p = await api(M() + "/portfolio");
+    const hs = (p.holdings || []).filter(h => h.price);
+    if (!hs.length) { el.innerHTML = ""; return; }
+    const cur = (state.predAsset || {})[state.market];
+    el.innerHTML = '<span class="muted small-note">Your holdings:</span>' + hs.map(h =>
+      `<button class="hold-chip${cur === h.asset_id ? " active" : ""}" data-ph="${esc(h.asset_id)}"
+        title="Show the projection for ${esc(h.name)}">${esc(h.symbol || h.name)}</button>`).join("");
+    el.querySelectorAll("[data-ph]").forEach(b => b.onclick = () => {
+      state.predAsset[state.market] = b.dataset.ph;
+      predCombo.set(b.dataset.ph);
+      el.querySelectorAll(".hold-chip").forEach(x => x.classList.toggle("active", x === b));
+      drawPrediction();
+    });
+  } catch (e) { el.innerHTML = ""; }
 }
 
 async function drawPrediction() {

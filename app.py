@@ -1815,7 +1815,7 @@ def api_predict_summary(market):
     ranked = sorted(({"asset_id": k, **v} for k, v in data.items()),
                     key=lambda x: x["pct30"])
     return jsonify({"updated": snap.get("updated"),
-                    "down": ranked[:3], "up": ranked[::-1][:3]})
+                    "down": ranked[:10], "up": ranked[::-1][:10]})
 
 
 def _analyst_recs(market, asset_id):

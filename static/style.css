@@ -440,3 +440,11 @@ canvas.spark { width: 110px; height: 30px; }
 
 .pred-item { cursor: pointer; }
 .pred-item:hover { background: var(--panel-2); }
+
+.pred-holdings { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 2px 0 8px; }
+.hold-chip {
+  background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
+  border-radius: 20px; padding: 3px 12px; font: inherit; font-size: 12px; cursor: pointer;
+}
+.hold-chip:hover { border-color: var(--accent); }
+.hold-chip.active { border-color: var(--accent); color: var(--accent); }
