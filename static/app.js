@@ -7,9 +7,9 @@ const CUR = { crypto: "$", pse: "₱", global: "$" };
 const MKT_LABEL = { crypto: "Crypto", pse: "PSE Stocks", global: "Global Stocks" };
 
 const STYLES = [
-  { v: "scalper", label: "Scalper", desc: "Very short holds. Acts on fast signals, takes small profits quickly (~4%), and barely weighs company fundamentals." },
-  { v: "day", label: "Day Trader", desc: "Intraday moves. Quick to act, takes profit around +6%, light on fundamentals." },
-  { v: "swing", label: "Swing Trader", desc: "Days to weeks. The balanced default — takes profit around +25% and blends technicals, news and fundamentals." },
+  { v: "scalper", label: "Scalper", desc: "Very short holds. Acts on fast signals, takes small profits quickly (~2%), and barely weighs company fundamentals." },
+  { v: "day", label: "Day Trader", desc: "Intraday moves. Quick to act, takes profit around +4%, light on fundamentals." },
+  { v: "swing", label: "Swing Trader", desc: "Days to weeks. The balanced default — takes profit around +15% and blends technicals, news and fundamentals." },
   { v: "long", label: "Long-Term Investor", desc: "Months and up. Patient and fundamentals-led; rarely sells on short-term dips, takes profit much later." },
 ];
 const styleLabel = (v) => (STYLES.find(s => s.v === v) || STYLES[2]).label;

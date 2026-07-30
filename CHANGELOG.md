@@ -204,3 +204,7 @@ Web-only items are marked **(web)**.
 - The Dashboard now shows **Predicted Movers — 30 days**: the three assets projecting furthest **up** and furthest **down** by their own price-trend math, refreshed a few times a day. Click any row to jump to its full projection. Same honest framing as the Predictions tab: where things likely land *if recent behavior persists* — ranges, not promises.
 ### Changed
 - The Predictions tab is now labeled simply **Predictions**.
+
+## [1.13.2] — 2026-07-28 — Tighter profit targets across every style
+### Changed
+- Take-profit thresholds and suggested TP/SL levels lowered across all trading styles — they were running too high, especially for fast styles. New take-profit triggers: **Scalper ~+2%** (in and out quickly, small wins, follow the momentum), **Day ~+4%**, **Swing ~+15%**, **Long-Term ~+40%**. The suggested-plan ranges tightened to match (e.g. Scalper plans now target +1.6–6% instead of +3–12%), and the deduced per-asset suggestions stay volatility-aware inside the new bands. The advisor will bank profits noticeably earlier — closer to how each style actually trades.
