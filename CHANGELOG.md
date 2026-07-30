@@ -215,3 +215,11 @@ Web-only items are marked **(web)**.
 ### Changed
 - **Swing Trader** take-profit moved from ~15% to **~10%** — 10% swings are the decision-makers now, with suggested plans re-centered to match (targets +6–20%, stops −3–10%).
 - The Dashboard's **Predicted Movers** panel expanded from 3 to **10 per side** — a fuller picture of where the market's trends are pointing.
+
+## [1.14.0] — 2026-07-31 — Forecasts on the Advisor
+### Added
+- Every Advisor card now carries a **Trend projection line — where the price points in 7, 15 and 30 days** if its recent trend simply continues, with the projected prices spelled out (anchored at the card's live price). Click it to jump straight to the full Predictions chart — which adds the uncertainty cone and a small news tilt on top of the same trend fit.
+### Notes
+- The projection is context, not a vote: it's drawn from the same price history the technicals already score, so it deliberately does **not** move the conviction number — and the advisor's call can point the other way, since it weighs shorter-term signals. Point estimates, not a promise; the final call stays yours.
+### Fixed
+- A 12-finding adversarial review pass (this feature + the previously unreviewed predictions engine): Predictions charts now read ~24× less data per draw; junk URL parameters return a clean error instead of a crash; a failed projection no longer leaves the previous asset's chart on screen; jumping to Predictions for an asset you hold but don't watch now labels the picker correctly; stock 30-day horizons unified at 21 trading days everywhere.

@@ -16,8 +16,8 @@ from datetime import datetime, timedelta
 from functools import wraps
 
 import requests
-from flask import (Flask, jsonify, redirect, request, send_from_directory,
-                   session)
+from flask import (Flask, abort, jsonify, make_response, redirect, request,
+                   send_from_directory, session)
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import advisor as adv
@@ -1312,6 +1312,15 @@ def get_advisor(market, user, force=False):
                            currency=config.CURRENCY[market], fundamentals=fund,
                            max_ideas=config.ADVISOR_MAX_IDEAS[market], style=style,
                            targets=tgts, earnings=earn)
+        # Attach the precomputed trend projections (display only — the fit is
+        # built from the same price history the technicals already vote on, so
+        # feeding it into conviction would double-count momentum).
+        pred = db.kv_get(f"predict:{market}", {}).get("data") or {}
+        for r in result.get("recommendations", []):
+            p = pred.get(r["asset_id"])
+            if p and p.get("pct7") is not None:
+                r["forecast"] = {"pct7": p["pct7"], "pct15": p["pct15"],
+                                 "pct30": p["pct30"], "base": p["price"]}
         result["updated"] = now_ms()
         result["market_open"] = is_open
         result["next_open"] = next_open
@@ -1326,6 +1335,15 @@ def _invalidate_advisor(market, user):
 # --------------------------------------------------------------------- routes
 
 VALID = set(config.MARKETS)
+
+
+def _int_arg(name, default, lo, hi):
+    """Bounded integer query param; junk input gets a clean 400, not a 500."""
+    try:
+        v = int(request.args.get(name) or default)
+    except (TypeError, ValueError):
+        abort(make_response(jsonify({"error": f"{name} must be a whole number"}), 400))
+    return min(hi, max(lo, v))
 
 
 def _check(market):
@@ -1348,7 +1366,7 @@ def api_portfolio(market):
 @app.get("/api/<market>/portfolio_history")
 def api_portfolio_history(market):
     _check(market)
-    hours = min(int(request.args.get("hours", 168)), 24 * config.HISTORY_KEEP_DAYS)
+    hours = _int_arg("hours", 168, 1, 24 * config.HISTORY_KEEP_DAYS)
     return jsonify({"points": portfolio_history(market, uid(), hours)})
 
 
@@ -1743,7 +1761,7 @@ def api_signals(market):
 @app.get("/api/<market>/history/<path:asset_id>")
 def api_history(market, asset_id):
     _check(market)
-    hours = min(int(request.args.get("hours", 168)), 24 * config.HISTORY_KEEP_DAYS)
+    hours = _int_arg("hours", 168, 1, 24 * config.HISTORY_KEEP_DAYS)
     since = now_ms() - hours * 3600000
     rows = db.conn().execute(
         "SELECT ts, price FROM price_history WHERE market=%s AND asset_id=%s AND ts>=%s"
@@ -1787,20 +1805,26 @@ def predictions_tick(market):
     snapshot for the dashboard's Predicted Movers panel."""
     since = now_ms() - 90 * 86400000
     pm, _ = price_map(market)
-    bars30 = 30 if market == "crypto" else 22
+    # calendar days -> trading bars, = round(days * 5/7) for stocks so these
+    # match the Predictions tab's zero-tilt path endpoints exactly
+    crypto = market == "crypto"
+    horizons = {"pct7": 7 if crypto else 5,
+                "pct15": 15 if crypto else 11,
+                "pct30": 30 if crypto else 21}
+    bars30 = horizons["pct30"]
     out = {}
     for aid in tracked_ids_all_users(market):
         closes = _daily_series(market, aid, since)
         if len(closes) < 20:
             continue
         mu, vol = _fit_projection(closes)
-        pct30 = (math.exp(mu * bars30) - 1) * 100
         band = vol * math.sqrt(bars30)
         m = pm.get(aid, {})
         out[aid] = {"name": m.get("name") or aid,
                     "symbol": (m.get("symbol") or aid).upper(),
                     "price": closes[-1],
-                    "pct30": round(pct30, 1),
+                    **{k: round((math.exp(mu * b) - 1) * 100, 1)
+                       for k, b in horizons.items()},
                     "lo_pct": round((math.exp(mu * bars30 - band) - 1) * 100, 1),
                     "hi_pct": round((math.exp(mu * bars30 + band) - 1) * 100, 1)}
     db.kv_set(f"predict:{market}", {"updated": now_ms(), "data": out})
@@ -1845,23 +1869,16 @@ def api_predict(market, asset_id):
     and an uncertainty cone from the asset's own volatility. Shown WITH the
     method and analyst context - a range of ordinary outcomes, not a promise."""
     _check(market)
-    days = min(120, max(3, int(request.args.get("days", 30))))
+    days = _int_arg("days", 30, 3, 120)
     since = now_ms() - 90 * 86400000
+    # daily resample in SQL (last price per day; stocks weekdays only) — same
+    # shape as _daily_series but keeping the closing timestamp for the chart
+    weekday = "" if market == "crypto" else " AND (ts / 86400000 + 3) %% 7 < 5"
     rows = db.conn().execute(
-        "SELECT ts, price FROM price_history WHERE market=%s AND asset_id=%s AND ts>=%s"
-        " ORDER BY ts", (market, asset_id, since)).fetchall()
-    pairs = [(r["ts"], r["price"]) for r in rows if r["price"] and r["price"] > 0]
-    if market == "crypto":
-        by_day = {}
-        for ts, p in pairs:  # crypto trades every day - keep all days
-            by_day[ts // 86400000] = (ts, p)
-        daily = [by_day[d] for d in sorted(by_day)]
-    else:
-        by_day = {}
-        for ts, p in pairs:  # trading-day closes only
-            if (ts // 86400000 + 3) % 7 < 5:
-                by_day[ts // 86400000] = (ts, p)
-        daily = [by_day[d] for d in sorted(by_day)]
+        "SELECT MAX(ts) AS ts, (ARRAY_AGG(price ORDER BY ts DESC))[1] AS close"
+        f" FROM price_history WHERE market=%s AND asset_id=%s AND ts>=%s{weekday}"
+        " GROUP BY ts / 86400000 ORDER BY 1", (market, asset_id, since)).fetchall()
+    daily = [(r["ts"], r["close"]) for r in rows if r["close"] and r["close"] > 0]
     closes = [p for _, p in daily]
     n = len(closes)
     if n < 20:
@@ -1898,7 +1915,7 @@ def api_predict(market, asset_id):
                      "lo": center * math.exp(-1.0 * w1), "hi": center * math.exp(1.0 * w1),
                      "lo2": center * math.exp(-1.65 * w1), "hi2": center * math.exp(1.65 * w1)})
 
-    bars30 = 30 if market == "crypto" else 22
+    bars30 = 30 if market == "crypto" else 21   # = round(30 * 5/7), matches proj
     return jsonify({
         "asset_id": asset_id, "name": a_dict["name"], "price": last_p,
         "history": [[ts, p] for ts, p in daily],
@@ -1918,7 +1935,7 @@ def api_predict(market, asset_id):
 @app.get("/api/<market>/news")
 def api_news(market):
     _check(market)
-    limit = min(int(request.args.get("limit", 120)), 400)
+    limit = _int_arg("limit", 120, 1, 400)
     source = request.args.get("source")
     if source:
         rows = db.conn().execute(

@@ -241,6 +241,9 @@ tbody tr:hover { background: var(--panel-2); }
 .tgt-btn.plain:hover .tgt-chip.tgt-sugg { opacity: 1; border-color: var(--accent); }
 .tgt-calc { min-height: 16px; margin: 2px 0 8px; }
 .sugg-plan { font-size: 12px; margin: 3px 0 6px; }
+.forecast-line { font-size: 12px; margin: 3px 0 6px; cursor: pointer; }
+.forecast-line .fc-more { color: var(--accent); font-size: 11px; margin-left: 4px; }
+.forecast-line:hover .fc-more { text-decoration: underline; }
 .sugg-plan .mini-btn { margin-left: 6px; padding: 1px 8px; font-size: 11px; }
 .sugg-why { font-size: 11px; opacity: .8; font-style: italic; }
 

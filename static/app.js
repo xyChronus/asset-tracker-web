@@ -325,8 +325,15 @@ function setupCombo(baseId, onPick) {
       else if (options.length) pick(options[0], true);
       else { hidden.value = ""; input.value = ""; }
     },
-    set(value) {
-      const o = options.find(x => x.value === value);
+    set(value, meta) {
+      let o = options.find(x => x.value === value);
+      if (!o && value) {
+        // not on the user's watchlist (e.g. a held-but-unwatched asset opened
+        // from an advisor card) — add it so the picker labels what's charted
+        o = { value, symbol: (meta && meta.symbol) || String(value).toUpperCase(),
+              name: (meta && meta.name) || value };
+        options.push(o);
+      }
       if (o) pick(o, true);
     },
     get value() { return hidden.value; },
@@ -668,6 +675,7 @@ async function loadPredMovers() {
   if (!(d.up || []).length && !(d.down || []).length) { panel.style.display = "none"; return; }
   panel.style.display = "";
   const row = (x) => `<div class="gl-item pred-item" data-pred="${esc(x.asset_id)}"
+      data-preds="${esc(x.symbol || "")}" data-predn="${esc(x.name || "")}"
       title="Likely range ${x.lo_pct >= 0 ? "+" : ""}${x.lo_pct}% to ${x.hi_pct >= 0 ? "+" : ""}${x.hi_pct}% — click for the full projection">
     <div class="gl-coin"><b>${esc(x.symbol)}</b><span class="muted">${fmtMoney(x.price)}</span></div>
     <span class="${x.pct30 >= 0 ? "pos" : "neg"}">${x.pct30 >= 0 ? "▲ +" : "▼ "}${x.pct30}%</span>
@@ -679,10 +687,18 @@ async function loadPredMovers() {
     (d.down || []).filter(x => x.pct30 < 0).map(row).join("") ||
     '<div class="empty-note">Nothing projecting down right now.</div>';
   panel.querySelectorAll("[data-pred]").forEach(el => el.onclick = () => {
-    state.predAsset = state.predAsset || {};
-    state.predAsset[state.market] = el.dataset.pred;
+    setPredAsset(el.dataset.pred, el.dataset.preds, el.dataset.predn);
     switchTab("predict");
   });
+}
+
+// remember which asset the Predictions tab should chart, plus its label so the
+// picker can name it even when it isn't on the user's watchlist
+function setPredAsset(aid, symbol, name) {
+  state.predAsset = state.predAsset || {};
+  state.predMeta = state.predMeta || {};
+  state.predAsset[state.market] = aid;
+  state.predMeta[state.market] = { symbol: symbol || "", name: name || "" };
 }
 
 function glList(list, priceKey, chgKey) {
@@ -785,6 +801,18 @@ function recCard(r) {
   const holdLine = h
     ? `<div class="rec-holding muted">You hold ${fmtMoney(h.value)} (${h.alloc_pct}% of portfolio${h.unrealized_pct != null ? ", " + (h.unrealized_pct >= 0 ? "up " : "down ") + Math.abs(h.unrealized_pct).toFixed(0) + "%" : ""})</div>`
     : "";
+  const fc = r.forecast;
+  // % comes from the trend fit; the money figure is anchored at the card's own
+  // live price so the two never visibly contradict (the fit's base can be
+  // hours older than the quote)
+  const fcPt = (lbl, pct) => `${lbl} <span class="${pct >= 0 ? "pos" : "neg"}">${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%</span>${
+      Number.isFinite(r.price) ? ` <span class="muted">${fmtMoney(r.price * (1 + pct / 100))}</span>` : ""}`;
+  const fcLine = fc
+    ? `<div class="forecast-line" data-fc="${esc(r.asset_id)}" data-fcs="${esc(r.symbol || "")}" data-fcn="${esc(r.name || "")}"
+         title="Where the recent price trend points if it simply continues — the same trend fit as the Predictions tab, before the small news tilt shown there. Point estimates, not a promise: click for the full chart with its uncertainty range. Context only — it doesn't move the score, and the advisor's call weighs shorter-term signals and news, so it can point the other way.">
+        <span class="muted">Trend projection:</span> ${fcPt("7d", fc.pct7)} · ${fcPt("15d", fc.pct15)} · ${fcPt("30d", fc.pct30)}
+        <span class="fc-more">chart ▸</span></div>`
+    : "";
   const f = r.fundamentals || {};
   const chips = [];
   if (f.pe != null) chips.push("P/E " + fmtNum(f.pe, 1));
@@ -817,7 +845,7 @@ function recCard(r) {
         <span class="muted">${fmtMoney(r.price)}</span></div>
       <div class="head-right">${sigBadge(r)}${scorePill(r.conviction, 1)}${acceptBtn}${doneBtn}</div>
     </div>
-    ${flagRow}${amount}${planLine}${holdLine}
+    ${flagRow}${amount}${planLine}${fcLine}${holdLine}
     <div class="conv-bar" title="Conviction: ${conv}">
       <div class="conv-marker" style="left:${pos}%"></div>
     </div>
@@ -897,6 +925,10 @@ async function loadAdvisor() {
       : '<div class="empty-note">No buy or sell suggestions right now — the advisor only speaks up when several signals line up. That caution is a feature.</div>');
   document.getElementById("advisor-holds").innerHTML = rest.map(recCard).join("");
   bindDoneButtons("advisor-actions", loadAdvisor);
+  document.querySelectorAll("#tab-advisor [data-fc]").forEach(el => el.onclick = () => {
+    setPredAsset(el.dataset.fc, el.dataset.fcs, el.dataset.fcn);
+    switchTab("predict");
+  });
 }
 
 function bindDoneButtons(containerId, reload) {
@@ -1579,7 +1611,7 @@ async function loadPredict() {
   await fillAssetCombo(predCombo);
   state.predAsset = state.predAsset || {};
   const saved = state.predAsset[state.market];
-  if (saved) predCombo.set(saved);
+  if (saved) predCombo.set(saved, (state.predMeta || {})[state.market]);
   else state.predAsset[state.market] = predCombo.value;
   loadPredHoldings();
   drawPrediction();
@@ -1598,8 +1630,9 @@ async function loadPredHoldings() {
       `<button class="hold-chip${cur === h.asset_id ? " active" : ""}" data-ph="${esc(h.asset_id)}"
         title="Show the projection for ${esc(h.name)}">${esc(h.symbol || h.name)}</button>`).join("");
     el.querySelectorAll("[data-ph]").forEach(b => b.onclick = () => {
-      state.predAsset[state.market] = b.dataset.ph;
-      predCombo.set(b.dataset.ph);
+      const hm = hs.find(x => x.asset_id === b.dataset.ph) || {};
+      setPredAsset(b.dataset.ph, hm.symbol, hm.name);
+      predCombo.set(b.dataset.ph, { symbol: hm.symbol, name: hm.name });
       el.querySelectorAll(".hold-chip").forEach(x => x.classList.toggle("active", x === b));
       drawPrediction();
     });
@@ -1617,6 +1650,9 @@ async function drawPrediction() {
     d = await api(M() + "/predict/" + encodeURIComponent(aid) + "?days=" + days);
   } catch (e) {
     methodEl.innerHTML = `<div class="empty-note">${esc(e.message)}</div>`;
+    // don't leave the previous asset's chart and analyst panel on screen
+    if (charts["pred-chart"]) { charts["pred-chart"].destroy(); delete charts["pred-chart"]; }
+    anEl.innerHTML = "";
     return;
   }
   const histN = d.history.length;
