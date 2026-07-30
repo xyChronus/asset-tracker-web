@@ -878,6 +878,9 @@ def scheduler():
         [lambda: iv["global"]["signals"], 0, lambda: recompute_signals("global")],
         [lambda: 43200, 0, earnings_calendar_tick],
         [lambda: 86400, 0, spx_daily_tick],
+        [lambda: 21600, 0, lambda: predictions_tick("crypto")],
+        [lambda: 21600, 0, lambda: predictions_tick("pse")],
+        [lambda: 21600, 0, lambda: predictions_tick("global")],
         [lambda: iv["global"]["metrics"], 0, global_metrics_tick],
         [lambda: iv["global"]["indices"], 0, global_fetch_indices],
         [lambda: iv["global"]["news"], 0, lambda: fetch_news("global")],
@@ -1748,6 +1751,73 @@ def api_history(market, asset_id):
     return jsonify({"asset_id": asset_id, "points": [[r["ts"], r["price"]] for r in rows]})
 
 
+def _fit_projection(closes):
+    """The shared projection core: least-squares drift per bar over log prices
+    plus winsorized per-bar volatility. Used by the Predictions tab and the
+    dashboard movers snapshot so both always agree on the math."""
+    logs = [math.log(p) for p in closes]
+    n = len(logs)
+    xm = (n - 1) / 2.0
+    ym = sum(logs) / n
+    sxx = sum((i - xm) ** 2 for i in range(n))
+    mu = sum((i - xm) * (logs[i] - ym) for i in range(n)) / sxx
+    rets = [logs[i + 1] - logs[i] for i in range(n - 1)]
+    med = sorted(abs(r) for r in rets)[len(rets) // 2]
+    if med > 0:
+        rets = [max(-6 * med, min(6 * med, r)) for r in rets]
+    rm = sum(rets) / len(rets)
+    vol = (sum((r - rm) ** 2 for r in rets) / max(1, len(rets) - 1)) ** 0.5
+    return mu, vol
+
+
+def _daily_series(market, asset_id, since):
+    """Daily closes resampled in SQL (one row per day, last price of the day;
+    stocks keep weekdays only). Cheap enough to sweep a whole market."""
+    weekday = "" if market == "crypto" else " AND (ts / 86400000 + 3) %% 7 < 5"
+    rows = db.conn().execute(
+        "SELECT ts / 86400000 AS day, (ARRAY_AGG(price ORDER BY ts DESC))[1] AS close"
+        f" FROM price_history WHERE market=%s AND asset_id=%s AND ts>=%s{weekday}"
+        " GROUP BY 1 ORDER BY 1", (market, asset_id, since)).fetchall()
+    return [r["close"] for r in rows if r["close"] and r["close"] > 0]
+
+
+def predictions_tick(market):
+    """Precompute 30-day trend projections for every tracked asset (same math
+    as the Predictions tab, minus the per-asset news tilt) into one compact kv
+    snapshot for the dashboard's Predicted Movers panel."""
+    since = now_ms() - 90 * 86400000
+    pm, _ = price_map(market)
+    bars30 = 30 if market == "crypto" else 22
+    out = {}
+    for aid in tracked_ids_all_users(market):
+        closes = _daily_series(market, aid, since)
+        if len(closes) < 20:
+            continue
+        mu, vol = _fit_projection(closes)
+        pct30 = (math.exp(mu * bars30) - 1) * 100
+        band = vol * math.sqrt(bars30)
+        m = pm.get(aid, {})
+        out[aid] = {"name": m.get("name") or aid,
+                    "symbol": (m.get("symbol") or aid).upper(),
+                    "price": closes[-1],
+                    "pct30": round(pct30, 1),
+                    "lo_pct": round((math.exp(mu * bars30 - band) - 1) * 100, 1),
+                    "hi_pct": round((math.exp(mu * bars30 + band) - 1) * 100, 1)}
+    db.kv_set(f"predict:{market}", {"updated": now_ms(), "data": out})
+
+
+@app.get("/api/<market>/predict_summary")
+def api_predict_summary(market):
+    """Top projected movers (30d trend), both directions, for the dashboard."""
+    _check(market)
+    snap = db.kv_get(f"predict:{market}", {})
+    data = snap.get("data") or {}
+    ranked = sorted(({"asset_id": k, **v} for k, v in data.items()),
+                    key=lambda x: x["pct30"])
+    return jsonify({"updated": snap.get("updated"),
+                    "down": ranked[:3], "up": ranked[::-1][:3]})
+
+
 def _analyst_recs(market, asset_id):
     """Latest two months of Wall-Street analyst recommendation counts (free on
     Finnhub for both US and .PM names). Cached 24h per symbol. None for crypto."""
@@ -1799,18 +1869,7 @@ def api_predict(market, asset_id):
                                  "this asset needs a few more weeks of data."}), 400
 
     # --- the drawn line: least-squares fit of log(price) over time ---
-    logs = [math.log(p) for p in closes]
-    xm = (n - 1) / 2.0
-    ym = sum(logs) / n
-    sxx = sum((i - xm) ** 2 for i in range(n))
-    mu = sum((i - xm) * (logs[i] - ym) for i in range(n)) / sxx  # drift per bar
-    # per-bar volatility (the cone) from actual day-to-day moves, winsorized
-    rets = [logs[i + 1] - logs[i] for i in range(n - 1)]
-    med = sorted(abs(r) for r in rets)[len(rets) // 2]
-    if med > 0:
-        rets = [max(-6 * med, min(6 * med, r)) for r in rets]
-    rm = sum(rets) / len(rets)
-    vol = (sum((r - rm) ** 2 for r in rets) / max(1, len(rets) - 1)) ** 0.5
+    mu, vol = _fit_projection(closes)
 
     # --- small, transparent tilt from today's news + technicals (first ~14 bars) ---
     sig_d = (db.kv_get(f"{market}:signals", {}).get("data") or {}).get(asset_id) or {}

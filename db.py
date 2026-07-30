@@ -203,6 +203,7 @@ _KV_HOT = {
     "global:quotes", "global:signals", "global:profiles", "global:indices",
     "global:history_fetched", "fx:usdphp",
     "earnings:cal", "global:regime", "pse:regime",
+    "predict:crypto", "predict:pse", "predict:global",
 }
 _KV_TTL = 900.0
 _kv_cache = {}          # key -> (expires_monotonic, value)

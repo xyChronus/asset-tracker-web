@@ -34,7 +34,7 @@
   <button data-tab="market">Market</button>
   <button data-tab="watchlist">Watchlist &amp; Signals</button>
   <button data-tab="charts">Charts</button>
-  <button data-tab="predict">🔮 Predict</button>
+  <button data-tab="predict">Predictions</button>
   <button data-tab="news">News</button>
 </nav>
 
@@ -66,6 +66,17 @@
   <div class="panel">
     <div class="panel-head"><h3>Holdings</h3></div>
     <div class="table-wrap"><table id="holdings-table"></table></div>
+  </div>
+  <div class="panel" id="pred-movers-panel" style="display:none">
+    <div class="panel-head"><h3>Predicted Movers — 30 days</h3>
+      <button class="link-btn" data-goto="predict">full predictions →</button>
+    </div>
+    <p class="muted small-note">Trend projections from each asset's own price history — where things
+      likely land <b>if recent behavior persists</b>. Ranges, not promises; click any row for the full picture.</p>
+    <div class="gl-grid">
+      <div><h4 class="pos-h">Projected Up</h4><div id="pred-up" class="gl-list"></div></div>
+      <div><h4 class="neg-h">Projected Down</h4><div id="pred-down" class="gl-list"></div></div>
+    </div>
   </div>
   <div class="grid2">
     <div class="panel">

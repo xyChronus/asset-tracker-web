@@ -580,6 +580,7 @@ async function loadDashboard() {
   loadMarketPanels("dash");
   loadDashNews();
   loadTodayPlan();
+  loadPredMovers();
 }
 
 async function loadTodayPlan() {
@@ -656,6 +657,31 @@ function bindPlanDone() {
   document.querySelectorAll("#today-plan .pdone-btn").forEach(b => b.onclick = () => {
     dismissPlanHit(b.dataset.planDone);
     loadTodayPlan();
+  });
+}
+
+async function loadPredMovers() {
+  const panel = document.getElementById("pred-movers-panel");
+  let d;
+  try { d = await api(M() + "/predict_summary"); }
+  catch (e) { panel.style.display = "none"; return; }
+  if (!(d.up || []).length && !(d.down || []).length) { panel.style.display = "none"; return; }
+  panel.style.display = "";
+  const row = (x) => `<div class="gl-item pred-item" data-pred="${esc(x.asset_id)}"
+      title="Likely range ${x.lo_pct >= 0 ? "+" : ""}${x.lo_pct}% to ${x.hi_pct >= 0 ? "+" : ""}${x.hi_pct}% — click for the full projection">
+    <div class="gl-coin"><b>${esc(x.symbol)}</b><span class="muted">${fmtMoney(x.price)}</span></div>
+    <span class="${x.pct30 >= 0 ? "pos" : "neg"}">${x.pct30 >= 0 ? "▲ +" : "▼ "}${x.pct30}%</span>
+  </div>`;
+  document.getElementById("pred-up").innerHTML =
+    (d.up || []).filter(x => x.pct30 > 0).map(row).join("") ||
+    '<div class="empty-note">Nothing projecting up right now.</div>';
+  document.getElementById("pred-down").innerHTML =
+    (d.down || []).filter(x => x.pct30 < 0).map(row).join("") ||
+    '<div class="empty-note">Nothing projecting down right now.</div>';
+  panel.querySelectorAll("[data-pred]").forEach(el => el.onclick = () => {
+    state.predAsset = state.predAsset || {};
+    state.predAsset[state.market] = el.dataset.pred;
+    switchTab("predict");
   });
 }
 

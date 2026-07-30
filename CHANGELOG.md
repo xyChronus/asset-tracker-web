@@ -198,3 +198,9 @@ Web-only items are marked **(web)**.
 - A new **Predict** tab: pick any asset and see a **price projection** for 7/30/90 days — the classic "draw a line over the chart" technique done statistically (a best-fit trend over the price history), tilted slightly by today's news sentiment and technical signal, inside an **uncertainty cone** sized to that asset's own volatility. The bands honestly widen with time: they show where ~68% and ~90% of ordinary outcomes land — a range, never a promise.
 - **What analysts say**: for US and PSE stocks, the panel shows real Wall-Street recommendation counts (Strong Buy / Buy / Hold / Sell) and whether the Street got more or less bullish versus last month.
 - **Full method disclosure** on the tab itself: every projection explains its trend slope, its volatility cone, and its news/signal tilt in plain numbers — plus the reminder that sudden shocks are not predictable by anyone, including this tool.
+
+## [1.13.1] — 2026-07-27 — Predicted Movers on the Dashboard
+### Added
+- The Dashboard now shows **Predicted Movers — 30 days**: the three assets projecting furthest **up** and furthest **down** by their own price-trend math, refreshed a few times a day. Click any row to jump to its full projection. Same honest framing as the Predictions tab: where things likely land *if recent behavior persists* — ranges, not promises.
+### Changed
+- The Predictions tab is now labeled simply **Predictions**.
