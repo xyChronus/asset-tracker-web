@@ -249,3 +249,7 @@ Web-only items are marked **(web)**.
 - An emergency recovery path for the admin's own account (a secret key kept in the hosting dashboard), so the one person who hands out codes can't get permanently locked out.
 ### Fixed
 - A 15-finding adversarial security review before launch, then a second pass over the fixes: the sign-in page can't be used to discover which emails have accounts; a stranger can't flood guesses to keep someone locked out (attempts pause and heal, and a fresh code restores access instantly); an unauthenticated visitor can't exhaust the server's memory through the request form; and every message says exactly what the site does — including that it sends no notifications, so you still have to message the admin yourself.
+
+## [1.17.1] — 2026-08-01 — Reset hardening follow-up
+### Fixed
+- The reset form's per-device guess limit now identifies visitors correctly behind the hosting provider's proxies (measured on the live service rather than assumed). Previously it would have lumped every visitor together, letting one person exhaust the whole site's allowance and block everyone else's resets.

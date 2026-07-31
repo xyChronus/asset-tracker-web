@@ -251,23 +251,33 @@ _reset_req_last = {}   # email -> monotonic ts of last request (light throttle)
 _reset_ip_tries = {}   # client ip -> [monotonic ts, ...] recent guesses
 
 
+# Measured on the live service 2026-08-01: X-Forwarded-For arrives as
+#   "<anything the caller sent>, <real client>, <cloudflare>, <render internal>"
+# so the caller's own address is the 3rd from the right. Reading the FIRST
+# entry would let anyone hand themselves a fresh guess budget per request;
+# reading the LAST would key every visitor to one internal address and turn
+# the per-device budget into a site-wide one an attacker could exhaust.
+TRUSTED_PROXY_HOPS = int(os.environ.get("TRUSTED_PROXY_HOPS", "3"))
 _xff_logged = False
 
 
 def _client_ip():
-    """The real caller. Render appends the client to any X-Forwarded-For the
-    caller supplied, so the LAST hop is the trustworthy one - reading the
-    first would let anyone mint themselves a fresh guess budget per request.
-    (If Render ever fronts the app with two hops, the last entry becomes an
-    internal address and every caller shares one budget: still safe, just
-    coarser, which is why the budget is generous.)"""
+    """The real caller, counted back from the trusted end of the proxy chain."""
     global _xff_logged
     xff = request.headers.get("X-Forwarded-For", "")
-    if not _xff_logged:  # once per boot, to confirm the real hop count
+    parts = [p.strip() for p in xff.split(",") if p.strip()]
+    if len(parts) >= TRUSTED_PROXY_HOPS:
+        ip = parts[-TRUSTED_PROXY_HOPS]
+    elif parts:
+        # chain shorter than expected (infra changed): fall back to the last
+        # hop - coarser, but never a value the caller chose
+        ip = parts[-1]
+    else:
+        ip = request.remote_addr or "?"
+    if not _xff_logged:  # once per boot, so the hop count stays verifiable
         _xff_logged = True
-        print(f"[auth] first forwarded-for seen: {xff!r} "
-              f"remote_addr={request.remote_addr!r}")
-    ip = xff.split(",")[-1].strip() if xff.strip() else (request.remote_addr or "?")
+        print(f"[auth] forwarded-for {xff!r} -> client {ip!r} "
+              f"(hops={TRUSTED_PROXY_HOPS})")
     return ip[:45]  # a full IPv6 literal; keeps a huge header out of the dict
 
 RESET_REQUEST_MESSAGE = (
