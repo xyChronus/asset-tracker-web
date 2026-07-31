@@ -21,10 +21,16 @@ SETTINGS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data",
 
 _lock = threading.Lock()
 _last_call = 0.0
+_cooloff_until = 0.0  # monotonic ts; set when 429s persist (burst or monthly cap)
 
 # Exposed for /api/status
 last_ok = None      # epoch seconds of last successful call
 last_error = None   # string of last failure, cleared on success
+
+
+class RateLimited(RuntimeError):
+    """CoinGecko said 429 and retries didn't clear it (burst storm or the
+    monthly quota). Typed so callers can back off without string-sniffing."""
 
 
 def _api_key():
@@ -39,8 +45,14 @@ def _api_key():
 
 
 def get(path, params=None):
-    global _last_call, last_ok, last_error
+    global _last_call, _cooloff_until, last_ok, last_error
     with _lock:
+        # while cooling off after persistent 429s, fail instantly instead of
+        # sleeping the caller (the scheduler is single-threaded) - callers'
+        # fallbacks (CoinMarketCap prices, backfill retry-later) take over
+        if time.monotonic() < _cooloff_until:
+            raise RateLimited("CoinGecko 429 cool-off active")
+        got_429 = False
         for attempt in range(3):
             key = _api_key()
             interval = 2.2 if key else MIN_INTERVAL  # a demo key allows ~30/min
@@ -54,16 +66,23 @@ def get(path, params=None):
             try:
                 r = requests.get(BASE + path, params=params, headers=headers, timeout=25)
                 if r.status_code == 429:
+                    got_429 = True
                     last_error = "rate limited by CoinGecko, backing off"
-                    time.sleep(40)
+                    time.sleep(15)
                     continue
                 r.raise_for_status()
                 last_ok = time.time()
                 last_error = None
+                _cooloff_until = 0.0
                 return r.json()
             except requests.RequestException as e:
                 last_error = str(e)
                 if attempt == 2:
                     raise
                 time.sleep(5)
+    if got_429:
+        # a burst storm clears within the retry loop; reaching here means the
+        # limit is sustained (likely the monthly cap) - stop calling a while
+        _cooloff_until = time.monotonic() + 900
+        raise RateLimited("CoinGecko 429 persisted after retries")
     raise RuntimeError("CoinGecko request failed after retries")

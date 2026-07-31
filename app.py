@@ -881,6 +881,10 @@ def scheduler():
         [lambda: 21600, 0, lambda: predictions_tick("crypto")],
         [lambda: 21600, 0, lambda: predictions_tick("pse")],
         [lambda: 21600, 0, lambda: predictions_tick("global")],
+        [lambda: 120, 0, lambda: history_backfill_tick("crypto")],
+        [lambda: 60, 0, lambda: history_backfill_tick("global")],
+        [lambda: 45, 0, lambda: history_backfill_tick("pse")],
+        [lambda: 21600, 0, daily_close_tick],
         [lambda: iv["global"]["metrics"], 0, global_metrics_tick],
         [lambda: iv["global"]["indices"], 0, global_fetch_indices],
         [lambda: iv["global"]["news"], 0, lambda: fetch_news("global")],
@@ -968,6 +972,9 @@ def portfolio_state(market, user):
             " WHERE market=%s AND asset_id = ANY(%s)", (market, held_ids)).fetchall()}
     holdings, closed = [], []
     tot_value = tot_cost = tot_realized = tot_change24 = 0.0
+    # 7d/30d changes: crypto live from the quote feed; stocks (and any gap)
+    # from the 6-hourly prediction snapshot's actual history — zero extra reads
+    pred = db.kv_get(f"predict:{market}", {}).get("data") or {}
     for aid, p in pos.items():
         m = pm.get(aid) or {}
         tot_realized += p["realized"]
@@ -977,6 +984,14 @@ def portfolio_state(market, user):
             continue
         price = m.get("price")
         chg24 = m.get("chg_24h")
+        raw = m.get("_raw") or {}
+        pd_ = pred.get(aid) or {}
+        chg7 = raw.get("price_change_percentage_7d_in_currency")
+        chg30 = raw.get("price_change_percentage_30d_in_currency")
+        if chg7 is None:
+            chg7 = pd_.get("hist7")
+        if chg30 is None:
+            chg30 = pd_.get("hist30")
         value = price * p["qty"] if price is not None else None
         t = tgts.get(aid) or {}
         tp, sl = t.get("tp_price"), t.get("sl_price")
@@ -1000,7 +1015,8 @@ def portfolio_state(market, user):
                                 wk52_high=wk52.get(aid)) if price else None
         holdings.append({**p, "symbol": m.get("symbol", ""), "image": m.get("image"),
                          "price": price, "avg_buy": p["cost"] / p["qty"], "value": value,
-                         "chg_24h": chg24, "signal": sgn,
+                         "chg_24h": chg24, "chg_7d": chg7, "chg_30d": chg30,
+                         "signal": sgn,
                          "tp_price": tp, "sl_price": sl, "note": t.get("note"),
                          "sugg_tp": sugg and sugg["tp"], "sugg_sl": sugg and sugg["sl"],
                          "sugg_tp_pct": sugg and sugg["tp_pct"],
@@ -1834,14 +1850,188 @@ def predictions_tick(market):
         mu, vol = _fit_projection(closes)
         band = vol * math.sqrt(bars30)
         m = pm.get(aid, {})
+        # hist7/hist30: what the price actually DID over those windows (used by
+        # the dashboard's 7d/30d columns) - distinct from the projected pct*
+        hist = {k: round((closes[-1] / closes[-1 - b] - 1) * 100, 1)
+                for k, b in (("hist7", horizons["pct7"]), ("hist30", bars30))
+                if len(closes) > b and closes[-1 - b] > 0}
         out[aid] = {"name": m.get("name") or aid,
                     "symbol": (m.get("symbol") or aid).upper(),
                     "price": closes[-1],
                     **{k: round((math.exp(mu * b) - 1) * 100, 1)
                        for k, b in horizons.items()},
+                    **hist,
                     "lo_pct": round((math.exp(mu * bars30 - band) - 1) * 100, 1),
                     "hi_pct": round((math.exp(mu * bars30 + band) - 1) * 100, 1)}
     db.kv_set(f"predict:{market}", {"updated": now_ms(), "data": out})
+
+
+# ------------------------------------------------- long-term daily history
+# One-time backfill from each market's deepest free source, then grown daily
+# from data we already collect. Probed depths (2026-07-31): PSE Edge ~10y in
+# one call; Yahoo full listing life (coarse) + 10y weekly, keyless; CoinGecko
+# Demo capped at 365 days.
+
+_histfill_recheck = {}   # market -> when to look for newly-tracked assets
+_hist_attempts = {}      # (market, asset) -> transient-failure retry count
+
+
+def _store_daily(market, aid, pts):
+    """Store [[ts, close], ...] as day-boundary rows; never overwrites, and
+    skips today (the live day's true close is folded in by daily_close_tick)."""
+    today = now_ms() // 86400000
+    rows = {}
+    for ts, p in pts or []:
+        day = int(ts) // 86400000
+        if p and p > 0 and day < today:
+            rows[day] = (market, aid, day * 86400000, float(p))
+    if rows:
+        db.conn().executemany(
+            "INSERT INTO price_history_daily VALUES (%s,%s,%s,%s)"
+            " ON CONFLICT DO NOTHING", list(rows.values()))
+    return len(rows)
+
+
+def _fetch_deep_history(market, aid, meta):
+    if market == "crypto":
+        res = coingecko.get(f"/coins/{aid}/market_chart",
+                            {"vs_currency": "usd", "days": 365})
+        pts = res.get("prices") or []
+        # CoinGecko daily points are 00:00-UTC snapshots (the PREVIOUS day's
+        # closing level) and the final point is "right now": drop the live
+        # point, shift the rest back a day so each date means its own close
+        return [[ts - 86400000, p] for ts, p in pts[:-1]]
+    if market == "global":
+        # Full listing life (coarse bars) + the last decade weekly. Yahoo
+        # stamps a bar at its period START while the close belongs to the
+        # period's END - restamp, and drop the still-running last bar so a
+        # half-finished week/month is never frozen in as history.
+        def settled(pts, end_of):
+            return [[end_of(ts, pts[i + 1][0]), p]
+                    for i, (ts, p) in enumerate(pts[:-1])]
+        monthly = settled(global_data.yahoo_history(aid, "1mo", "max"),
+                          lambda ts, nxt: nxt - 86400000)          # month's last day
+        weekly = settled(global_data.yahoo_history(aid, "1wk", "10y"),
+                         lambda ts, nxt: ts + 4 * 86400000)        # Mon -> Fri
+        merged = {p[0]: p for p in monthly}
+        merged.update({p[0]: p for p in weekly})
+        return [merged[k] for k in sorted(merged)]
+    if market == "pse":
+        if not meta or not meta.get("security_id"):
+            return []
+        return pse_data.fetch_chart(meta["cmpy_id"], meta["security_id"], months=120)
+    return []
+
+
+def history_backfill_tick(market):
+    """One asset per tick into price_history_daily, latched in kv - finishes in
+    hours, then idles (re-checks for newly tracked assets every 6h)."""
+    if time.time() < _histfill_recheck.get(market, 0):
+        return
+    done = dict(db.kv_get(f"histfill:{market}", {}))  # copy: may be cache-resident
+    meta = {}
+    if market == "pse":
+        rows = db.conn().execute(
+            "SELECT symbol, cmpy_id, security_id FROM pse_companies").fetchall()
+        meta = {r["symbol"]: dict(r) for r in rows}
+        tracked = list(meta)
+    else:
+        tracked = tracked_ids_all_users(market)
+    held = set(held_ids_all_users(market))
+    todo = sorted((a for a in tracked if a not in done),
+                  key=lambda a: (a not in held, a))
+    if not todo:
+        _histfill_recheck[market] = time.time() + 6 * 3600
+        return
+    aid = todo[0]
+    try:
+        n = _store_daily(market, aid, _fetch_deep_history(market, aid, meta.get(aid)))
+    except Exception as e:
+        msg = str(e)
+        if isinstance(e, coingecko.RateLimited) or "429" in msg \
+                or "limit" in msg.lower() or "quota" in msg.lower():
+            # quota/rate pressure: never latch, just back the whole market off
+            # (the crypto quota can stay dead for weeks near month-end)
+            _histfill_recheck[market] = time.time() + 3600
+            print(f"[hist] {market}/{aid}: rate/quota - backing off 1h ({msg[:80]})")
+            return
+        key = (market, aid)
+        _hist_attempts[key] = _hist_attempts.get(key, 0) + 1
+        if isinstance(e, (requests.Timeout, requests.ConnectionError)) \
+                and _hist_attempts[key] <= 3:
+            # transient network flake (Edge and Yahoo both do this): retry
+            # later instead of stranding the symbol with an empty Max chart
+            _histfill_recheck[market] = time.time() + 600
+            print(f"[hist] {market}/{aid}: transient, retry later ({msg[:80]})")
+            return
+        print(f"[hist] {market}/{aid}: giving up ({msg[:120]})")
+        n = 0  # latched: a genuinely broken symbol shouldn't block the queue
+    done[aid] = n
+    db.kv_set(f"histfill:{market}", done)
+    print(f"[hist] {market}/{aid}: {n} daily closes ({len(done)}/{len(tracked)})")
+
+
+def held_ids_all_users(market):
+    rows = db.conn().execute(
+        "SELECT DISTINCT asset_id AS a FROM transactions WHERE market=%s",
+        (market,)).fetchall()
+    return [r["a"] for r in rows]
+
+
+def daily_close_tick():
+    """Fold the last few days' true closes from the hourly table into the
+    long-term store - pure SQL inside the database, zero API calls and zero
+    egress, so the Max-range history keeps growing forever."""
+    today = now_ms() // 86400000
+    # the whole hourly retention window: idempotent and DB-internal, so a
+    # scheduler outage of any length self-heals as long as hourly data lives
+    since = (today - config.HISTORY_KEEP_DAYS) * 86400000
+    for market in config.MARKETS:
+        db.conn().execute(
+            "INSERT INTO price_history_daily"
+            " SELECT market, asset_id, (ts / 86400000) * 86400000,"
+            "        (ARRAY_AGG(price ORDER BY ts DESC))[1]"
+            " FROM price_history"
+            " WHERE market=%s AND ts >= %s AND ts < %s AND price > 0"
+            " GROUP BY market, asset_id, ts / 86400000"
+            " ON CONFLICT DO NOTHING",
+            (market, since, today * 86400000))
+
+
+@app.get("/api/<market>/history_daily/<path:asset_id>")
+def api_history_daily(market, asset_id):
+    """Daily closes as deep as our sources go (PSE ~10y, global full listing
+    life, crypto ~1y), topped up with recent days from the hourly table and
+    downsampled to keep responses small."""
+    _check(market)
+    rng = request.args.get("range", "max")
+    # pre-1970 listings (e.g. GE) have NEGATIVE epoch ts - "max" must keep them
+    since = -(10 ** 15) if rng == "max" else now_ms() - 365 * 86400000
+    rows = db.conn().execute(
+        "SELECT ts, price FROM price_history_daily"
+        " WHERE market=%s AND asset_id=%s AND ts>=%s ORDER BY ts",
+        (market, asset_id, since)).fetchall()
+    pts = [[r["ts"], r["price"]] for r in rows]
+    top_from = (pts[-1][0] + 86400000) if pts else since
+    for r in db.conn().execute(
+            "SELECT (ts / 86400000) * 86400000 AS day,"
+            "       (ARRAY_AGG(price ORDER BY ts DESC))[1] AS close"
+            " FROM price_history WHERE market=%s AND asset_id=%s AND ts>=%s"
+            " GROUP BY 1 ORDER BY 1", (market, asset_id, top_from)).fetchall():
+        if r["close"] and r["close"] > 0:
+            pts.append([r["day"], r["close"]])
+    total = len(pts)
+    if total > 600:
+        # time-uniform buckets (not index stride): deep history mixes monthly,
+        # weekly and daily granularity, and the chart's category axis draws
+        # points evenly - bucketing by TIME keeps the axis honest
+        span = pts[-1][0] - pts[0][0]
+        bucket = max(1, span // 600)
+        by_bucket = {}
+        for p in pts:
+            by_bucket[(p[0] - pts[0][0]) // bucket] = p  # last close per bucket
+        pts = [by_bucket[k] for k in sorted(by_bucket)]
+    return jsonify({"points": pts, "points_total": total})
 
 
 @app.get("/api/<market>/predict_summary")

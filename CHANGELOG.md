@@ -231,3 +231,12 @@ Web-only items are marked **(web)**.
 - **Rotation ideas for Scalper and Day styles**: each take-profit card points the freed cash at up to two current buy-side ideas from the same analysis, so small banked wins go straight back to work. Ideas you've marked done-today are never suggested.
 ### Fixed
 - A 15-finding adversarial review of this feature **plus the v1.12.1 basing/coiled + reasoning-ledger release** (previously unreviewed): single-position portfolios can no longer trigger take-profit far below the advertised target; the Long-Term wallet threshold was mathematically unreachable (now 7.5%); all wording says "portfolio" instead of "wallet" when no budget is set; a too-small-to-sell demotion now retracts the sale argument and is recorded in the Gates ledger (as are cash shortfalls, confidence caps, your-plan-outranks-us demotions, and market-closed holds); the basing flag no longer quotes a price level the asset may be well above; style descriptions updated to disclose the early wallet-level trigger.
+
+## [1.16.0] — 2026-07-31 — The long view
+### Added
+- **Full price history on the Charts tab** — new **1Y** and **Max** ranges. Max reaches as far back as our free data sources go: **PSE ~10 years** of official daily closes, **global stocks their entire listed life** (GE draws from 1962), **crypto ~1 year** (provider limit; downloads once the monthly data budget resets). After the one-time download, history grows forever at zero API cost from data we already collect.
+- A **"Back in ⟨date⟩ / Since then"** readout under long-range charts — see at a glance whether an asset climbed from 0.1 to 10 or crawled from 5 to 10.
+- **7d and 30d columns** on the Dashboard holdings table (sortable, like everything else).
+- **Click any holding's name — or its Day/7d/30d cell — to jump straight to its chart.**
+### Fixed
+- A 15-finding adversarial review of the new collectors before launch: rate-limited downloads now wait politely instead of silently giving up (or stalling other collectors); transient network flakes retry instead of stranding assets with empty charts; weekly/monthly source bars are stamped on their true closing dates and half-finished periods are never stored; long-range charts space points evenly in time; every tooltip shows the point's exact date; all copy states honestly how deep each market's record goes.

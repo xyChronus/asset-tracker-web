@@ -554,19 +554,25 @@ async function loadDashboard() {
   if (!p.holdings.length) {
     ht.innerHTML = `<tr><td class="empty-note">No open positions in ${MKT_LABEL[state.market]} yet. Add a buy on the Portfolio tab.</td></tr>`;
   } else {
+    const chartTd = (h, inner) =>
+      `<td class="chart-link" data-chart="${esc(h.asset_id)}" data-cs="${esc(h.symbol || "")}"
+         data-cn="${esc(h.name)}" title="Open ${esc(h.name)}'s chart">${inner}</td>`;
     ht.innerHTML = `<thead><tr>` +
       th("Asset", "name", "holdings") + th("Quantity", "qty", "holdings") +
       th("Avg Buy", "avg_buy", "holdings") + th("Price", "price", "holdings") +
-      th("Day", "chg_24h", "holdings") + th("Value", "value", "holdings") +
+      th("Day", "chg_24h", "holdings") + th("7d", "chg_7d", "holdings") +
+      th("30d", "chg_30d", "holdings") + th("Value", "value", "holdings") +
       th("Unrealized P/L", "unrealized", "holdings") + th("P/L %", "unrealized_pct", "holdings") +
       th("Signal", "signal.score", "holdings") + th("Plan", "plan_sort", "holdings") +
       `<th></th></tr></thead><tbody>` +
       applySort(p.holdings, "holdings").map(h => `<tr>
-        <td><div class="coin-cell">${h.image ? `<img src="${esc(h.image)}">` : ""}<span class="nm">${esc(h.name)}</span><span class="sym">${esc(h.symbol)}</span></div></td>
+        ${chartTd(h, `<div class="coin-cell">${h.image ? `<img src="${esc(h.image)}">` : ""}<span class="nm">${esc(h.name)}</span><span class="sym">${esc(h.symbol)}</span></div>`)}
         <td>${fmtQty(h.qty)}</td>
         <td>${fmtMoney(h.avg_buy)}</td>
         <td>${fmtMoney(h.price)}</td>
-        <td>${pctSpan(h.chg_24h)}</td>
+        ${chartTd(h, pctSpan(h.chg_24h))}
+        ${chartTd(h, pctSpan(h.chg_7d))}
+        ${chartTd(h, pctSpan(h.chg_30d))}
         <td><b>${fmtMoney(h.value)}</b></td>
         <td>${moneySpan(h.unrealized)}</td>
         <td>${pctSpan(h.unrealized_pct)}</td>
@@ -581,6 +587,12 @@ async function loadDashboard() {
     ht.querySelectorAll("[data-tgt]").forEach(b => b.onclick = () => {
       const h = p.holdings.find(x => x.asset_id === b.dataset.tgt);
       if (h) showTargets(h);
+    });
+    ht.querySelectorAll("[data-chart]").forEach(el => el.onclick = () => {
+      state.chartAsset[state.market] = el.dataset.chart;
+      state.chartMeta = state.chartMeta || {};
+      state.chartMeta[state.market] = { symbol: el.dataset.cs, name: el.dataset.cn };
+      switchTab("charts");
     });
   }
 
@@ -1399,7 +1411,7 @@ function setupWatchTools() {
 async function loadCharts() {
   await fillAssetCombo(chartCombo);
   const saved = state.chartAsset[state.market];
-  if (saved) chartCombo.set(saved);
+  if (saved) chartCombo.set(saved, (state.chartMeta || {})[state.market]);
   state.chartAsset[state.market] = chartCombo.value;
   await drawHistory();
 }
@@ -1407,15 +1419,21 @@ async function loadCharts() {
 async function drawHistory() {
   const aid = state.chartAsset[state.market] || document.getElementById("chart-coin").value;
   if (!aid) return;
-  const h = await api(`${M()}/history/${encodeURIComponent(aid)}?hours=${state.chartHours}`);
+  const longRange = state.chartRange;  // "1y" / "max" -> daily closes
+  const h = await api(longRange
+    ? `${M()}/history_daily/${encodeURIComponent(aid)}?range=${longRange}`
+    : `${M()}/history/${encodeURIComponent(aid)}?hours=${state.chartHours}`);
   const pts = h.points || [];
   const assets = await ensureWatch();
   const asset = assets.find(a => a.asset_id === aid) || {};
+  const labelOpts = longRange
+    ? { year: "numeric", month: "short" }
+    : { month: "short", day: "numeric", hour: "2-digit" };
 
   makeChart("history-chart", {
     type: "line",
     data: {
-      labels: pts.map(p => new Date(p[0]).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit" })),
+      labels: pts.map(p => new Date(p[0]).toLocaleString([], labelOpts)),
       datasets: [{
         label: (asset.symbol || aid) + " price",
         data: pts.map(p => p[1]),
@@ -1426,7 +1444,13 @@ async function drawHistory() {
     options: {
       maintainAspectRatio: false, interaction: { mode: "index", intersect: false },
       plugins: { legend: { display: false },
-        tooltip: { callbacks: { label: c => fmtMoney(c.parsed.y) } } },
+        tooltip: { callbacks: {
+          // long ranges label the axis by month — the tooltip shows the
+          // point's actual date so no day is unreachable
+          title: items => longRange
+            ? new Date(pts[items[0].dataIndex][0]).toLocaleDateString([], { year: "numeric", month: "short", day: "numeric" })
+            : items[0].label,
+          label: c => fmtMoney(c.parsed.y) } } },
       scales: { x: { ticks: { maxTicksLimit: 8, maxRotation: 0 } },
                 y: { ticks: { callback: v => fmtMoney(v, true) } } },
     },
@@ -1434,7 +1458,11 @@ async function drawHistory() {
 
   const indEl = document.getElementById("chart-indicators");
   if (!pts.length) {
-    indEl.innerHTML = '<div class="empty-note">No stored history yet for this asset — it downloads/accumulates automatically. Crypto & global stocks fill within minutes; PSE builds during trading hours.</div>';
+    indEl.innerHTML = longRange
+      ? (state.market === "crypto"
+        ? '<div class="empty-note">Long-term history for this coin hasn\'t downloaded yet — the one-time crypto backfill waits for free data-provider budget, then reaches back about a year.</div>'
+        : '<div class="empty-note">Long-term history for this asset is still downloading — the one-time backfill runs over a few hours. PSE reaches back ~10 years; global stocks their full listed life.</div>')
+      : '<div class="empty-note">No stored history yet for this asset — it downloads/accumulates automatically. Crypto & global stocks fill within minutes; PSE builds during trading hours.</div>';
     return;
   }
   const s = asset.signal || {};
@@ -1443,11 +1471,25 @@ async function drawHistory() {
     ["Current", fmtMoney(asset.price)],
     ["RSI", ind.rsi != null ? ind.rsi : "—"],
     ["Signal", s.action || "—"],
-    ["Data points", pts.length],
+    longRange ? ["Closes on record", h.points_total || pts.length] : ["Data points", pts.length],
   ];
+  if (longRange && pts.length > 1 && pts[0][1] > 0 && asset.price) {
+    // the "what did this grow from" view: earliest close on record vs today
+    const first = pts[0][1];
+    const mult = asset.price / first;
+    const fromDate = new Date(pts[0][0]).toLocaleDateString([], { year: "numeric", month: "short" });
+    stats.splice(1, 0,
+      ["Back in " + fromDate, fmtMoney(first)],
+      ["Since then", mult >= 2 ? "×" + fmtNum(mult, 1) : (mult > 1 ? "+" : "") + fmtNum((mult - 1) * 100, 1) + "%"]);
+  }
   if (asset.pe != null) stats.push(["P/E", fmtNum(asset.pe, 1)]);
   if (asset.div_yield != null) stats.push(["Div Yield", fmtNum(asset.div_yield, 2) + "%"]);
   indEl.innerHTML = stats.map(x => `<div class="mini-stat"><span>${x[0]}</span><b>${x[1]}</b></div>`).join("");
+  if (longRange === "max" && pts.length > 1 && pts[pts.length - 1][0] - pts[0][0] < 350 * 86400000) {
+    indEl.innerHTML += `<div class="small-note muted" style="width:100%">Our stored record for this asset starts
+      ${new Date(pts[0][0]).toLocaleDateString([], { year: "numeric", month: "short", day: "numeric" })} —
+      deeper history may still be downloading.</div>`;
+  }
 }
 
 /* ---------------------------------------------------------- news */
@@ -1584,7 +1626,12 @@ document.querySelectorAll("#pv-range button").forEach(b => b.onclick = () => {
   loadDashboard();
 });
 document.querySelectorAll("#chart-range button").forEach(b => b.onclick = () => {
-  state.chartHours = +b.dataset.hours;
+  if (b.dataset.range) {           // 1Y / Max: long daily history
+    state.chartRange = b.dataset.range;
+  } else {                         // hour-based ranges
+    state.chartRange = null;
+    state.chartHours = +b.dataset.hours;
+  }
   document.querySelectorAll("#chart-range button").forEach(x => x.classList.toggle("active", x === b));
   drawHistory();
 });

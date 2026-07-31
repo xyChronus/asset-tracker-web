@@ -63,6 +63,16 @@ CREATE TABLE IF NOT EXISTS price_history (
     price DOUBLE PRECISION NOT NULL,
     PRIMARY KEY (market, asset_id, ts)
 );
+-- long-term daily closes (day-boundary ts), backfilled once from each
+-- market's deepest free source, then grown forever by daily_close_tick.
+-- NOT pruned - this is the "full history" store behind the Max chart range.
+CREATE TABLE IF NOT EXISTS price_history_daily (
+    market TEXT NOT NULL,
+    asset_id TEXT NOT NULL,
+    ts BIGINT NOT NULL,
+    price DOUBLE PRECISION NOT NULL,
+    PRIMARY KEY (market, asset_id, ts)
+);
 CREATE TABLE IF NOT EXISTS news (
     market TEXT NOT NULL,
     link TEXT NOT NULL,
