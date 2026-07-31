@@ -240,3 +240,12 @@ Web-only items are marked **(web)**.
 - **Click any holding's name — or its Day/7d/30d cell — to jump straight to its chart.**
 ### Fixed
 - A 15-finding adversarial review of the new collectors before launch: rate-limited downloads now wait politely instead of silently giving up (or stalling other collectors); transient network flakes retry instead of stranding assets with empty charts; weekly/monthly source bars are stamped on their true closing dates and half-finished periods are never stored; long-range charts space points evenly in time; every tooltip shows the point's exact date; all copy states honestly how deep each market's record goes.
+
+## [1.17.0] — 2026-08-01 — Forgotten passwords
+### Added
+- **"Forgot password?" on the sign-in page.** The site is invite-only, so resets go through the person who runs it: tap the link, flag your request, and ask them for a **one-time reset code** — then set a new password with it. Codes work once and expire after 24 hours.
+- **Password column in the Members panel** (admin): a red **RESET ASKED** badge when someone requests a reset, **CODE OUT** while a code is live, **CODE LOCKED** if too many wrong tries paused it — plus a one-click **Reset code** button. The code is shown to the admin exactly once; only its scrambled form is ever stored.
+- **Changing or resetting a password now signs out every other device** on that account — the point of a reset when you think someone else got in. Changing your own password keeps you signed in where you are.
+- An emergency recovery path for the admin's own account (a secret key kept in the hosting dashboard), so the one person who hands out codes can't get permanently locked out.
+### Fixed
+- A 15-finding adversarial security review before launch, then a second pass over the fixes: the sign-in page can't be used to discover which emails have accounts; a stranger can't flood guesses to keep someone locked out (attempts pause and heal, and a fresh code restores access instantly); an unauthenticated visitor can't exhaust the server's memory through the request form; and every message says exactly what the site does — including that it sends no notifications, so you still have to message the admin yourself.

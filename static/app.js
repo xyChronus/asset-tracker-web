@@ -1892,11 +1892,20 @@ async function showMembers() {
     <div class="panel-head"><h3>Members (${d.users.length})</h3>
       <button class="mini-btn" id="members-close">Close</button></div>
     <div class="table-wrap"><table>
-      <thead><tr><th>Name</th><th>Email</th><th>Joined</th><th></th></tr></thead>
+      <thead><tr><th>Name</th><th>Email</th><th>Joined</th><th>Password</th><th></th></tr></thead>
       <tbody>${d.users.map(u => `<tr><td>${esc(u.name || "")}</td><td>${esc(u.email)}</td>
         <td class="muted">${esc(u.created || "")}</td>
+        <td>${u.reset_code_locked
+          ? '<span class="badge strong-sell" title="Five wrong tries paused that code for 15 minutes. Making a fresh one clears the pause immediately">CODE PAUSED</span> '
+          : u.reset_requested
+          ? `<span class="badge strong-sell" title="Someone entered this email on the sign-in page's Forgot-password form — check with them before sending a code">RESET ASKED ${timeAgo(u.reset_requested)}</span> `
+          : u.reset_code_active
+          ? '<span class="badge hold" title="A one-time code is out and unused — it expires 24h after you made it">CODE OUT</span> '
+          : ""}<button class="mini-btn" data-reset="${u.id}"
+            title="Make a one-time password-reset code for ${esc(u.email)} — hand it to them yourself; it works once and expires in 24h">Reset code</button></td>
         <td>${u.is_admin ? '<span class="badge hold">ADMIN</span>' : ""}</td></tr>`).join("")}</tbody>
     </table></div>
+    <div id="reset-code-out"></div>
     <div class="panel-head" style="margin-top:14px"><h3>Invite codes</h3></div>
     <div class="table-wrap"><table>
       <thead><tr><th>Code</th><th>Created</th><th>Status</th></tr></thead>
@@ -1911,6 +1920,32 @@ async function showMembers() {
   document.body.appendChild(overlay);
   document.getElementById("members-close").onclick = () => overlay.remove();
   overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+  overlay.querySelectorAll("[data-reset]").forEach(b => b.onclick = async () => {
+    b.disabled = true;
+    try {
+      const r = await api("/api/admin/reset_code", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: +b.dataset.reset }),
+      });
+      document.getElementById("reset-code-out").innerHTML =
+        `<div class="empty-note" style="margin-top:10px">One-time reset code for <b>${esc(r.email)}</b>:
+          <b style="font-size:16px; letter-spacing:1px">${esc(r.code)}</b><br>
+          Send it to them yourself (Discord works). It sets a new password once on the
+          sign-in page's "Forgot password?" form, then self-destructs — 24-hour expiry.
+          This is the only time it's shown.</div>`;
+      // refresh just this row's badge — rebuilding the panel would wipe the
+      // code above, and it's shown exactly once
+      const cell = b.parentElement;
+      cell.querySelectorAll(".badge").forEach(x => x.remove());
+      const chip = document.createElement("span");
+      chip.className = "badge hold";
+      chip.title = "A one-time code is out and unused — it expires 24h after you made it";
+      chip.textContent = "CODE OUT";
+      cell.insertBefore(chip, b);
+      cell.insertBefore(document.createTextNode(" "), b);
+    } catch (e) { toast(e.message); }
+    b.disabled = false;
+  });
 }
 
 setupTxForm();

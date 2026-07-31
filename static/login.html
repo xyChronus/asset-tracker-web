@@ -29,7 +29,29 @@
       <button type="submit" class="primary-btn">Sign in</button>
       <div class="form-msg" id="msg"></div>
     </form>
-    <div class="auth-alt">New here? <a href="/register">Create an account</a></div>
+    <div class="auth-alt">New here? <a href="/register">Create an account</a>
+      · <a href="#" id="forgot-link">Forgot password?</a></div>
+    <div id="reset-box" style="display:none; margin-top:18px; border-top:1px solid var(--border); padding-top:16px">
+      <div class="sub">This site is invite-only, so password resets go through the
+        person who runs it. Ask them for a <b>one-time reset code</b> — the button
+        below flags your request inside their admin panel, but <b>the site sends no
+        notifications</b>, so message them directly too (Discord works). Then enter
+        the code here with your new password.</div>
+      <form id="reset-f">
+        <label>Your email <input type="email" id="r-email" autocomplete="email" required></label>
+        <button type="button" class="mini-btn" id="r-ask">Flag my request in the admin panel</button>
+        <label style="margin-top:14px">Reset code <input type="text" id="r-code"
+          placeholder="XXXX-XXXX" autocomplete="one-time-code" required></label>
+        <label>New password <input type="password" id="r-pass" autocomplete="new-password"
+          minlength="8" placeholder="at least 8 characters" required></label>
+        <button type="submit" class="primary-btn">Set new password</button>
+        <div class="form-msg" id="r-msg"></div>
+      </form>
+      <p class="sub" style="margin:10px 0 0; font-size:11.5px">Codes work once and
+        expire after 24 hours. Five wrong tries pause a code for 15 minutes — asking
+        the admin for a fresh one clears the pause straight away, so don't keep
+        guessing.</p>
+    </div>
   </div>
   <p class="auth-foot">Values shown are estimates for tracking — prices are slightly
   delayed and fees aren't counted, so totals differ a little from your real exchange
@@ -50,6 +72,61 @@ document.getElementById("f").onsubmit = async (e) => {
   const d = await r.json().catch(() => ({}));
   if (r.ok) location.href = "/";
   else msg.innerHTML = '<span class="neg">' + (d.error || "Sign-in failed") + "</span>";
+};
+
+const resetBox = document.getElementById("reset-box");
+document.getElementById("forgot-link").onclick = (e) => {
+  e.preventDefault();
+  resetBox.style.display = resetBox.style.display === "none" ? "" : "none";
+  document.getElementById("r-email").value = document.getElementById("email").value;
+};
+const rMsg = document.getElementById("r-msg");
+document.getElementById("r-ask").onclick = async () => {
+  rMsg.textContent = "";
+  const email = document.getElementById("r-email").value.trim();
+  if (!email) { rMsg.innerHTML = '<span class="neg">Enter your email first.</span>'; return; }
+  try {
+    const r = await fetch("/api/reset/request", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email }),
+    });
+    const d = await r.json().catch(() => ({}));
+    rMsg.innerHTML = r.ok
+      ? '<span class="pos">' + (d.message || "Request flagged.") + "</span>"
+      : '<span class="neg">' + (d.error || "That didn't work — try again in a minute.") + "</span>";
+  } catch (e) {
+    rMsg.innerHTML = '<span class="neg">Couldn\'t reach the server — check your connection and try again.</span>';
+  }
+};
+document.getElementById("reset-f").onsubmit = async (e) => {
+  e.preventDefault();
+  rMsg.textContent = "";
+  const code = document.getElementById("r-code").value.trim();
+  if (!code) {          // Enter pressed while only the email is filled in
+    rMsg.innerHTML = '<span class="neg">Enter the reset code the admin gave you '
+      + '(or use the button above to flag your request first).</span>';
+    return;
+  }
+  try {
+    const r = await fetch("/api/reset/complete", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: document.getElementById("r-email").value.trim(),
+        code,
+        password: document.getElementById("r-pass").value,
+      }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok) {
+      document.getElementById("email").value = document.getElementById("r-email").value.trim();
+      rMsg.innerHTML = '<span class="pos">' + (d.message || "Done - sign in above.") + "</span>";
+      document.getElementById("r-code").value = document.getElementById("r-pass").value = "";
+    } else {
+      rMsg.innerHTML = '<span class="neg">' + (d.error || "That didn't work.") + "</span>";
+    }
+  } catch (e2) {
+    rMsg.innerHTML = '<span class="neg">Couldn\'t reach the server — check your connection and try again.</span>';
+  }
 };
 </script>
 </body>

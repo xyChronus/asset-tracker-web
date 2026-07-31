@@ -33,7 +33,10 @@ import signals as sig
 app = Flask(__name__, static_folder="static", static_url_path="/static")
 app.secret_key = os.environ.get("SECRET_KEY", "dev-only-" + secrets.token_hex(8))
 app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax",
-                  PERMANENT_SESSION_LIFETIME=60 * 60 * 24 * 30)
+                  PERMANENT_SESSION_LIFETIME=60 * 60 * 24 * 30,
+                  # no endpoint here takes a large body; caps what an
+                  # unauthenticated caller can make the process hold
+                  MAX_CONTENT_LENGTH=64 * 1024)
 
 _advisor_lock = threading.Lock()
 ADVISOR_CACHE_SECONDS = 600
@@ -46,7 +49,34 @@ def now_ms():
 # ------------------------------------------------------------------- auth
 
 PUBLIC_PATHS = ("/login", "/register", "/api/login", "/api/register",
-                "/static/", "/healthz", "/favicon.ico")
+                "/api/reset/", "/static/", "/healthz", "/favicon.ico")
+
+
+_pw_versions = {}          # uid -> pw_version (single worker, so authoritative)
+_pw_versions_loaded = False
+
+
+def _pw_version(user_id):
+    """Current password generation for a user, memoized (one worker)."""
+    global _pw_versions_loaded
+    if not _pw_versions_loaded:
+        _pw_versions.update({r["id"]: r["pw_version"] for r in db.conn().execute(
+            "SELECT id, COALESCE(pw_version, 0) AS pw_version FROM users").fetchall()})
+        _pw_versions_loaded = True
+    if user_id not in _pw_versions:
+        row = db.conn().execute(
+            "SELECT COALESCE(pw_version, 0) AS v FROM users WHERE id=%s", (user_id,)).fetchone()
+        _pw_versions[user_id] = row["v"] if row else 0
+    return _pw_versions[user_id]
+
+
+def _bump_pw_version(user_id):
+    """Invalidate every existing session for this account (password changed)."""
+    row = db.conn().execute(
+        "UPDATE users SET pw_version = COALESCE(pw_version, 0) + 1 WHERE id=%s"
+        " RETURNING pw_version", (user_id,)).fetchone()
+    _pw_versions[user_id] = row["pw_version"] if row else 0
+    return _pw_versions[user_id]
 
 
 @app.before_request
@@ -55,7 +85,15 @@ def _require_login():
     if any(p == x or p.startswith(x) for x in PUBLIC_PATHS):
         return None
     if session.get("uid"):
-        return None
+        # a password reset/change bumps the generation, so cookies minted
+        # before it (including a thief's) stop working immediately
+        if session.get("pwv", 0) == _pw_version(session["uid"]):
+            return None
+        session.clear()
+        if p.startswith("/api/"):
+            return jsonify({"error": "signed out - the password for this "
+                                     "account was changed"}), 401
+        return redirect("/login")
     if p.startswith("/api/"):
         return jsonify({"error": "not signed in"}), 401
     return redirect("/login")
@@ -96,11 +134,15 @@ def api_login():
     row = db.conn().execute("SELECT * FROM users WHERE email=%s", (email,)).fetchone()
     if not row or not check_password_hash(row["password_hash"], d.get("password") or ""):
         return jsonify({"error": "Wrong email or password."}), 401
+    # signing in with the password proves any pending reset is moot: drop the
+    # request flag and revoke any code the admin already handed out
+    db.conn().execute("DELETE FROM password_resets WHERE user_id=%s", (row["id"],))
     session.permanent = True
     session["uid"] = row["id"]
     session["email"] = row["email"]
     session["name"] = row["name"]
     session["admin"] = bool(row["is_admin"])
+    session["pwv"] = _pw_version(row["id"])
     return jsonify({"ok": True})
 
 
@@ -149,6 +191,7 @@ def api_register():
     session["email"] = row["email"]
     session["name"] = row["name"]
     session["admin"] = is_admin
+    session["pwv"] = _pw_version(row["id"])
     return jsonify({"ok": True, "admin": is_admin})
 
 
@@ -179,7 +222,201 @@ def api_change_password():
         return jsonify({"error": "Your current password isn't right."}), 403
     db.conn().execute("UPDATE users SET password_hash=%s WHERE id=%s",
                       (generate_password_hash(new), uid()))
-    return jsonify({"ok": True})
+    # knowing the old password moots any pending reset: drop the request and
+    # revoke any code the admin already handed out
+    db.conn().execute("DELETE FROM password_resets WHERE user_id=%s", (uid(),))
+    # sign out every other device, but keep the caller signed in here
+    session["pwv"] = _bump_pw_version(uid())
+    return jsonify({"ok": True, "message": "Password changed - any other devices "
+                                           "signed into this account are now signed out."})
+
+
+# -------------------------------------------------- forgotten-password reset
+# Invite-only site, so the reset flow mirrors the invite flow: the member asks
+# from the login page, the ADMIN generates a one-time code in the Members
+# panel and hands it over out-of-band (Discord), the member sets a new
+# password with it. No email infrastructure, admin is the trust anchor.
+
+RESET_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # no 0/O/1/I/L
+RESET_TTL_MS = 24 * 3600 * 1000
+RESET_MAX_ATTEMPTS = 5              # wrong guesses before a code pauses
+RESET_LOCKOUT_MS = 15 * 60 * 1000   # ...and how long that pause lasts
+# A device's guess budget spans a LONGER window than the code lockout on
+# purpose: one flooder can burn a code, but their budget is still spent when
+# it heals, leaving the member a clear window to use it.
+RESET_IP_MAX = 20
+RESET_IP_WINDOW_S = 3600
+_reset_lock = threading.Lock()   # guards both dicts (8 request threads)
+_reset_req_last = {}   # email -> monotonic ts of last request (light throttle)
+_reset_ip_tries = {}   # client ip -> [monotonic ts, ...] recent guesses
+
+
+_xff_logged = False
+
+
+def _client_ip():
+    """The real caller. Render appends the client to any X-Forwarded-For the
+    caller supplied, so the LAST hop is the trustworthy one - reading the
+    first would let anyone mint themselves a fresh guess budget per request.
+    (If Render ever fronts the app with two hops, the last entry becomes an
+    internal address and every caller shares one budget: still safe, just
+    coarser, which is why the budget is generous.)"""
+    global _xff_logged
+    xff = request.headers.get("X-Forwarded-For", "")
+    if not _xff_logged:  # once per boot, to confirm the real hop count
+        _xff_logged = True
+        print(f"[auth] first forwarded-for seen: {xff!r} "
+              f"remote_addr={request.remote_addr!r}")
+    ip = xff.split(",")[-1].strip() if xff.strip() else (request.remote_addr or "?")
+    return ip[:45]  # a full IPv6 literal; keeps a huge header out of the dict
+
+RESET_REQUEST_MESSAGE = (
+    "If that account exists, your request is now flagged inside the site "
+    "admin's Members panel. The site sends no notifications, so message them "
+    "directly (Discord works) and ask for your one-time reset code.")
+
+
+def _norm_reset_code(code):
+    return "".join(ch for ch in (code or "").upper() if ch in RESET_CODE_ALPHABET)
+
+
+def _prune(store, window_s):
+    """Drop entries older than the window so public endpoints can't grow a
+    dict without bound (an unauthenticated memory-exhaustion vector).
+    Values are either a timestamp or a list of them; an empty list is always
+    prunable. Callers must hold _reset_lock: iterating a dict another request
+    thread is inserting into raises RuntimeError."""
+    now = time.monotonic()
+    stale = []
+    for k, v in list(store.items()):
+        if isinstance(v, list):
+            if not v or now - v[-1] > window_s:
+                stale.append(k)
+        elif now - v > window_s:
+            stale.append(k)
+    for k in stale:
+        store.pop(k, None)
+
+
+@app.post("/api/reset/request")
+def api_reset_request():
+    d = request.get_json(force=True)
+    email = (d.get("email") or "").strip().lower()
+    # the response is IDENTICAL for valid, invalid, throttled and unknown
+    # emails - nothing here can be used to probe who has an account
+    if email and len(email) <= 254 and "@" in email:
+        with _reset_lock:
+            _prune(_reset_req_last, 60)
+            fresh = time.monotonic() - _reset_req_last.get(email, -9e9) > 60
+            if fresh:
+                _reset_req_last[email] = time.monotonic()
+        if fresh:
+            row = db.conn().execute("SELECT id FROM users WHERE email=%s",
+                                    (email,)).fetchone()
+            if row:
+                db.conn().execute(
+                    "INSERT INTO password_resets (user_id, requested) VALUES (%s,%s)"
+                    " ON CONFLICT (user_id) DO UPDATE SET requested=EXCLUDED.requested",
+                    (row["id"], now_ms()))
+    return jsonify({"ok": True, "message": RESET_REQUEST_MESSAGE})
+
+
+@app.post("/api/reset/admin_recover")
+def api_admin_recover():
+    """Break-glass for the admin's own account: the admin is the only one who
+    can mint codes, so if THEY forget their password nobody can help them.
+    Requires ADMIN_RECOVERY_KEY (set in the Render dashboard, which only the
+    account owner can reach) and mints a normal one-time code."""
+    key = os.environ.get("ADMIN_RECOVERY_KEY") or ""
+    d = request.get_json(force=True, silent=True)
+    supplied = (d or {}).get("recovery_key") if isinstance(d, dict) else None
+    supplied = supplied.strip() if isinstance(supplied, str) else ""
+    # compare on BYTES: compare_digest raises TypeError on non-ASCII str,
+    # which would turn a junk key into an unauthenticated 500
+    if len(key) < 16 or not supplied or not secrets.compare_digest(
+            supplied.encode("utf-8"), key.encode("utf-8")):
+        return jsonify({"error": "Recovery key not accepted."}), 403
+    row = db.conn().execute(
+        "SELECT id, email FROM users WHERE is_admin ORDER BY id LIMIT 1").fetchone()
+    if not row:
+        return jsonify({"error": "No admin account exists."}), 404
+    code = _mint_reset_code(row["id"])
+    return jsonify({"ok": True, "email": row["email"], "code": code})
+
+
+def _mint_reset_code(user_id):
+    """One-time code: only its hash is stored, so it can be shown exactly once."""
+    code = "".join(secrets.choice(RESET_CODE_ALPHABET) for _ in range(8))
+    db.conn().execute(
+        "INSERT INTO password_resets (user_id, code_hash, expires, attempts,"
+        " last_try, requested, created) VALUES (%s,%s,%s,0,NULL,NULL,%s)"
+        " ON CONFLICT (user_id) DO UPDATE SET code_hash=EXCLUDED.code_hash,"
+        " expires=EXCLUDED.expires, attempts=0, last_try=NULL, requested=NULL,"
+        " created=EXCLUDED.created",
+        (user_id, generate_password_hash(code), now_ms() + RESET_TTL_MS, now_ms()))
+    return f"{code[:4]}-{code[4:]}"
+
+
+@app.post("/api/admin/reset_code")
+@admin_required
+def api_admin_reset_code():
+    d = request.get_json(force=True)
+    target = d.get("user_id")
+    row = db.conn().execute("SELECT id, email FROM users WHERE id=%s", (target,)).fetchone()
+    if not row:
+        return jsonify({"error": "No such member."}), 404
+    # shown to the admin exactly once - only the hash is stored
+    return jsonify({"ok": True, "email": row["email"],
+                    "code": _mint_reset_code(row["id"])})
+
+
+@app.post("/api/reset/complete")
+def api_reset_complete():
+    d = request.get_json(force=True)
+    email = (d.get("email") or "").strip().lower()
+    code = _norm_reset_code(d.get("code"))
+    password = d.get("password") or ""
+    if len(password) < 8:
+        return jsonify({"error": "New password needs at least 8 characters."}), 400
+    generic = ("That email + reset code combination isn't valid. Codes work "
+               "once, expire after 24 hours, and pause for 15 minutes after "
+               f"{RESET_MAX_ATTEMPTS} wrong tries - ask the site admin for a "
+               "fresh one, which clears the pause immediately.")
+    # Device guess budget FIRST, counted up-front: it bounds the expensive
+    # hash check per device and outlasts the per-code pause, so a flooder
+    # can't keep re-burning a member's code the moment it heals.
+    ip = _client_ip()
+    with _reset_lock:
+        _prune(_reset_ip_tries, RESET_IP_WINDOW_S)
+        tries = _reset_ip_tries.setdefault(ip, [])
+        over_budget = len(tries) >= RESET_IP_MAX
+        if not over_budget:
+            tries.append(time.monotonic())
+    if over_budget:
+        return jsonify({"error": "Too many reset attempts from this device. "
+                                 "Wait an hour and try again - a new code "
+                                 "won't work from here until then."}), 429
+    row = db.conn().execute("SELECT id FROM users WHERE email=%s", (email,)).fetchone()
+    pr = row and db.conn().execute(
+        "SELECT * FROM password_resets WHERE user_id=%s", (row["id"],)).fetchone()
+    locked = pr and (pr["attempts"] or 0) >= RESET_MAX_ATTEMPTS \
+        and now_ms() - (pr["last_try"] or 0) < RESET_LOCKOUT_MS
+    if not pr or not pr["code_hash"] or now_ms() > (pr["expires"] or 0) or locked:
+        return jsonify({"error": generic}), 403   # budget already charged above
+    if not check_password_hash(pr["code_hash"], code):
+        # a stale lockout heals: start the count fresh past the cooldown
+        n = 1 if (pr["attempts"] or 0) >= RESET_MAX_ATTEMPTS else (pr["attempts"] or 0) + 1
+        db.conn().execute("UPDATE password_resets SET attempts=%s, last_try=%s"
+                          " WHERE user_id=%s", (n, now_ms(), row["id"]))
+        return jsonify({"error": generic}), 403
+    c = db.conn()
+    c.execute("UPDATE users SET password_hash=%s WHERE id=%s",
+              (generate_password_hash(password), row["id"]))
+    c.execute("DELETE FROM password_resets WHERE user_id=%s", (row["id"],))
+    _bump_pw_version(row["id"])  # kick out anyone already in this account
+    return jsonify({"ok": True, "message": "Password updated - sign in with it now. "
+                                           "Any device already signed into this "
+                                           "account has been signed out."})
 
 
 @app.post("/api/settings")
@@ -207,7 +444,20 @@ def api_create_invite():
 @admin_required
 def api_members():
     users = [dict(r) for r in db.conn().execute(
-        "SELECT id, name, email, created, is_admin FROM users ORDER BY id").fetchall()]
+        "SELECT u.id, u.name, u.email, u.created, u.is_admin,"
+        "       pr.requested AS reset_requested,"
+        # any unexpired code is "out"; the locked flag below is checked first
+        # in the UI, so a paused code reads LOCKED and a healed one reads OUT
+        "       (pr.code_hash IS NOT NULL AND pr.expires > %s) AS reset_code_active,"
+        # paused by wrong guesses: the admin should mint a fresh one rather
+        # than wait, since minting clears the pause immediately
+        "       (pr.code_hash IS NOT NULL AND pr.expires > %s"
+        "        AND COALESCE(pr.attempts,0) >= %s"
+        "        AND COALESCE(pr.last_try,0) > %s) AS reset_code_locked"
+        " FROM users u LEFT JOIN password_resets pr ON pr.user_id = u.id"
+        " ORDER BY u.id",
+        (now_ms(), now_ms(), RESET_MAX_ATTEMPTS,
+         now_ms() - RESET_LOCKOUT_MS)).fetchall()]
     invites = [dict(r) for r in db.conn().execute(
         "SELECT i.code, i.created, i.used_at, u.email AS used_by_email"
         " FROM invites i LEFT JOIN users u ON u.id = i.used_by"

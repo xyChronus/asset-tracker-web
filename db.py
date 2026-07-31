@@ -24,7 +24,10 @@ CREATE TABLE IF NOT EXISTS users (
     name TEXT,
     password_hash TEXT NOT NULL,
     is_admin BOOLEAN DEFAULT FALSE,
-    created TEXT
+    created TEXT,
+    -- bumped on every password change/reset; sessions carry the value they
+    -- were minted with, so old cookies stop working the moment it changes
+    pw_version INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS invites (
     code TEXT PRIMARY KEY,
@@ -62,6 +65,18 @@ CREATE TABLE IF NOT EXISTS price_history (
     ts BIGINT NOT NULL,
     price DOUBLE PRECISION NOT NULL,
     PRIMARY KEY (market, asset_id, ts)
+);
+-- one active password-reset per user: the admin generates a one-time code
+-- (only its hash is stored), hands it to the member out-of-band, and the
+-- member sets a new password with it on the login page
+CREATE TABLE IF NOT EXISTS password_resets (
+    user_id INTEGER PRIMARY KEY,
+    code_hash TEXT,
+    expires BIGINT,
+    attempts INTEGER DEFAULT 0,
+    last_try BIGINT,
+    requested BIGINT,
+    created BIGINT
 );
 -- long-term daily closes (day-boundary ts), backfilled once from each
 -- market's deepest free source, then grown forever by daily_close_tick.
@@ -187,6 +202,8 @@ def init():
     # migrations for columns added after the initial deploy (idempotent)
     conn().execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS trading_style TEXT DEFAULT 'swing'")
     conn().execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS agreed_terms BOOLEAN DEFAULT FALSE")
+    conn().execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS pw_version INTEGER NOT NULL DEFAULT 0")
+    conn().execute("ALTER TABLE password_resets ADD COLUMN IF NOT EXISTS last_try BIGINT")
     conn().execute("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS fee DOUBLE PRECISION DEFAULT 0")
     for col in ("eps_growth", "rev_growth", "net_margin", "debt_equity", "pb", "roe"):
         conn().execute(f"ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS {col} DOUBLE PRECISION")
