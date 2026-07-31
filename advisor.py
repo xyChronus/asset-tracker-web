@@ -261,15 +261,28 @@ BUY_CAP_PCT = 30
 #   value_buy   - fundamentals score needed to buy on value alone (99 = ignore
 #                 fundamentals; lower = more willing to buy a cheap stock)
 #   alloc_cap   - position size (% of wallet) considered "too concentrated"
+#   port_tp     - wallet-level profit target: take profit also fires (cooling
+#                 still required) when this one position's unrealized gain has
+#                 added this % to the whole wallet, even below tp_pct. Only
+#                 applies while alloc <= alloc_cap (beyond the cap TRIM owns
+#                 the call, and a small portfolio's single big position must
+#                 still earn its full per-position target). Set at ~75% of the
+#                 wallet gain a cap-sized position shows at its full target:
+#                 alloc_cap * tp_pct / (100 + tp_pct) - the denominator matters
+#                 because gain is measured against cost, not current value.
 STYLE_PARAMS = {
     "scalper": {"label": "Scalper", "buy_tech": 2, "sell_hard": -2, "sell_soft": -1,
-                "tp_pct": 2, "tp_tech": 1, "value_buy": 99, "alloc_cap": 40},
+                "tp_pct": 2, "tp_tech": 1, "value_buy": 99, "alloc_cap": 40,
+                "port_tp": 0.6},
     "day": {"label": "Day Trader", "buy_tech": 2, "sell_hard": -3, "sell_soft": -2,
-            "tp_pct": 4, "tp_tech": 0, "value_buy": 99, "alloc_cap": 38},
+            "tp_pct": 4, "tp_tech": 0, "value_buy": 99, "alloc_cap": 38,
+            "port_tp": 1.1},
     "swing": {"label": "Swing Trader", "buy_tech": 3, "sell_hard": -4, "sell_soft": -2,
-              "tp_pct": 10, "tp_tech": -1, "value_buy": 3, "alloc_cap": 35},
+              "tp_pct": 10, "tp_tech": -1, "value_buy": 3, "alloc_cap": 35,
+              "port_tp": 2.4},
     "long": {"label": "Long-Term Investor", "buy_tech": 4, "sell_hard": -5, "sell_soft": -4,
-             "tp_pct": 40, "tp_tech": -1, "value_buy": 2, "alloc_cap": 35},
+             "tp_pct": 40, "tp_tech": -1, "value_buy": 2, "alloc_cap": 35,
+             "port_tp": 7.5},
 }
 DEFAULT_STYLE = "swing"
 
@@ -455,8 +468,18 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
         # with a budget set, concentration is judged against the whole wallet
         # (positions + cash); without one, against invested positions only
         alloc_base = capital if cash is not None else total
+        # with a budget the base includes tracked cash ("wallet"); without one
+        # it is invested positions only - every string below must say which
+        wallet_word = "wallet" if cash is not None else "portfolio"
         alloc = (h["value"] / alloc_base * 100) if has_value and alloc_base > 0 else 0.0
         plpct = (h or {}).get("unrealized_pct")
+        # what this position's unrealized gain adds to that base - the number
+        # that actually compounds (gain = value - cost, cost backed out of the
+        # position's own unrealized %)
+        gain_val = (h["value"] * plpct / (100.0 + plpct)
+                    if has_value and plpct is not None and plpct > -100 else None)
+        wallet_gain = (gain_val / alloc_base * 100
+                       if gain_val is not None and alloc_base > 0 else None)
 
         # basing / coiled-quiet detection (user-suggested reads, calibrated):
         # a fall that has STOPPED falling, or an active name gone dead quiet
@@ -474,15 +497,18 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
                   and cr0 is not None and 0 < cr0 <= QUIET_COIL
                   and vol0 is not None and vol0 >= QUIET_MIN_VOL
                   and prim0.get("bars", 0) >= 40)
-        # basing earns a modest vote only when the recovery has actually begun
-        # settling (RSI off the floor, no negative news) - bases do fail
-        base_vote = 1.0 if (basing and (ind.get("rsi") or 50) < 50
+        # basing earns a modest vote only while RSI is still below 50 (before
+        # the technical score itself starts crediting the recovery, which
+        # would double-count it) and the news isn't negative - bases do fail
+        rsi0 = ind.get("rsi")
+        base_vote = 1.0 if (basing and rsi0 is not None and rsi0 < 50
                             and news_score >= 0) else 0.0
         conviction = (tech or 0) + news_score + value_votes + base_vote
 
         reasons = []
         gate_notes = []  # interventions recorded for the breakdown ledger
         action, amt = "HOLD", None
+        sale_reasons_n = 0  # how many leading reasons argue for a sell action
         pullback = False  # set by the watchlist buy path; read by the chase gate
 
         if h and not has_value:
@@ -498,12 +524,10 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
                     # sale proceeds become tracked cash, so the wallet total
                     # stays the same and the sizing is direct
                     amt = h["value"] - t * capital
-                    wallet_word = "wallet"
                 else:
                     # no cash tracking: the sale shrinks the tracked total,
                     # so size it to land at ~TARGET of what remains
                     amt = (h["value"] - t * total) / (1 - t)
-                    wallet_word = "portfolio"
                 reasons.append(
                     f"{a['name']} is {alloc:.0f}% of this {wallet_word} - a lot riding "
                     f"on one position. Selling this much (keep it as cash or spread "
@@ -521,12 +545,30 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
                     reasons.append(
                         f"You're down {abs(plpct):.0f}% on this position - reducing "
                         "now limits further damage if the slide continues.")
-            elif plpct is not None and plpct >= sp["tp_pct"] and tech is not None and tech <= sp["tp_tech"]:
+            elif plpct is not None and plpct > 0 and tech is not None and tech <= sp["tp_tech"] \
+                    and (plpct >= sp["tp_pct"]
+                         or (wallet_gain is not None and wallet_gain >= sp["port_tp"]
+                             and alloc <= sp["alloc_cap"])):
+                # the wallet-level arm requires alloc <= alloc_cap: beyond the
+                # cap TRIM owns the call, and a small portfolio's single big
+                # position must still earn its full per-position target
                 action = "TAKE PROFIT"
                 amt = h["value"] * 0.3
-                reasons.append(
-                    f"You're up {plpct:.0f}% and momentum is cooling - selling ~30% "
-                    "locks in profit while keeping most of the upside.")
+                if plpct >= sp["tp_pct"]:
+                    reasons.append(
+                        f"You're up {plpct:.0f}% and momentum is cooling - selling ~30% "
+                        "locks in profit while keeping most of the upside.")
+                else:
+                    reasons.append(
+                        f"Up {plpct:.1f}% on the position, but it's large enough that "
+                        f"this gain alone has added ~{wallet_gain:.1f}% to your whole "
+                        f"{wallet_word} - with momentum cooling, banking part of that "
+                        "counts as much as a full target on a smaller position.")
+                    gate_notes.append(
+                        f"{wallet_word.capitalize()}-level profit target: this gain = "
+                        f"{wallet_gain:.1f}% of the whole {wallet_word} (style threshold "
+                        f"{sp['port_tp']}%), triggered below the per-position "
+                        f"{sp['tp_pct']}% target")
             elif ((tech is not None and tech >= sp["buy_tech"]) or (tech is None and value_votes >= sp["value_buy"])) \
                     and news_score >= -0.5 and alloc < BUY_CAP_PCT and headroom >= 10 \
                     and (cash is None or cash >= 15):
@@ -542,6 +584,9 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
                 else:
                     reasons.append("Signals don't line up strongly enough either "
                                    "way - no edge; sit tight.")
+            # everything appended so far argues for THIS action; remembered so
+            # a later demotion can retract the argument along with the action
+            sale_reasons_n = len(reasons)
             if alloc > max_alloc and n_holdings < 3:
                 reasons.append(
                     f"Heads up: this is {alloc:.0f}% of the portfolio. With only "
@@ -702,9 +747,15 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
             if action in ("TRIM", "SELL PART", "TAKE PROFIT"):
                 amt = min(amt, h["value"])
                 if amt < 5 or h["value"] < 20:
+                    # retract the sale argument along with the action, or the
+                    # card would urge a sell right under "not worth selling"
+                    gate_notes.append(f"Size gate: {action} signal, but the position "
+                                      "is too small for the sale to beat fees - held instead")
+                    del reasons[:sale_reasons_n]
                     action, amt = "HOLD", None
-                    reasons.insert(0, "The amount involved is too small to be worth "
-                                      "selling - fees and spreads would eat the benefit.")
+                    reasons.insert(0, "This position's signals argued for selling, but "
+                                      "the amount involved is too small to be worth it - "
+                                      "fees and spreads would eat the benefit.")
                 else:
                     amt = min(int(round(amt / 5.0) * 5), int(h["value"]))
             else:
@@ -715,8 +766,17 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
                 amt = max(10, int(amt // 5) * 5)
                 if cash is not None and amt > cash:
                     action, amt = "WATCH", None
+                    gate_notes.append("Cash gate: buy setup kept as WATCH - not enough "
+                                      "available cash for a meaningful buy")
                     reasons.insert(0, "Good setup, but not enough available cash "
                                       "for a meaningful buy right now.")
+
+        # what banking this specific sale locks in, as a % of the whole wallet -
+        # the number that compounds across many small trades
+        wallet_impact = None
+        if action in ("TRIM", "SELL PART", "TAKE PROFIT") and amt and gain_val \
+                and gain_val > 0 and h.get("value") and alloc_base > 0:
+            wallet_impact = round(gain_val * (amt / h["value"]) / alloc_base * 100, 2)
 
         reasons.extend(value_reasons)
         for r in (sig.get("reasons") or [])[:3]:
@@ -734,6 +794,8 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
             confidence = "Medium"
         if conf_cap and confidence == "High":
             confidence = "Medium"  # chase-caution / imminent earnings caps certainty
+            gate_notes.append("Confidence capped at Medium - extended run-up or "
+                              "earnings within a week makes certainty cheap")
 
         # movement flags: awareness of big moves, independent of the trade call
         chg24 = a.get("chg_24h")
@@ -770,8 +832,9 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
                                       + " - your plan says cut the loss"})
         if basing:
             flags.append({"kind": "base",
-                          "text": f"Down {abs(chg30_0):.0f}% over the month but holding steady near "
-                                  f"{currency}{_fmt_price(rl0)} - sellers may be tiring; one to watch"})
+                          "text": f"Down {abs(chg30_0):.0f}% over the month but the fall has gone "
+                                  "quiet in the bottom of its recent range - sellers may be "
+                                  "tiring; one to watch"})
         elif coiled:
             flags.append({"kind": "quiet",
                           "text": "Unusually quiet for its normal pace - coiled; big moves often "
@@ -783,6 +846,8 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
         # same asset - never show "BUY MORE" under a tripped stop or target
         if action in ("BUY", "BUY MORE") and any(f["kind"] in ("tp", "sl") for f in flags):
             action, amt = "HOLD", None  # suggested_plan is derived below from the demoted action
+            gate_notes.append("Plan gate: your own tripped stop/target outranks a "
+                              "fresh buy - demoted to HOLD")
             reasons.insert(0, "Your own stop/target has triggered on this position - "
                               "resolve your plan first before adding more.")
 
@@ -805,6 +870,8 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
             "suggested_plan": suggested_plan,
             "usd": amt,
             "qty": (amt / price) if amt and price else None,
+            "wallet_impact": wallet_impact,
+            "wallet_word": wallet_word,
             "conviction": round(conviction, 1),
             "confidence": confidence,
             "news_score": round(news_score, 2),
@@ -854,8 +921,29 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
     market_open = market.get("open", True)
     if not market_open:
         recs = [r if r["action"] in ("HOLD", "WATCH")
-                else {**r, "action": "HOLD", "usd": None, "qty": None}
+                else {**r, "action": "HOLD", "usd": None, "qty": None,
+                      "wallet_impact": None,
+                      "breakdown": {**r["breakdown"],
+                                    "gates": r["breakdown"]["gates"]
+                                    + [f"Market closed: {r['action']} shown as HOLD "
+                                       "until the exchange reopens"]}}
                 for r in recs if r["action"] in ("HOLD", "WATCH") or r["flags"]]
+
+    # fast styles recycle banked profit: point each take-profit card at the
+    # strongest current buy-side ideas from this same pass, so small wins go
+    # back to work and build up - context, not an instruction. Candidates only;
+    # the API layer words the hint after filtering out ideas the user already
+    # dismissed today (dismissals live outside this cached snapshot).
+    if style in ("scalper", "day"):
+        buy_ideas = [r for r in recs if r["action"] in ("BUY", "BUY MORE")]
+        for r in recs:
+            if r["action"] != "TAKE PROFIT":
+                continue
+            cands = [b for b in buy_ideas if b["asset_id"] != r["asset_id"]][:2]
+            if cands:
+                r["rotation"] = [{"asset_id": b["asset_id"], "symbol": b["symbol"],
+                                  "name": b["name"], "action": b["action"]}
+                                 for b in cands]
 
     # ---------------------------------------------------------- briefing
     if market_sent > 0.4:

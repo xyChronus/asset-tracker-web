@@ -7,10 +7,10 @@ const CUR = { crypto: "$", pse: "₱", global: "$" };
 const MKT_LABEL = { crypto: "Crypto", pse: "PSE Stocks", global: "Global Stocks" };
 
 const STYLES = [
-  { v: "scalper", label: "Scalper", desc: "Very short holds. Acts on fast signals, takes small profits quickly (~2%), and barely weighs company fundamentals." },
-  { v: "day", label: "Day Trader", desc: "Intraday moves. Quick to act, takes profit around +4%, light on fundamentals." },
-  { v: "swing", label: "Swing Trader", desc: "Days to weeks. The balanced default — takes profit around +10% and blends technicals, news and fundamentals." },
-  { v: "long", label: "Long-Term Investor", desc: "Months and up. Patient and fundamentals-led; rarely sells on short-term dips, takes profit much later." },
+  { v: "scalper", label: "Scalper", desc: "Very short holds. Acts on fast signals, takes small profits quickly (~2%, or sooner when one big position has already lifted your overall holdings), and suggests rotating banked wins into the next setup." },
+  { v: "day", label: "Day Trader", desc: "Intraday moves. Quick to act, takes profit around +4% (sooner on positions big enough to move your overall holdings), rotates banked wins, light on fundamentals." },
+  { v: "swing", label: "Swing Trader", desc: "Days to weeks. The balanced default — takes profit around +10% (sooner when one big position has already lifted your overall holdings) and blends technicals, news and fundamentals." },
+  { v: "long", label: "Long-Term Investor", desc: "Months and up. Patient and fundamentals-led; rarely sells on short-term dips and takes profit much later — though a very large position may bank profit earlier once its gain alone has moved your overall holdings." },
 ];
 const styleLabel = (v) => (STYLES.find(s => s.v === v) || STYLES[2]).label;
 
@@ -789,8 +789,12 @@ function recCard(r) {
   const conv = Math.max(-10, Math.min(10, r.conviction || 0));
   const pos = ((conv + 10) / 20 * 100).toFixed(0);
   const h = r.holding;
+  const ww = r.wallet_word === "wallet" ? "wallet" : "portfolio";
+  const impact = (r.wallet_impact != null && r.wallet_impact >= 0.01)
+    ? ` <span class="muted" title="The locked-in gain from this sale, measured against your whole ${ww} — the number that compounds across many small trades">— banks ≈ <b class="pos">+${+r.wallet_impact.toFixed(2)}%</b> of your whole ${ww}</span>`
+    : "";
   const amount = r.usd
-    ? `<div class="rec-amount">${r.action.includes("BUY") ? "Buy" : "Sell"} about <b>${fmtMoney(r.usd)}</b>${r.qty ? ` <span class="muted">(≈ ${fmtQty(r.qty)} ${esc(r.symbol)})</span>` : ""}</div>`
+    ? `<div class="rec-amount">${r.action.includes("BUY") ? "Buy" : "Sell"} about <b>${fmtMoney(r.usd)}</b>${r.qty ? ` <span class="muted">(≈ ${fmtQty(r.qty)} ${esc(r.symbol)})</span>` : ""}${impact}</div>`
     : "";
   const sp = r.suggested_plan;
   const planLine = sp

@@ -1735,6 +1735,20 @@ def api_advisor(market):
         d = _direction(r.get("action"))
         r["dismissed"] = (r.get("asset_id") in dis and d is not None
                           and _direction(dis[r["asset_id"]]) == d)
+        # rotation hints are worded here, after dismissals: a take-profit card
+        # must never point freed cash at an idea the user hid as done-today
+        rot = r.pop("rotation", None)
+        if rot and not r["dismissed"]:
+            keep = [c for c in rot
+                    if not (c.get("asset_id") in dis
+                            and _direction(dis[c["asset_id"]]) == "buy")]
+            if keep:
+                r["rotation"] = keep
+                r["reasons"] = list(r.get("reasons") or []) + [
+                    "Rotation idea: the freed cash could go to "
+                    + " or ".join((c.get("symbol") or c.get("name") or "?") for c in keep)
+                    + " - current buy-side ideas in this list. Small banked wins put "
+                      "back to work are how the minor profits build up."]
         recs.append(r)
     snap["recommendations"] = recs
     return jsonify(snap)
