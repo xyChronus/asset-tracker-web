@@ -1132,10 +1132,15 @@ def scheduler():
         [lambda: 30, 0, pse_backfill_tick],
         [lambda: iv["pse"]["dividends"], 0, pse_fetch_dividends],
         [lambda: iv["pse"]["news"], 0, lambda: fetch_news("pse")],
-        [lambda: iv["pse"]["signals"], 0, lambda: recompute_signals("pse")],
+        # stock signals only need recomputing while prices can move: outside
+        # market hours an hourly sweep re-reads the whole window for nothing,
+        # which was a large slice of the database's data budget
+        [lambda: iv["pse"]["signals"] if _pse_open() else 6 * 3600, 0,
+         lambda: recompute_signals("pse")],
         [lambda: iv["global"]["quotes"], 0, global_fetch_quotes],
         [lambda: iv["global"]["history"], 0, global_history_tick],
-        [lambda: iv["global"]["signals"], 0, lambda: recompute_signals("global")],
+        [lambda: iv["global"]["signals"] if market_session("global")[0] else 6 * 3600, 0,
+         lambda: recompute_signals("global")],
         [lambda: 43200, 0, earnings_calendar_tick],
         [lambda: 86400, 0, spx_daily_tick],
         [lambda: 21600, 0, lambda: predictions_tick("crypto")],
@@ -1824,10 +1829,13 @@ def api_watchlist(market):
     fund = db.get_fundamentals(market) if market != "crypto" else {}
     sparks = {}
     if market != "crypto":
-        since = now_ms() - 7 * 86400000
+        # one close per day from the daily store instead of every raw tick of
+        # the last week: same shape of line, a fraction of the rows moved
+        since = now_ms() - 30 * 86400000
         for r in db.conn().execute(
-                "SELECT asset_id, price FROM price_history WHERE market=%s AND ts>=%s"
-                " ORDER BY asset_id, ts", (market, since)).fetchall():
+                "SELECT asset_id, price FROM price_history_daily"
+                " WHERE market=%s AND ts>=%s ORDER BY asset_id, ts",
+                (market, since)).fetchall():
             sparks.setdefault(r["asset_id"], []).append(r["price"])
     owner = 0 if market == "pse" else uid()
     out = []

@@ -1335,7 +1335,7 @@ function renderWatchlist(assets) {
       th("EPS", "eps", sortKey) + th("P/E", "pe", sortKey) +
       th("Div/Share", "div_ps", sortKey) + th("Div Yield", "div_yield", sortKey) +
       th("Ex-Date", "div_ex_date", sortKey) +
-      `<th>Trend</th>` + th("Signal", "signal.score", sortKey) + rm + `</tr></thead><tbody>` +
+      `<th>30d Trend</th>` + th("Signal", "signal.score", sortKey) + rm + `</tr></thead><tbody>` +
       rows.map((a, i) => `<tr>
         <td><div class="coin-cell">${a.image ? `<img src="${esc(a.image)}">` : ""}<span class="nm">${esc(a.name)}</span><span class="sym">${esc(a.symbol)}</span></div></td>
         <td><b>${fmtMoney(a.price)}</b></td>
@@ -1954,4 +1954,19 @@ document.querySelectorAll("#mkt-switch button").forEach(b =>
   b.classList.toggle("active", b.dataset.market === state.market));
 loadUser();
 refresh();
-setInterval(() => { state.watch[state.market] = null; refresh(); }, 120000);
+// Auto-refresh, kept cheap: a background tab polls nothing at all (it used to
+// pull ~400 KB every 2 minutes forever, which dominated our database's data
+// budget), and the heavy watchlist payload is only re-fetched on the tab that
+// actually shows live prices. Coming back to the page refreshes immediately.
+const REFRESH_MS = 300000;
+let lastRefreshAt = Date.now();
+
+function autoRefresh() {
+  lastRefreshAt = Date.now();
+  if (state.tab === "watchlist") state.watch[state.market] = null;
+  refresh();
+}
+setInterval(() => { if (!document.hidden) autoRefresh(); }, REFRESH_MS);
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && Date.now() - lastRefreshAt > REFRESH_MS) autoRefresh();
+});

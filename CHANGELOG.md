@@ -253,3 +253,12 @@ Web-only items are marked **(web)**.
 ## [1.17.1] — 2026-08-01 — Reset hardening follow-up
 ### Fixed
 - The reset form's per-device guess limit now identifies visitors correctly behind the hosting provider's proxies (measured on the live service rather than assumed). Previously it would have lumped every visitor together, letting one person exhaust the whole site's allowance and block everyone else's resets.
+
+## [1.18.0] — 2026-08-10 — Living within the free tier
+### Changed
+- **The site no longer polls in the background.** A tab you leave open in another window now uses zero data until you look at it again, and refreshes immediately when you return. Open tabs quietly re-downloading everything every 2 minutes were using far more of the database's monthly data allowance than the actual trading.
+- Auto-refresh interval relaxed from 2 to 5 minutes, and the heavy full-market list is only re-fetched on the Watchlist tab where live prices matter.
+- **Stock signals now recompute during market hours** instead of hourly around the clock — prices can't move while an exchange is shut, so the extra sweeps only cost data.
+- Watchlist trend sparklines for stocks are drawn from stored daily closes and now cover **30 days instead of 7** (the column is labelled accordingly) — a longer view for fewer rows.
+### Notes
+- Triggered by a Supabase fair-use warning on 2026-08-10. Measured, not guessed: browser polling was the dominant cost (up to ~39 GB/month with tabs left open), signal sweeps ~3.3 GB/month. Projected usage after these changes is roughly **1.8 GB/month against the 5 GB allowance**, with no loss of information — only of repetition.
