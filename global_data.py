@@ -190,6 +190,14 @@ def profile(symbol):
         return {}
 
 
+def industry(symbol):
+    """Finnhub's industry tag (free), used for sector-wide news awareness."""
+    try:
+        return fh_get("/stock/profile2", {"symbol": symbol}).get("finnhubIndustry") or None
+    except Exception:
+        return None
+
+
 # ------------------------------------------------- Philippine stocks (Finnhub)
 # Finnhub lists PSE names with a ".PM" suffix (e.g. BDO.PM, SM.PM). It returns
 # clean quotes and fundamentals for them on the free tier - a far steadier

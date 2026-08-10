@@ -228,6 +228,8 @@ tbody tr:hover { background: var(--panel-2); }
 .mover-chip.mover-event { border-left-color: var(--blue); }
 .mover-chip.mover-tp { border-left-color: #34d399; }
 .mover-chip.mover-sl { border-left-color: var(--red); }
+.mover-chip.mover-rebound { border-left-color: var(--accent); }
+.sec-chip { font-size: 10.5px; }
 
 /* ---- TP/SL plan (paper-trading discipline) ---- */
 .tgt-btn.plain { background: none; border: none; padding: 0; cursor: pointer; display: inline-flex; gap: 4px; }

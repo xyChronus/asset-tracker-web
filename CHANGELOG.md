@@ -262,3 +262,15 @@ Web-only items are marked **(web)**.
 - Watchlist trend sparklines for stocks are drawn from stored daily closes and now cover **30 days instead of 7** (the column is labelled accordingly) — a longer view for fewer rows.
 ### Notes
 - Triggered by a Supabase fair-use warning on 2026-08-10. Measured, not guessed: browser polling was the dominant cost (up to ~39 GB/month with tabs left open), signal sweeps ~3.3 GB/month. Projected usage after these changes is roughly **1.8 GB/month against the 5 GB allowance**, with no loss of information — only of repetition.
+
+## [1.19.0] — 2026-08-10 — Your advisor, your way
+### Added
+- **Trailing stops** — a stop-loss that follows the price up, always staying your chosen % below its highest point since you set it, and never moving down. Locks in gains automatically on the way up; re-saving restarts it from the current price.
+- **Trailing-buy alerts** — after you sell (or while you wait), the tracker watches the bottom and flags when the price has rebounded your chosen % off its low. Survives selling the position; clears itself after 30 days.
+- **Enter TP/SL as percentages** — the plan editor has a price / "% from current" switch, converting live with risk:reward shown.
+- **Industry-aware news** — stories now carry 🏭 sector chips (banks ▲, energy ▼ …) showing which industries they touch and the headline's tone. The advisor folds sector news into each stock's score too — gently, capped at ±0.5 of the ±3 direct-news scale, with its own line in the Full-reasoning ledger. Stories naming the company directly are never counted twice, and syndicated copies of one story count once.
+- **Aggressiveness setting** (Account panel) — Cautious halves buy sizes and raises the bar to act; Aggressive sizes ×1.5 and acts on earlier signals (labelled honestly when it does). Never changes the sell side.
+- **Portfolio spread setting** — Focused / Balanced / Spread out moves the concentration cap ±10 points around your style's baseline; buys always stop at or below your own trim line, whatever the combination.
+- **%/$ display switch** above Holdings — the Day/7d/30d columns show percentages or money, your choice per device, and sort by whichever is shown.
+### Fixed
+- A 13-finding adversarial review before launch (plus hand-verification where the review tooling hit limits): buy suggestions can no longer build a position the same engine would immediately trim; re-saving a trailing plan genuinely restarts it (the old stop can't fossilize); the plan editor no longer risks wiping levels when an asset briefly has no live price; sector keywords match whole words only ("ore" no longer tags half the feed as mining); the example headline always argues the same direction as the score; plan alerts keep their dashboard slot over mere price movers.

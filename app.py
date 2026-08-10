@@ -204,10 +204,14 @@ def logout():
 @app.get("/api/me")
 def api_me():
     row = db.conn().execute(
-        "SELECT trading_style FROM users WHERE id=%s", (uid(),)).fetchone()
-    style = (row or {}).get("trading_style") or "swing"
+        "SELECT trading_style, aggressiveness, diversity FROM users WHERE id=%s",
+        (uid(),)).fetchone()
+    r = row or {}
     return jsonify({"email": session.get("email"), "name": session.get("name"),
-                    "admin": bool(session.get("admin")), "trading_style": style})
+                    "admin": bool(session.get("admin")),
+                    "trading_style": r.get("trading_style") or "swing",
+                    "aggressiveness": r.get("aggressiveness") or "balanced",
+                    "diversity": r.get("diversity") or "balanced"})
 
 
 @app.post("/api/change_password")
@@ -432,13 +436,30 @@ def api_reset_complete():
 @app.post("/api/settings")
 def api_settings():
     d = request.get_json(force=True)
-    style = (d.get("trading_style") or "").strip().lower()
-    if style not in adv.STYLE_PARAMS:
-        return jsonify({"error": "unknown trading style"}), 400
-    db.conn().execute("UPDATE users SET trading_style=%s WHERE id=%s", (style, uid()))
-    for market in config.MARKETS:  # style changes every market's advice
+    updates = {}
+    if "trading_style" in d:
+        style = (d.get("trading_style") or "").strip().lower()
+        if style not in adv.STYLE_PARAMS:
+            return jsonify({"error": "unknown trading style"}), 400
+        updates["trading_style"] = style
+    if "aggressiveness" in d:
+        agg = (d.get("aggressiveness") or "").strip().lower()
+        if agg not in adv.AGGRESSIVENESS:
+            return jsonify({"error": "unknown aggressiveness level"}), 400
+        updates["aggressiveness"] = agg
+    if "diversity" in d:
+        div = (d.get("diversity") or "").strip().lower()
+        if div not in adv.DIVERSITY:
+            return jsonify({"error": "unknown diversity level"}), 400
+        updates["diversity"] = div
+    if not updates:
+        return jsonify({"error": "nothing to change"}), 400
+    sets = ", ".join(f"{k}=%s" for k in updates)   # keys are whitelisted above
+    db.conn().execute(f"UPDATE users SET {sets} WHERE id=%s",
+                      (*updates.values(), uid()))
+    for market in config.MARKETS:  # any of these changes every market's advice
         _invalidate_advisor(market, uid())
-    return jsonify({"ok": True, "trading_style": style})
+    return jsonify({"ok": True, **updates})
 
 
 @app.post("/api/invites")
@@ -760,7 +781,7 @@ def pse_fetch_quotes():
 
 def pse_fundamentals_tick():
     row = db.conn().execute("""
-        SELECT p.symbol, p.cmpy_id, COALESCE(f.updated, 0) AS upd
+        SELECT p.symbol, p.cmpy_id, p.sector, COALESCE(f.updated, 0) AS upd
         FROM pse_companies p LEFT JOIN fundamentals f
           ON f.market='pse' AND f.asset_id = p.symbol
         ORDER BY upd ASC LIMIT 1""").fetchone()
@@ -788,6 +809,7 @@ def pse_fundamentals_tick():
             print(f"[pse] edge fundamentals {sym}: {e}")
     # Always stamp 'updated' - even on total failure - so a persistently broken
     # symbol rotates to the back and doesn't starve the rest of the list.
+    fields["sector"] = row["sector"]  # PSE board sector, for industry news
     db.set_fundamentals("pse", sym, updated=now_ms(), **fields)
 
 
@@ -947,6 +969,10 @@ def global_metrics_tick():
         db.set_fundamentals("global", stalest,
                             updated=now_ms() - (config.METRICS_REFRESH_HOURS - 1) * 3600000)
         return
+    # the industry tag never changes: fetch it once per symbol, then reuse.
+    # "" (not NULL) when Finnhub has no tag, so we never re-ask forever
+    if (fund.get(stalest) or {}).get("sector") is None:
+        m["sector"] = global_data.industry(stalest) or ""
     db.set_fundamentals("global", stalest, updated=now_ms(), **m)
 
 
@@ -1150,6 +1176,7 @@ def scheduler():
         [lambda: 60, 0, lambda: history_backfill_tick("global")],
         [lambda: 45, 0, lambda: history_backfill_tick("pse")],
         [lambda: 21600, 0, daily_close_tick],
+        [lambda: 600, 0, trailing_tick],
         [lambda: iv["global"]["metrics"], 0, global_metrics_tick],
         [lambda: iv["global"]["indices"], 0, global_fetch_indices],
         [lambda: iv["global"]["news"], 0, lambda: fetch_news("global")],
@@ -1283,6 +1310,10 @@ def portfolio_state(market, user):
                          "chg_24h": chg24, "chg_7d": chg7, "chg_30d": chg30,
                          "signal": sgn,
                          "tp_price": tp, "sl_price": sl, "note": t.get("note"),
+                         "trail_pct": t.get("trail_pct"),
+                         "peak_price": t.get("peak_price"),
+                         "trail_buy_pct": t.get("trail_buy_pct"),
+                         "trough_price": t.get("trough_price"),
                          "sugg_tp": sugg and sugg["tp"], "sugg_sl": sugg and sugg["sl"],
                          "sugg_tp_pct": sugg and sugg["tp_pct"],
                          "sugg_sl_pct": sugg and sugg["sl_pct"],
@@ -1574,8 +1605,11 @@ def get_advisor(market, user, force=False):
         fund = db.get_fundamentals(market) if market != "crypto" else None
         is_open, next_open = market_session(market)
         srow = db.conn().execute(
-            "SELECT trading_style FROM users WHERE id=%s", (user,)).fetchone()
+            "SELECT trading_style, aggressiveness, diversity FROM users WHERE id=%s",
+            (user,)).fetchone()
         style = (srow or {}).get("trading_style") or "swing"
+        agg = (srow or {}).get("aggressiveness") or "balanced"
+        div = (srow or {}).get("diversity") or "balanced"
         tgts = {r["asset_id"]: dict(r) for r in db.conn().execute(
             "SELECT * FROM targets WHERE user_id=%s AND market=%s", (user, market)).fetchall()}
         cal = db.kv_get("earnings:cal", {}).get("data", {})
@@ -1592,7 +1626,8 @@ def get_advisor(market, user, force=False):
                             "regime": _regime(market)}, now_ms(),
                            currency=config.CURRENCY[market], fundamentals=fund,
                            max_ideas=config.ADVISOR_MAX_IDEAS[market], style=style,
-                           targets=tgts, earnings=earn)
+                           targets=tgts, earnings=earn,
+                           aggressiveness=agg, diversity=div)
         # Attach the precomputed trend projections (display only — the fit is
         # built from the same price history the technicals already vote on, so
         # feeding it into conviction would double-count momentum).
@@ -1711,8 +1746,22 @@ def api_add_transaction(market):
             " WHERE user_id=%s AND market=%s AND asset_id=%s",
             (uid(), market, asset_id)).fetchone()["q"]
         if left <= 1e-9:
-            c.execute("DELETE FROM targets WHERE user_id=%s AND market=%s AND asset_id=%s",
-                      (uid(), market, asset_id))
+            # ...but a trailing-BUY alert is exactly for after you've sold
+            # ("tell me when it rebounds off the bottom") - keep that part,
+            # reset its trough to start watching from now
+            row = c.execute("SELECT trail_buy_pct FROM targets WHERE user_id=%s"
+                            " AND market=%s AND asset_id=%s",
+                            (uid(), market, asset_id)).fetchone()
+            if row and row["trail_buy_pct"]:
+                pm2, _ = price_map(market)
+                pnow = (pm2.get(asset_id) or {}).get("price")
+                c.execute("UPDATE targets SET tp_price=NULL, sl_price=NULL,"
+                          " trail_pct=NULL, peak_price=NULL, trough_price=%s"
+                          " WHERE user_id=%s AND market=%s AND asset_id=%s",
+                          (pnow, uid(), market, asset_id))
+            else:
+                c.execute("DELETE FROM targets WHERE user_id=%s AND market=%s AND asset_id=%s",
+                          (uid(), market, asset_id))
     _invalidate_advisor(market, uid())
     return jsonify({"ok": True})
 
@@ -1800,23 +1849,57 @@ def api_targets(market):
             raise ValueError(f"{field}: must be a normal price above zero")
         return v
 
+    def _pct(field):
+        raw = d.get(field)
+        if raw in (None, ""):
+            return None
+        try:
+            v = float(raw)
+        except (TypeError, ValueError):
+            raise ValueError(f"{field}: enter a plain number")
+        if not math.isfinite(v) or not 0.5 <= v <= 50:
+            raise ValueError(f"{field}: use a percentage between 0.5 and 50")
+        return v
+
     try:
         tp, sl = _num("tp_price"), _num("sl_price")
+        trail, trail_buy = _pct("trail_pct"), _pct("trail_buy_pct")
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
+    price = (price_map(market)[0].get(aid) or {}).get("price")
+    # a trailing stop starts measuring from NOW: seed the peak at the current
+    # price and materialize the initial stop so flags work immediately
+    peak = trough = None
+    if trail is not None:
+        if not price:
+            return jsonify({"error": "no live price right now - a trailing stop "
+                                     "needs one to start from"}), 400
+        peak = price
+        floor = price * (1 - trail / 100.0)
+        sl = max(sl, floor) if sl is not None else floor
+    if trail_buy is not None:
+        if not price:
+            return jsonify({"error": "no live price right now - a trailing buy "
+                                     "alert needs one to start from"}), 400
+        trough = price
     if tp is not None and sl is not None and sl >= tp:
         return jsonify({"error": "the stop-loss must be below the take-profit"}), 400
     note = (d.get("note") or "").strip()[:300] or None
-    if tp is None and sl is None and not note:
+    if tp is None and sl is None and trail is None and trail_buy is None and not note:
         db.conn().execute("DELETE FROM targets WHERE user_id=%s AND market=%s AND asset_id=%s",
                           (uid(), market, aid))
     else:
         db.conn().execute(
-            "INSERT INTO targets VALUES (%s,%s,%s,%s,%s,%s,%s)"
+            "INSERT INTO targets (user_id, market, asset_id, tp_price, sl_price,"
+            " note, updated, trail_pct, peak_price, trail_buy_pct, trough_price)"
+            " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"
             " ON CONFLICT (user_id, market, asset_id) DO UPDATE SET"
             " tp_price=EXCLUDED.tp_price, sl_price=EXCLUDED.sl_price,"
-            " note=EXCLUDED.note, updated=EXCLUDED.updated",
-            (uid(), market, aid, tp, sl, note, db.now_iso()))
+            " note=EXCLUDED.note, updated=EXCLUDED.updated,"
+            " trail_pct=EXCLUDED.trail_pct, peak_price=EXCLUDED.peak_price,"
+            " trail_buy_pct=EXCLUDED.trail_buy_pct, trough_price=EXCLUDED.trough_price",
+            (uid(), market, aid, tp, sl, note, db.now_iso(),
+             trail, peak, trail_buy, trough))
     _invalidate_advisor(market, uid())
     return jsonify({"ok": True})
 
@@ -2246,6 +2329,58 @@ def held_ids_all_users(market):
     return [r["a"] for r in rows]
 
 
+def trailing_tick():
+    """Ratchet trailing plans from prices already in memory - zero API cost.
+    A trailing STOP only ever moves up (peak * (1 - trail%)); a trailing BUY
+    alert's trough only ever moves down. The advisor and dashboard read the
+    materialized sl_price, so every existing flag keeps working unchanged."""
+    for market in config.MARKETS:
+        rows = db.conn().execute(
+            "SELECT * FROM targets WHERE market=%s AND"
+            " (trail_pct IS NOT NULL OR trail_buy_pct IS NOT NULL)",
+            (market,)).fetchall()
+        if not rows:
+            continue
+        pm, _ = price_map(market)
+        # a trailing-buy alert is a re-entry WATCH, not a standing order: it
+        # clears itself after 30 days so a sold position's alert can't nag
+        # forever with no UI row left to cancel it from
+        cutoff = (datetime.now() - timedelta(days=30)).isoformat()[:16].replace("T", " ")
+        for t in rows:
+            if t["trail_buy_pct"] and (t["updated"] or "") < cutoff:
+                db.conn().execute(
+                    "UPDATE targets SET trail_buy_pct=NULL, trough_price=NULL"
+                    " WHERE user_id=%s AND market=%s AND asset_id=%s",
+                    (t["user_id"], market, t["asset_id"]))
+                db.conn().execute(
+                    "DELETE FROM targets WHERE user_id=%s AND market=%s AND asset_id=%s"
+                    " AND tp_price IS NULL AND sl_price IS NULL AND trail_pct IS NULL"
+                    " AND trail_buy_pct IS NULL AND note IS NULL",
+                    (t["user_id"], market, t["asset_id"]))
+                continue
+            m = pm.get(t["asset_id"]) or {}
+            price = m.get("price")
+            if not price or price <= 0 or not math.isfinite(price):
+                continue
+            if t["trail_pct"]:
+                peak = max(t["peak_price"] or price, price)
+                floor = peak * (1 - t["trail_pct"] / 100.0)
+                if peak > (t["peak_price"] or 0) or floor > (t["sl_price"] or 0):
+                    db.conn().execute(
+                        "UPDATE targets SET peak_price=%s,"
+                        " sl_price=GREATEST(COALESCE(sl_price, 0), %s)"
+                        " WHERE user_id=%s AND market=%s AND asset_id=%s",
+                        (peak, floor, t["user_id"], market, t["asset_id"]))
+                    _invalidate_advisor(market, t["user_id"])
+            if t["trail_buy_pct"]:
+                trough = min(t["trough_price"] or price, price)
+                if trough < (t["trough_price"] or float("inf")):
+                    db.conn().execute(
+                        "UPDATE targets SET trough_price=%s"
+                        " WHERE user_id=%s AND market=%s AND asset_id=%s",
+                        (trough, t["user_id"], market, t["asset_id"]))
+
+
 def daily_close_tick():
     """Fold the last few days' true closes from the hourly table into the
     long-term store - pure SQL inside the database, zero API calls and zero
@@ -2419,8 +2554,18 @@ def api_news(market):
             (market, limit)).fetchall()
     sources = [r["source"] for r in db.conn().execute(
         "SELECT DISTINCT source FROM news WHERE market=%s ORDER BY source", (market,)).fetchall()]
+    # tag each story with the industries it moves (and which way) so the News
+    # tab can show "banks ▲" style chips - same lexicon the advisor uses
+    rows = [dict(r) for r in rows]
+    if market != "crypto":
+        for r in rows:
+            text = ((r.get("title") or "") + " " + (r.get("summary") or "")).lower()
+            hit = adv.sector_tags(text)[:3]
+            if hit:
+                r["sectors"] = hit
+                r["sector_sent"] = adv.article_sentiment(r.get("title"), r.get("summary"))
     return jsonify({"updated": db.kv_get(f"{market}:news_updated"),
-                    "sources": sources, "items": [dict(r) for r in rows]})
+                    "sources": sources, "items": rows})
 
 
 @app.get("/api/<market>/status")

@@ -204,6 +204,12 @@ def init():
     conn().execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS agreed_terms BOOLEAN DEFAULT FALSE")
     conn().execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS pw_version INTEGER NOT NULL DEFAULT 0")
     conn().execute("ALTER TABLE password_resets ADD COLUMN IF NOT EXISTS last_try BIGINT")
+    conn().execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS aggressiveness TEXT DEFAULT 'balanced'")
+    conn().execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS diversity TEXT DEFAULT 'balanced'")
+    conn().execute("ALTER TABLE targets ADD COLUMN IF NOT EXISTS trail_pct DOUBLE PRECISION")
+    conn().execute("ALTER TABLE targets ADD COLUMN IF NOT EXISTS peak_price DOUBLE PRECISION")
+    conn().execute("ALTER TABLE targets ADD COLUMN IF NOT EXISTS trail_buy_pct DOUBLE PRECISION")
+    conn().execute("ALTER TABLE targets ADD COLUMN IF NOT EXISTS trough_price DOUBLE PRECISION")
     conn().execute("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS fee DOUBLE PRECISION DEFAULT 0")
     for col in ("eps_growth", "rev_growth", "net_margin", "debt_equity", "pb", "roe"):
         conn().execute(f"ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS {col} DOUBLE PRECISION")

@@ -14,9 +14,21 @@ const STYLES = [
 ];
 const styleLabel = (v) => (STYLES.find(s => s.v === v) || STYLES[2]).label;
 
+const AGG_LEVELS = [
+  { v: "cautious", label: "Cautious", desc: "Half-size buy suggestions and a higher bar before the advisor proposes entering. Fewer, smaller moves." },
+  { v: "balanced", label: "Balanced", desc: "The default — the style you picked above sets the pace, unmodified." },
+  { v: "aggressive", label: "Aggressive", desc: "Buy suggestions ×1.5 and a slightly lower bar to act. More action, more risk — sizing still never exceeds your cash." },
+];
+const DIV_LEVELS = [
+  { v: "focused", label: "Focused", desc: "Lets single positions grow ~10 points larger before suggesting a trim. Fewer, bigger bets." },
+  { v: "balanced", label: "Balanced", desc: "The default concentration cap for your trading style (35–40% of the wallet)." },
+  { v: "spread", label: "Spread out", desc: "Suggests trimming ~10 points earlier so money spreads across more assets. Steadier, less dependent on any one pick." },
+];
+
 const charts = {};
 const state = {
   market: localStorage.getItem("mkt") || "crypto",
+  valueMode: localStorage.getItem("valmode") || "pct",  // Day/7d/30d as % or $
   tab: "dashboard",
   currency: localStorage.getItem("curmode") || "native",
   style: "swing",
@@ -391,7 +403,7 @@ async function loadHeader() {
 /* --------------------------------------------- take-profit / stop-loss plan */
 
 function planCell(h) {
-  if (!h.tp_price && !h.sl_price && !h.note) {
+  if (!h.tp_price && !h.sl_price && !h.note && !h.trail_pct && !h.trail_buy_pct) {
     // no personal plan yet: lead with the AI's style-tuned suggestion
     if (h.sugg_tp) return `<button class="tgt-btn plain" data-tgt="${esc(h.asset_id)}"
         title="Suggested (+${h.sugg_tp_pct}% / −${h.sugg_sl_pct}%${h.sugg_rr ? ", risk:reward 1:" + h.sugg_rr : ""}): ${esc(h.sugg_why || "")} — click to adopt or adjust">
@@ -402,7 +414,9 @@ function planCell(h) {
   if (h.tp_price) bits.push(`<span class="tgt-chip ${h.tp_hit ? "tgt-hit-tp" : ""}"
       title="Take-profit at ${fmtMoney(h.tp_price)}">🎯 ${h.tp_hit ? "HIT" : (h.tp_dist_pct != null ? "+" + h.tp_dist_pct.toFixed(0) + "%" : "")}</span>`);
   if (h.sl_price) bits.push(`<span class="tgt-chip ${h.sl_hit ? "tgt-hit-sl" : ""}"
-      title="Stop-loss at ${fmtMoney(h.sl_price)}">🛑 ${h.sl_hit ? "HIT" : (h.sl_dist_pct != null ? h.sl_dist_pct.toFixed(0) + "%" : "")}</span>`);
+      title="${h.trail_pct ? `Trailing stop: ${fmtMoney(h.sl_price)} now — follows the price up, staying ${h.trail_pct}% below its ${fmtMoney(h.peak_price)} peak` : "Stop-loss at " + fmtMoney(h.sl_price)}">${h.trail_pct ? "🛑↗" : "🛑"} ${h.sl_hit ? "HIT" : (h.sl_dist_pct != null ? h.sl_dist_pct.toFixed(0) + "%" : "")}</span>`);
+  if (h.trail_buy_pct) bits.push(`<span class="tgt-chip"
+      title="Trailing-buy alert: flags when the price rebounds ${h.trail_buy_pct}% off its low (now ${fmtMoney(h.trough_price)})">↗ buy</span>`);
   if (h.note) bits.push(`<span class="tgt-chip" title="${esc(h.note)}">📝</span>`);
   return `<button class="tgt-btn plain" data-tgt="${esc(h.asset_id)}" title="Edit your plan">${bits.join("")}</button>`;
 }
@@ -422,15 +436,31 @@ function showTargets(h) {
       🛑 ${fmtMoney(h.sugg_sl)} <span class="neg">(−${h.sugg_sl_pct}%)</span>${h.sugg_rr ? " · risk:reward 1:" + h.sugg_rr : ""}
       <button class="mini-btn" id="tgt-use-sugg" type="button">Use suggested</button>
       <br><span class="sugg-why">${esc(h.sugg_why || "")}</span></div>` : ""}
-    <label class="acct-field">🎯 Take-profit price — sell into strength here
+    <div class="input-row" style="align-items:center; gap:8px">
+      <span class="muted small-note">Enter levels as</span>
+      <button class="mini-btn tgt-mode active" data-mode="abs" type="button">price</button>
+      <button class="mini-btn tgt-mode" data-mode="pct" type="button">% from current</button>
+    </div>
+    <label class="acct-field"><span id="tgt-tp-label">🎯 Take-profit price — sell into strength here</span>
       <input type="number" step="any" min="0" id="tgt-tp"
         value="${h.tp_price ?? (!h.sl_price && h.sugg_tp ? h.sugg_tp.toPrecision(6) : "")}"
         placeholder="${h.sugg_tp ? "e.g. " + h.sugg_tp.toPrecision(4) : ""}"></label>
-    <label class="acct-field">🛑 Stop-loss price — cut the loss here
+    <label class="acct-field"><span id="tgt-sl-label">🛑 Stop-loss price — cut the loss here</span>
       <input type="number" step="any" min="0" id="tgt-sl"
-        value="${h.sl_price ?? (!h.tp_price && h.sugg_sl ? h.sugg_sl.toPrecision(6) : "")}"
-        placeholder="${h.sugg_sl ? "e.g. " + h.sugg_sl.toPrecision(4) : ""}"></label>
+        value="${h.trail_pct ? "" : h.sl_price ?? (!h.tp_price && h.sugg_sl ? h.sugg_sl.toPrecision(6) : "")}"
+        placeholder="${h.trail_pct ? "managed by the trailing stop below" : h.sugg_sl ? "e.g. " + h.sugg_sl.toPrecision(4) : ""}"></label>
     <div class="tgt-calc muted small-note" id="tgt-calc"></div>
+    <details class="breakdown" ${h.trail_pct || h.trail_buy_pct ? "open" : ""}>
+      <summary>Trailing — levels that follow the price instead of standing still</summary>
+      <label class="acct-field">🛑↗ Trailing stop % — the stop follows the price up, always this far below its highest point since you set it. Locks in gains on the way up; never moves down.
+        <input type="number" step="any" min="0.5" max="50" id="tgt-trail"
+          value="${h.trail_pct ?? ""}" placeholder="e.g. ${h.sugg_sl_pct || 8}"></label>
+      <label class="acct-field">↗ Trailing-buy alert % — flags when the price has rebounded this far off its lowest point since you set it. Handy after selling: it watches the bottom for a re-entry (it survives selling the position, and clears itself after 30 days).
+        <input type="number" step="any" min="0.5" max="50" id="tgt-trailbuy"
+          value="${h.trail_buy_pct ?? ""}" placeholder="e.g. 5"></label>
+      <p class="muted small-note">Saving restarts trailing from the current price. A manual
+        stop-loss and a trailing stop can coexist — whichever is higher applies.</p>
+    </details>
     <label class="acct-field">📝 Why this trade? (your future self will thank you)
       <input type="text" id="tgt-note" maxlength="300" value="${esc(h.note || "")}" placeholder="e.g. breakout above resistance, earnings play…"></label>
     <div class="input-row">
@@ -443,9 +473,41 @@ function showTargets(h) {
   document.getElementById("tgt-close").onclick = () => overlay.remove();
   overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
 
+  // "% from current" mode: the same two boxes take +% (take-profit above) and
+  // −% (stop below); values convert to prices at save time so the server and
+  // every downstream flag keep speaking prices
+  let mode = "abs";
+  const toPrice = (raw, isTp) => {
+    const v = parseFloat(raw);
+    if (!v) return NaN;
+    if (mode === "abs") return v;   // absolute prices never need a live quote
+    return h.price ? h.price * (1 + (isTp ? Math.abs(v) : -Math.abs(v)) / 100) : NaN;
+  };
+  if (!h.price) {                   // no live quote: % mode has no anchor
+    const pctBtn = overlay.querySelector('[data-mode="pct"]');
+    pctBtn.disabled = true;
+    pctBtn.title = "Needs a live price - enter absolute prices instead";
+  }
+  overlay.querySelectorAll(".tgt-mode").forEach(b => b.onclick = () => {
+    const tpEl = document.getElementById("tgt-tp"), slEl = document.getElementById("tgt-sl");
+    const prevTp = toPrice(tpEl.value, true), prevSl = toPrice(slEl.value, false);
+    mode = b.dataset.mode;
+    overlay.querySelectorAll(".tgt-mode").forEach(x => x.classList.toggle("active", x === b));
+    document.getElementById("tgt-tp-label").textContent = mode === "abs"
+      ? "🎯 Take-profit price — sell into strength here"
+      : "🎯 Take-profit, % above the current price";
+    document.getElementById("tgt-sl-label").textContent = mode === "abs"
+      ? "🛑 Stop-loss price — cut the loss here"
+      : "🛑 Stop-loss, % below the current price";
+    // carry the same levels across the switch so nothing silently changes
+    tpEl.value = isFinite(prevTp) ? (mode === "abs" ? prevTp.toPrecision(6) : ((prevTp / h.price - 1) * 100).toFixed(1)) : "";
+    slEl.value = isFinite(prevSl) ? (mode === "abs" ? prevSl.toPrecision(6) : ((1 - prevSl / h.price) * 100).toFixed(1)) : "";
+    calc();
+  });
+
   const calc = () => {
-    const tp = parseFloat(document.getElementById("tgt-tp").value);
-    const sl = parseFloat(document.getElementById("tgt-sl").value);
+    const tp = toPrice(document.getElementById("tgt-tp").value, true);
+    const sl = toPrice(document.getElementById("tgt-sl").value, false);
     const parts = [];
     if (tp && h.price && tp > h.price) parts.push(`🎯 ${(tp / h.price * 100 - 100).toFixed(1)}% above the current price`);
     if (tp && h.price && tp <= h.price) parts.push(`🎯 already at/below the current price — it would trigger immediately`);
@@ -459,8 +521,10 @@ function showTargets(h) {
   document.getElementById("tgt-sl").oninput = calc;
   const useBtn = document.getElementById("tgt-use-sugg");
   if (useBtn) useBtn.onclick = () => {
-    document.getElementById("tgt-tp").value = h.sugg_tp.toPrecision(6);
-    document.getElementById("tgt-sl").value = h.sugg_sl.toPrecision(6);
+    document.getElementById("tgt-tp").value =
+      mode === "abs" ? h.sugg_tp.toPrecision(6) : h.sugg_tp_pct;
+    document.getElementById("tgt-sl").value =
+      mode === "abs" ? h.sugg_sl.toPrecision(6) : h.sugg_sl_pct;
     calc();
   };
   calc();
@@ -478,12 +542,19 @@ function showTargets(h) {
       loadDashboard();
     } catch (e) { msg.innerHTML = `<span class="neg">${esc(e.message)}</span>`; }
   };
-  document.getElementById("tgt-save").onclick = () => post({
-    tp_price: document.getElementById("tgt-tp").value,
-    sl_price: document.getElementById("tgt-sl").value,
-    note: document.getElementById("tgt-note").value,
-  });
-  document.getElementById("tgt-clear").onclick = () => post({ tp_price: "", sl_price: "", note: "" });
+  document.getElementById("tgt-save").onclick = () => {
+    const tp = toPrice(document.getElementById("tgt-tp").value, true);
+    const sl = toPrice(document.getElementById("tgt-sl").value, false);
+    post({
+      tp_price: isFinite(tp) ? tp : "",
+      sl_price: isFinite(sl) ? sl : "",
+      trail_pct: document.getElementById("tgt-trail").value,
+      trail_buy_pct: document.getElementById("tgt-trailbuy").value,
+      note: document.getElementById("tgt-note").value,
+    });
+  };
+  document.getElementById("tgt-clear").onclick = () => post({
+    tp_price: "", sl_price: "", trail_pct: "", trail_buy_pct: "", note: "" });
 }
 
 async function loadDashboard() {
@@ -557,11 +628,24 @@ async function loadDashboard() {
     const chartTd = (h, inner) =>
       `<td class="chart-link" data-chart="${esc(h.asset_id)}" data-cs="${esc(h.symbol || "")}"
          data-cn="${esc(h.name)}" title="Open ${esc(h.name)}'s chart">${inner}</td>`;
+    // Day/7d/30d shown as % or as the position's money move over that window
+    // (value now minus value then, backed out of the % change)
+    const abs = state.valueMode === "abs";
+    const chg = (h, pct) => {
+      if (!abs || pct == null || !h.value) return pctSpan(pct);
+      return moneySpan(h.value - h.value / (1 + pct / 100));
+    };
+    if (abs) p.holdings.forEach(h => {   // sort by what's displayed, not by %
+      for (const k of ["chg_24h", "chg_7d", "chg_30d"])
+        h[k + "_abs"] = (h[k] != null && h.value)
+          ? h.value - h.value / (1 + h[k] / 100) : null;
+    });
+    const ck = (k) => abs ? k + "_abs" : k;
     ht.innerHTML = `<thead><tr>` +
       th("Asset", "name", "holdings") + th("Quantity", "qty", "holdings") +
       th("Avg Buy", "avg_buy", "holdings") + th("Price", "price", "holdings") +
-      th("Day", "chg_24h", "holdings") + th("7d", "chg_7d", "holdings") +
-      th("30d", "chg_30d", "holdings") + th("Value", "value", "holdings") +
+      th("Day", ck("chg_24h"), "holdings") + th("7d", ck("chg_7d"), "holdings") +
+      th("30d", ck("chg_30d"), "holdings") + th("Value", "value", "holdings") +
       th("Unrealized P/L", "unrealized", "holdings") + th("P/L %", "unrealized_pct", "holdings") +
       th("Signal", "signal.score", "holdings") + th("Plan", "plan_sort", "holdings") +
       `<th></th></tr></thead><tbody>` +
@@ -570,9 +654,9 @@ async function loadDashboard() {
         <td>${fmtQty(h.qty)}</td>
         <td>${fmtMoney(h.avg_buy)}</td>
         <td>${fmtMoney(h.price)}</td>
-        ${chartTd(h, pctSpan(h.chg_24h))}
-        ${chartTd(h, pctSpan(h.chg_7d))}
-        ${chartTd(h, pctSpan(h.chg_30d))}
+        ${chartTd(h, chg(h, h.chg_24h))}
+        ${chartTd(h, chg(h, h.chg_7d))}
+        ${chartTd(h, chg(h, h.chg_30d))}
         <td><b>${fmtMoney(h.value)}</b></td>
         <td>${moneySpan(h.unrealized)}</td>
         <td>${pctSpan(h.unrealized_pct)}</td>
@@ -783,7 +867,8 @@ function breakdownHtml(b) {
        <b class="${(s || 0) > 0 ? "pos" : (s || 0) < 0 ? "neg" : "muted"}">${s == null ? "no data" : (s > 0 ? "+" : "") + s}</b></div>
      ${(points || []).length ? `<ul>${points.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}</div>`;
   const extras = (b.extras || []).map(e =>
-    `<div class="bd-sec"><div class="bd-head">${esc(e.label)} <b class="pos">+${e.score}</b></div></div>`).join("");
+    `<div class="bd-sec"><div class="bd-head">${esc(e.label)}
+      <b class="${e.score > 0 ? "pos" : e.score < 0 ? "neg" : "muted"}">${e.score > 0 ? "+" : ""}${e.score}</b></div></div>`).join("");
   const gates = (b.gates || []).length
     ? `<div class="bd-sec"><div class="bd-head">Gates applied</div>
        <ul>${b.gates.map(g => `<li>${esc(g)}</li>`).join("")}</ul></div>` : "";
@@ -873,7 +958,7 @@ function recCard(r) {
   </div>`;
 }
 
-const FLAG_ICONS = { hot: "🔺", cold: "🔻", tp: "🎯", sl: "🛑", event: "📅", base: "🌱", quiet: "⚡" };
+const FLAG_ICONS = { hot: "🔺", cold: "🔻", tp: "🎯", sl: "🛑", event: "📅", base: "🌱", quiet: "⚡", rebound: "↗️" };
 
 // "Seen it, letting it run" for triggered TP/SL alerts: hidden for the rest of
 // the day on this device (localStorage), back tomorrow while still triggered.
@@ -887,7 +972,7 @@ function dismissPlanHit(aid) {
 function moverChip(r) {
   // border color takes the most decisive flag: your own plan first
   const kinds = (r.flags || []).map(f => f.kind);
-  const primary = ["sl", "tp", "cold", "hot", "event", "base", "quiet"].find(k => kinds.includes(k)) || "hot";
+  const primary = ["sl", "tp", "rebound", "cold", "hot", "event", "base", "quiet"].find(k => kinds.includes(k)) || "hot";
   return `<div class="mover-chip mover-${primary}">
     <div class="mover-top">${r.image ? `<img src="${esc(r.image)}">` : ""}<b>${esc((r.symbol || r.name || "").toUpperCase())}</b>
       <span class="muted">${fmtMoney(r.price)}</span></div>
@@ -1495,9 +1580,16 @@ async function drawHistory() {
 /* ---------------------------------------------------------- news */
 
 function newsItemHtml(it) {
+  // industry chips: which sectors this story moves, and which way — awareness
+  // for "is this good or bad for my kind of company", not a trade signal
+  const secs = (it.sectors || []).map(s => {
+    const dir = it.sector_sent > 0 ? "▲" : it.sector_sent < 0 ? "▼" : "•";
+    const cls = it.sector_sent > 0 ? "pos" : it.sector_sent < 0 ? "neg" : "muted";
+    return `<span class="badge sec-chip" title="Mentions the ${esc(s)} sector — the headline's overall tone reads ${it.sector_sent > 0 ? "positive" : it.sector_sent < 0 ? "negative" : "neutral"}">🏭 ${esc(s)} <span class="${cls}">${dir}</span></span>`;
+  }).join(" ");
   return `<div class="news-item">
     <div class="news-meta"><span class="badge src">${esc(it.source)}</span>
-      <span>${timeAgo(it.published)}</span></div>
+      <span>${timeAgo(it.published)}</span>${secs ? " " + secs : ""}</div>
     <div class="news-title">${linkHtml(it.link, it.title)}</div>
     <div class="news-summary">${esc(it.summary)}</div>
   </div>`;
@@ -1624,6 +1716,16 @@ document.querySelectorAll("#pv-range button").forEach(b => b.onclick = () => {
   state.pvHours = +b.dataset.hours;
   document.querySelectorAll("#pv-range button").forEach(x => x.classList.toggle("active", x === b));
   loadDashboard();
+});
+document.querySelectorAll("#val-mode button").forEach(b => {
+  b.classList.toggle("active", b.dataset.vm === state.valueMode);
+  b.onclick = () => {
+    state.valueMode = b.dataset.vm;
+    localStorage.setItem("valmode", state.valueMode);
+    document.querySelectorAll("#val-mode button").forEach(x =>
+      x.classList.toggle("active", x === b));
+    loadDashboard();
+  };
 });
 document.querySelectorAll("#chart-range button").forEach(b => b.onclick = () => {
   if (b.dataset.range) {           // 1Y / Max: long daily history
@@ -1798,6 +1900,8 @@ async function loadUser() {
   try {
     const me = await api("/api/me");
     state.style = me.trading_style || "swing";
+    state.aggressiveness = me.aggressiveness || "balanced";
+    state.diversity = me.diversity || "balanced";
     const el = document.getElementById("user-menu");
     el.innerHTML =
       `<span class="muted">${esc(me.name || me.email)}</span>` +
@@ -1837,6 +1941,28 @@ async function showAccount() {
     </div>
     <div class="form-msg" id="style-msg"></div>
 
+    <h4 class="acct-h">Aggressiveness</h4>
+    <p class="muted small-note">How boldly the advisor suggests entering. It never
+      changes the sell side — protecting what you hold stays the same.</p>
+    <div class="style-list">
+      ${AGG_LEVELS.map(s => `<label class="style-opt">
+        <input type="radio" name="agg" value="${s.v}" ${s.v === state.aggressiveness ? "checked" : ""}>
+        <span><b>${esc(s.label)}</b><br><span class="muted">${esc(s.desc)}</span></span>
+      </label>`).join("")}
+    </div>
+    <div class="form-msg" id="agg-msg"></div>
+
+    <h4 class="acct-h">Portfolio spread</h4>
+    <p class="muted small-note">How concentrated the advisor lets any single position
+      get before suggesting a trim.</p>
+    <div class="style-list">
+      ${DIV_LEVELS.map(s => `<label class="style-opt">
+        <input type="radio" name="div" value="${s.v}" ${s.v === state.diversity ? "checked" : ""}>
+        <span><b>${esc(s.label)}</b><br><span class="muted">${esc(s.desc)}</span></span>
+      </label>`).join("")}
+    </div>
+    <div class="form-msg" id="div-msg"></div>
+
     <h4 class="acct-h">Change password</h4>
     <label class="acct-field">Current password
       <input type="password" id="pw-current" autocomplete="current-password"></label>
@@ -1849,20 +1975,28 @@ async function showAccount() {
   document.getElementById("account-close").onclick = () => overlay.remove();
   overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
 
-  overlay.querySelectorAll('input[name="style"]').forEach(radio => radio.onchange = async () => {
-    const msg = document.getElementById("style-msg");
-    msg.textContent = "";
-    try {
-      await api("/api/settings", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ trading_style: radio.value }),
-      });
-      state.style = radio.value;
-      msg.innerHTML = `<span class="pos">Saved — advice now tuned for ${esc(styleLabel(radio.value))}.</span>`;
-      state.watch[state.market] = null;
-      if (state.tab === "advisor" || state.tab === "dashboard") refresh();
-    } catch (e) { msg.innerHTML = `<span class="neg">${esc(e.message)}</span>`; }
-  });
+  const bindSetting = (radioName, field, msgId, stateKey, savedText) => {
+    overlay.querySelectorAll(`input[name="${radioName}"]`).forEach(radio => radio.onchange = async () => {
+      const msg = document.getElementById(msgId);
+      msg.textContent = "";
+      try {
+        await api("/api/settings", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ [field]: radio.value }),
+        });
+        state[stateKey] = radio.value;
+        msg.innerHTML = `<span class="pos">${savedText(radio.value)}</span>`;
+        state.watch[state.market] = null;
+        if (state.tab === "advisor" || state.tab === "dashboard") refresh();
+      } catch (e) { msg.innerHTML = `<span class="neg">${esc(e.message)}</span>`; }
+    });
+  };
+  bindSetting("style", "trading_style", "style-msg", "style",
+    v => `Saved — advice now tuned for ${esc(styleLabel(v))}.`);
+  bindSetting("agg", "aggressiveness", "agg-msg", "aggressiveness",
+    v => `Saved — ${esc(v)} sizing takes effect on the next advice refresh.`);
+  bindSetting("div", "diversity", "div-msg", "diversity",
+    v => `Saved — concentration guidance is now ${esc(v === "balanced" ? "the style default" : v)}.`);
 
   document.getElementById("pw-save").onclick = async () => {
     const msg = document.getElementById("pw-msg");

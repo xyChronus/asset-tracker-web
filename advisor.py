@@ -162,6 +162,120 @@ def _match_news(assets, news_items, now_ms):
     return per_asset, market_sent
 
 
+# ---------------------------------------------------------- industry news
+# News that names no company can still move a whole sector ("BSP cuts rates"
+# lifts every bank). Assets map to a canonical sector via their stored sector
+# tag (PSE board name / Finnhub industry); headlines map to sectors by
+# keyword. The resulting nudge is deliberately small (capped at ±0.5 of the
+# ±3 direct-news scale): sector reads are context, not headlines about YOU.
+
+_SECTOR_MATCH = [  # ordered: first match wins ("Mining and Oil" is mining)
+    ("mining", ("mining", "metals")),
+    ("banks", ("financial", "bank", "insurance")),
+    ("property", ("property", "real estate")),
+    ("energy", ("energy", "oil", "gas", "utilit", "power")),
+    ("tech", ("technology", "semiconductor", "software", "internet",
+              "communication", "media", "telecom")),
+    ("healthcare", ("health", "pharma", "biotech")),
+    ("consumer", ("retail", "consumer", "beverage", "food")),
+    ("autos", ("automobile", "auto")),
+    ("industrial", ("industrial", "aerospace", "machinery", "construction")),
+    ("conglomerates", ("holding",)),
+    ("services", ("services",)),
+]
+
+_SECTOR_NEWS = {
+    "banks": ("bank ", "banks", "banking", "lender", "bsp ", "interest rate",
+              "rate hike", "rate cut", "monetary policy", "fed rate"),
+    "property": ("property", "real estate", "reit", "housing", "condo"),
+    "mining": ("mining", "nickel", "copper", "gold price", "ore ", "commodity"),
+    "energy": ("oil price", "crude", "opec", "fuel price", "gasoline",
+               "power plant", "electricity", "coal", "renewable energy", "lng"),
+    "tech": ("semiconductor", "chip ", "chips", " ai ", "artificial intelligence",
+             "software", "cloud computing", "data center", "5g", "broadband"),
+    "healthcare": ("pharma", "hospital", "drugmaker", "biotech", "vaccine"),
+    "consumer": ("retail sales", "consumer spending", "inflation",
+                 "supermarket", "fast food", "food prices"),
+    "autos": ("automaker", "electric vehicle", " ev ", "car sales"),
+    "industrial": ("manufacturing", "infrastructure", "construction",
+                   "cement", "factory output"),
+    "conglomerates": ("conglomerate",),
+    "services": ("tourism", "casino", "gaming revenue", "airline",
+                 "air travel", "shipping", "logistics"),
+}
+
+
+def _sector_key(sector):
+    if not sector:
+        return None
+    s = sector.lower()
+    for key, terms in _SECTOR_MATCH:
+        if any(t in s for t in terms):
+            return key
+    return None
+
+
+# keywords match on WORD BOUNDARIES: a plain substring scan would tag "ore"
+# inside "more"/"before" and hit the mining sector on half the feed
+_SECTOR_RX = {key: [re.compile(r"\b" + re.escape(k.strip()) + r"\b")
+                    for k in kws]
+              for key, kws in _SECTOR_NEWS.items()}
+
+
+def sector_tags(text):
+    """Sector keys a piece of text touches (lower-cased input)."""
+    return [key for key, rxs in _SECTOR_RX.items()
+            if any(rx.search(text) for rx in rxs)]
+
+
+def _industry_news(assets, fundamentals, news_items, now_ms, per_asset_news):
+    """Per-asset sector-news nudge: {aid: {score, sector, headline, link}}.
+    Articles already credited to the asset directly are skipped, so a story
+    naming both the company and its industry never counts twice."""
+    sector_hits = {}
+    seen_titles = set()
+    for it in news_items:
+        published = it.get("published") or now_ms
+        age_h = max(0.0, (now_ms - published) / 3600000.0)
+        if age_h > 72:
+            continue
+        sent = article_sentiment(it.get("title"), it.get("summary"))
+        if not sent:
+            continue
+        # syndicated copies of one story arrive under different links -
+        # dedupe on the normalized title so one event counts once
+        tkey = re.sub(r"\W+", " ", (it.get("title") or "").lower()).strip()
+        if tkey in seen_titles:
+            continue
+        seen_titles.add(tkey)
+        text = ((it.get("title") or "") + " " + (it.get("summary") or "")).lower()
+        w = math.exp(-age_h / 24.0)
+        for key in sector_tags(text):
+            sector_hits.setdefault(key, []).append(
+                (sent * w, it.get("title"), it.get("link")))
+    out = {}
+    for a in assets:
+        f = fundamentals.get(a["asset_id"]) or {}
+        key = _sector_key(f.get("sector"))
+        hits = sector_hits.get(key)
+        if not hits:
+            continue
+        own = {x["link"] for x in
+               (per_asset_news.get(a["asset_id"]) or {}).get("articles", [])}
+        rel = [hh for hh in hits if hh[2] not in own]
+        if not rel:
+            continue
+        score = max(-0.5, min(0.5, sum(hh[0] for hh in rel) * 0.15))
+        if abs(score) < 0.05:
+            continue
+        # the example headline must argue the same direction as the net score
+        same = [hh for hh in rel if hh[0] * score > 0]
+        top = max(same or rel, key=lambda hh: abs(hh[0]))
+        out[a["asset_id"]] = {"score": round(score, 2), "sector": key,
+                              "headline": top[1], "link": top[2]}
+    return out
+
+
 # ------------------------------------------------------- fundamentals voting
 
 def _value_votes(f, price):
@@ -250,6 +364,25 @@ ACTION_RANK = {"SELL PART": 6, "TRIM": 5, "TAKE PROFIT": 4,
 MAX_ALLOC_PCT = 35
 TARGET_TRIM_PCT = 30
 BUY_CAP_PCT = 30
+
+# How boldly to act, independent of trading style: shifts the technical bar a
+# fresh buy must clear and scales suggested buy sizes. Sell-side logic is
+# deliberately untouched - risk appetite should change how you enter, not
+# whether you protect what you hold.
+AGGRESSIVENESS = {
+    "cautious": {"label": "Cautious", "buy_shift": 1, "size_mult": 0.5},
+    "balanced": {"label": "Balanced", "buy_shift": 0, "size_mult": 1.0},
+    "aggressive": {"label": "Aggressive", "buy_shift": -1, "size_mult": 1.5},
+}
+
+# How spread-out the advisor pushes the portfolio to be: shifts the
+# concentration cap (and with it the trim trigger and the wallet-level
+# take-profit guard) around the style's baseline.
+DIVERSITY = {
+    "focused": {"label": "Focused", "cap_shift": 10},
+    "balanced": {"label": "Balanced", "cap_shift": 0},
+    "spread": {"label": "Spread out", "cap_shift": -10},
+}
 
 # Trading-style presets tune how eager vs. patient the advisor is. "swing" is
 # the balanced default and reproduces the original thresholds exactly.
@@ -423,7 +556,8 @@ def suggest_plan(price, style, prim=None, wk52_high=None, style_label=None):
 
 def build(assets, signals, portfolio, news_items, market, now_ms,
           currency="$", fundamentals=None, max_ideas=None, style=DEFAULT_STYLE,
-          targets=None, earnings=None):
+          targets=None, earnings=None, aggressiveness="balanced",
+          diversity="balanced"):
     """Main entry. Returns {market_sentiment, briefing, recommendations}."""
     fundamentals = fundamentals or {}
     targets = targets or {}
@@ -437,9 +571,20 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
     tz = ZoneInfo("America/New_York" if market.get("name") == "global" else "Asia/Manila")
     today = datetime.datetime.fromtimestamp(now_ms / 1000, tz).date()
     sp = STYLE_PARAMS.get(style) or STYLE_PARAMS[DEFAULT_STYLE]
-    max_alloc = sp["alloc_cap"]
-    target_trim = sp["alloc_cap"] - 5
+    ag = AGGRESSIVENESS.get(aggressiveness) or AGGRESSIVENESS["balanced"]
+    dv = DIVERSITY.get(diversity) or DIVERSITY["balanced"]
+    # the buy bar never drops below 1: even "aggressive" requires the
+    # technicals to actually point up before the advisor suggests entering
+    buy_bar = max(1, sp["buy_tech"] + ag["buy_shift"])
+    max_alloc = max(15, sp["alloc_cap"] + dv["cap_shift"])
+    target_trim = max_alloc - 5
+    # buys must never build a position the same engine would immediately trim:
+    # the buy ceiling tracks the (possibly diversity-lowered) concentration cap
+    buy_cap = min(BUY_CAP_PCT, max_alloc)
     per_asset_news, market_sent = _match_news(assets, news_items, now_ms)
+    industry_news = (_industry_news(assets, fundamentals, news_items, now_ms,
+                                    per_asset_news)
+                     if not is_crypto and fundamentals else {})
 
     summary = portfolio.get("summary", {})
     total = summary.get("value") or 0.0
@@ -503,7 +648,9 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
         rsi0 = ind.get("rsi")
         base_vote = 1.0 if (basing and rsi0 is not None and rsi0 < 50
                             and news_score >= 0) else 0.0
-        conviction = (tech or 0) + news_score + value_votes + base_vote
+        ind_n = industry_news.get(aid)
+        ind_score = ind_n["score"] if ind_n else 0.0
+        conviction = (tech or 0) + news_score + value_votes + base_vote + ind_score
 
         reasons = []
         gate_notes = []  # interventions recorded for the breakdown ledger
@@ -516,7 +663,7 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
                 "No live price available right now, so this position can't be "
                 "assessed - review it manually.")
         elif h:  # ---------- assets you own
-            headroom = (BUY_CAP_PCT / 100.0) * alloc_base - h["value"]
+            headroom = (buy_cap / 100.0) * alloc_base - h["value"]
             if alloc > max_alloc and n_holdings >= 3:
                 action = "TRIM"
                 t = target_trim / 100.0
@@ -548,7 +695,7 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
             elif plpct is not None and plpct > 0 and tech is not None and tech <= sp["tp_tech"] \
                     and (plpct >= sp["tp_pct"]
                          or (wallet_gain is not None and wallet_gain >= sp["port_tp"]
-                             and alloc <= sp["alloc_cap"])):
+                             and alloc <= max_alloc)):
                 # the wallet-level arm requires alloc <= alloc_cap: beyond the
                 # cap TRIM owns the call, and a small portfolio's single big
                 # position must still earn its full per-position target
@@ -569,12 +716,16 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
                         f"{wallet_gain:.1f}% of the whole {wallet_word} (style threshold "
                         f"{sp['port_tp']}%), triggered below the per-position "
                         f"{sp['tp_pct']}% target")
-            elif ((tech is not None and tech >= sp["buy_tech"]) or (tech is None and value_votes >= sp["value_buy"])) \
-                    and news_score >= -0.5 and alloc < BUY_CAP_PCT and headroom >= 10 \
+            elif ((tech is not None and tech >= buy_bar) or (tech is None and value_votes >= sp["value_buy"])) \
+                    and news_score >= -0.5 and alloc < buy_cap and headroom >= 10 \
                     and (cash is None or cash >= 15):
                 action = "BUY MORE"
                 amt = min(0.10 * capital, headroom)
-                reasons.append("Strong setup on a position you already own.")
+                reasons.append(("Strong setup on a position you already own."
+                                if tech is None or tech >= sp["buy_tech"] else
+                                "Early setup on a position you already own - your "
+                                "aggressive setting acts on signals this style "
+                                "normally waits out."))
                 if news_score >= 1:
                     reasons.append("News flow around it is clearly positive.")
             else:
@@ -596,7 +747,7 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
             base = max(0.05 * capital, 25)
             # in a caution regime (market weather), fresh entries need one
             # extra technical notch - the bar rises, it never drops
-            bt = sp["buy_tech"] + (1 if caution else 0)
+            bt = buy_bar + (1 if caution else 0)
             good_setup = (tech is not None and ((tech >= bt + 1 and news_score >= 0) or
                                                 (tech >= bt and news_score >= 1))) \
                 or (value_votes >= sp["value_buy"] and news_score >= 0 and (tech is None or tech >= 0)) \
@@ -761,6 +912,18 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
             else:
                 # buys: never suggest more than the cash on hand; round DOWN
                 # in $5 steps so the number always stays affordable
+                if ag["size_mult"] != 1.0:
+                    pre_mult = amt
+                    amt = amt * ag["size_mult"]
+                    if action == "BUY MORE":
+                        # scaling must not push the position past the buy cap
+                        amt = min(amt, headroom)
+                    if abs(amt - pre_mult) > 1e-9:
+                        gate_notes.append(f"Sizing x{ag['size_mult']} "
+                                          f"({ag['label']} aggressiveness setting)")
+                if ag["buy_shift"] < 0 and tech is not None and tech < sp["buy_tech"]:
+                    gate_notes.append("Aggressive setting: acting on a weaker setup "
+                                      "than this style normally waits for")
                 if cash is not None:
                     amt = min(amt, cash)
                 amt = max(10, int(amt // 5) * 5)
@@ -785,6 +948,11 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
             mood = "positive" if news_score > 0 else "negative"
             reasons.append(f"News sentiment is {mood} "
                            f"({news_score:+.1f} on a -3..+3 scale).")
+        if ind_n and abs(ind_score) >= 0.15:
+            reasons.append(
+                f"{ind_n['sector'].capitalize()}-sector news is "
+                f"{'a tailwind' if ind_score > 0 else 'a headwind'} for this one "
+                f"({ind_score:+.2f}) - e.g. \"{(ind_n['headline'] or '')[:90]}\"")
 
         if tech is None and not f:
             confidence = "Low"
@@ -820,6 +988,11 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
         t = targets.get(aid)
         if t and h and price:
             tp, sl = t.get("tp_price"), t.get("sl_price")
+            # only call the stop "trailing" when it IS the trailing floor - a
+            # higher manual stop can coexist and must not borrow the label
+            trailing = bool(t.get("trail_pct") and t.get("peak_price") and sl
+                            and abs(sl - t["peak_price"] * (1 - t["trail_pct"] / 100.0))
+                            <= sl * 1e-6)
             if tp and price >= tp:
                 flags.append({"kind": "tp",
                               "text": f"Hit your take-profit ({currency}{_fmt_price(tp)})"
@@ -827,9 +1000,21 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
                                       + " - your plan says consider selling"})
             elif sl and price <= sl:
                 flags.append({"kind": "sl",
-                              "text": f"Fell through your stop-loss ({currency}{_fmt_price(sl)})"
+                              "text": (f"Fell through your trailing stop ({currency}{_fmt_price(sl)}, "
+                                       f"trailing {t['trail_pct']:.0f}% below its "
+                                       f"{currency}{_fmt_price(t.get('peak_price') or sl)} peak)"
+                                       if trailing else
+                                       f"Fell through your stop-loss ({currency}{_fmt_price(sl)})")
                                       + (f" - down {abs(plpct):.0f}%" if plpct is not None and plpct < 0 else "")
                                       + " - your plan says cut the loss"})
+        # trailing-BUY alert: fires held or not (it mainly matters AFTER you
+        # sold and want back in off the bottom) - awareness, not an order
+        if t and price and t.get("trail_buy_pct") and t.get("trough_price"):
+            tbp, trough = t["trail_buy_pct"], t["trough_price"]
+            if trough > 0 and price >= trough * (1 + tbp / 100.0):
+                flags.append({"kind": "rebound",
+                              "text": f"Up {tbp:.0f}%+ off its {currency}{_fmt_price(trough)} low "
+                                      "- your trailing-buy alert says take a look"})
         if basing:
             flags.append({"kind": "base",
                           "text": f"Down {abs(chg30_0):.0f}% over the month but the fall has gone "
@@ -883,8 +1068,10 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
                          "points": [("+" if x["sentiment"] > 0 else "-" if x["sentiment"] < 0 else "=")
                                     + " " + (x.get("title") or "") for x in articles]},
                 "value": {"score": round(value_votes, 2), "points": list(value_reasons)},
-                "extras": ([{"label": "Basing pattern (fall gone quiet)", "score": base_vote}]
-                           if base_vote else []),
+                "extras": (([{"label": "Basing pattern (fall gone quiet)", "score": base_vote}]
+                            if base_vote else [])
+                           + ([{"label": f"Industry news ({ind_n['sector']})",
+                                "score": ind_score}] if ind_n else [])),
                 "gates": gate_notes,
                 "total": round(conviction, 1),
             },
@@ -910,7 +1097,11 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
         ideas = [r for r in recs if not r["holding"] and r["action"] != "HOLD"][:max_ideas]
         kept_ids = {r["asset_id"] for r in held + ideas}
         movers = sorted([r for r in recs if r["flags"] and r["asset_id"] not in kept_ids],
-                        key=lambda r: -abs(r.get("chg_24h") or 0))[:10]
+                        # the user's own plan alerts (stops, targets, rebound
+                        # watches) must never lose their slot to a mere mover
+                        key=lambda r: (not any(f["kind"] in ("tp", "sl", "rebound")
+                                               for f in r["flags"]),
+                                       -abs(r.get("chg_24h") or 0)))[:10]
         recs = sorted(held + ideas + movers,
                       key=lambda r: (-ACTION_RANK.get(r["action"], 0), -abs(r["conviction"])))
 
@@ -967,6 +1158,13 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
     briefing = ". ".join(b[0].upper() + b[1:] for b in bits) + "."
     if caution and regime.get("why"):
         briefing += " " + regime["why"]
+    tweaks = []
+    if ag is not AGGRESSIVENESS["balanced"]:
+        tweaks.append(f"{ag['label'].lower()} sizing (x{ag['size_mult']} buys)")
+    if dv is not DIVERSITY["balanced"]:
+        tweaks.append(f"{dv['label'].lower()} portfolio (trim above ~{max_alloc}%)")
+    if tweaks:
+        briefing += " Your settings: " + " and ".join(tweaks) + "."
 
     actionable = [r for r in recs if r["action"] not in ("HOLD", "WATCH")]
     if not market_open:
@@ -989,4 +1187,6 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
         "recommendations": recs,
         "style": style,
         "style_label": sp["label"],
+        "aggressiveness": aggressiveness if aggressiveness in AGGRESSIVENESS else "balanced",
+        "diversity": diversity if diversity in DIVERSITY else "balanced",
     }
