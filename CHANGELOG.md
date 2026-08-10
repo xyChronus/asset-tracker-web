@@ -274,3 +274,8 @@ Web-only items are marked **(web)**.
 - **%/$ display switch** above Holdings — the Day/7d/30d columns show percentages or money, your choice per device, and sort by whichever is shown.
 ### Fixed
 - A 13-finding adversarial review before launch (plus hand-verification where the review tooling hit limits): buy suggestions can no longer build a position the same engine would immediately trim; re-saving a trailing plan genuinely restarts it (the old stop can't fossilize); the plan editor no longer risks wiping levels when an asset briefly has no live price; sector keywords match whole words only ("ore" no longer tags half the feed as mining); the example headline always argues the same direction as the score; plan alerts keep their dashboard slot over mere price movers.
+
+## [1.19.1] — 2026-08-10 — $ mode clarity
+### Fixed
+- Money amounts on the dashboard now always show plain cents (−$0.30, not −$0.3012) — the extra decimals belonged to tiny coin prices, not to P/L and day-move figures.
+- In $ mode, hovering a Day/7d/30d figure now explains exactly what it is: the market's move over that window at your current position size — not your personal profit, which stays in the P/L columns. (Sharp catch from the admin: a 7-day figure can legitimately exceed your total P/L if you bought mid-window.)

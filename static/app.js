@@ -135,6 +135,7 @@ function fmtMoney(v, compact) {
   if (a > 0 && a < 0.0001) dp = 8;
   else if (a > 0 && a < 0.01) dp = 6;
   else if (a > 0 && a < 1) dp = 4;
+  if (arguments.length > 2 && arguments[2] != null) dp = arguments[2];
   return (v < 0 ? "-" + c : c) + Math.abs(v).toLocaleString("en-US",
     { minimumFractionDigits: dp, maximumFractionDigits: dp });
 }
@@ -161,7 +162,10 @@ function pctSpan(v, dp) {
 function moneySpan(v) {
   if (v == null || isNaN(v)) return '<span class="muted">—</span>';
   const cls = v >= 0 ? "pos" : "neg";
-  return `<span class="${cls}">${v >= 0 ? "+" : ""}${fmtMoney(v)}</span>`;
+  // money AMOUNTS (P/L, day moves) read in cents, always 2 decimals — the
+  // 4-6 decimal precision in fmtMoney is for tiny coin PRICES, and made
+  // figures like +$0.7313 look broken on the dashboard
+  return `<span class="${cls}">${v >= 0 ? "+" : ""}${fmtMoney(v, false, 2)}</span>`;
 }
 
 function timeAgo(ms) {
@@ -631,9 +635,10 @@ async function loadDashboard() {
     // Day/7d/30d shown as % or as the position's money move over that window
     // (value now minus value then, backed out of the % change)
     const abs = state.valueMode === "abs";
-    const chg = (h, pct) => {
+    const chg = (h, pct, win) => {
       if (!abs || pct == null || !h.value) return pctSpan(pct);
-      return moneySpan(h.value - h.value / (1 + pct / 100));
+      const delta = h.value - h.value / (1 + pct / 100);
+      return `<span title="${esc(h.symbol || h.name)} moved ${pct >= 0 ? "+" : ""}${pct.toFixed(2)}% over the last ${win} — worth ${delta >= 0 ? "+" : "−"}${fmtMoney(Math.abs(delta), false, 2)} at your current position size. This is the market's move, not your personal profit — that's the P/L columns.">${moneySpan(delta)}</span>`;
     };
     if (abs) p.holdings.forEach(h => {   // sort by what's displayed, not by %
       for (const k of ["chg_24h", "chg_7d", "chg_30d"])
@@ -654,9 +659,9 @@ async function loadDashboard() {
         <td>${fmtQty(h.qty)}</td>
         <td>${fmtMoney(h.avg_buy)}</td>
         <td>${fmtMoney(h.price)}</td>
-        ${chartTd(h, chg(h, h.chg_24h))}
-        ${chartTd(h, chg(h, h.chg_7d))}
-        ${chartTd(h, chg(h, h.chg_30d))}
+        ${chartTd(h, chg(h, h.chg_24h, "day"))}
+        ${chartTd(h, chg(h, h.chg_7d, "7 days"))}
+        ${chartTd(h, chg(h, h.chg_30d, "30 days"))}
         <td><b>${fmtMoney(h.value)}</b></td>
         <td>${moneySpan(h.unrealized)}</td>
         <td>${pctSpan(h.unrealized_pct)}</td>
