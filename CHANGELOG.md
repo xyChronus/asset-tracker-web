@@ -279,3 +279,12 @@ Web-only items are marked **(web)**.
 ### Fixed
 - Money amounts on the dashboard now always show plain cents (−$0.30, not −$0.3012) — the extra decimals belonged to tiny coin prices, not to P/L and day-move figures.
 - In $ mode, hovering a Day/7d/30d figure now explains exactly what it is: the market's move over that window at your current position size — not your personal profit, which stays in the P/L columns. (Sharp catch from the admin: a 7-day figure can legitimately exceed your total P/L if you bought mid-window.)
+
+## [1.20.0] — 2026-08-11 — Spread that fits your wallet
+### Added
+- **Position counts now consider wallet size.** Each market wallet is classed smaller/bigger (under ₱100k for PSE, under $2,000 for crypto & global) and your spread setting maps to a healthy band of names — Focused on a smaller wallet means about **3–5 companies** (calibration credit: the admin's investor contact). The Account panel states the numbers.
+- **At your limit, the advisor says rotate — not accumulate.** A good setup on a new name becomes a WATCH explaining that another name would spread the wallet too thin, and points at your weakest-rated holding as the natural funding source. Adding to what you already own stays allowed — that's consolidation.
+- **Rotation thoughts in the briefing** — when a clearly weak holding coexists with a clearly strong candidate, the briefing names the pair, quoting the 30-day trend only when it genuinely agrees. Sell strength into strength; the final call stays yours.
+- Briefing nudges when you're outside your band: too many names ("consolidate into your strongest picks") or too few with idle cash.
+### Fixed
+- Review round (6 findings): wording says "portfolio" not "wallet" when no budget is set (and the band notes it's judged from invested positions); a demoted card can no longer claim a halved buy size it doesn't have; the rotation thought never endorses a name whose own card says to wait (earnings/chasing gates); the room-to-add nudge counts against the band floor honestly.

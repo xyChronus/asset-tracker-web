@@ -384,6 +384,18 @@ DIVERSITY = {
     "spread": {"label": "Spread out", "cap_shift": -10},
 }
 
+# How many NAMES a wallet can usefully hold. A small wallet split twelve ways
+# owns twelve positions too small to matter (and fees eat the wins), so spread
+# is judged against wallet SIZE, not just percentages. Once at the cap the
+# advisor stops proposing new names and suggests rotating instead: fund the
+# riser by selling the weakest holding. (Calibration for small wallets from
+# the admin's investor contact: focused + under 100k PHP = 3-5 names.)
+SMALL_WALLET = {"₱": 100_000, "$": 2_000}   # per-market wallet, native currency
+POSITION_BANDS = {   # (min, max) suggested names: [wallet class][diversity]
+    "small": {"focused": (3, 5), "balanced": (4, 7), "spread": (5, 9)},
+    "large": {"focused": (3, 7), "balanced": (5, 10), "spread": (7, 14)},
+}
+
 # Trading-style presets tune how eager vs. patient the advisor is. "swing" is
 # the balanced default and reproduces the original thresholds exactly.
 #   buy_tech    - minimum technical score to act on a buy
@@ -557,7 +569,7 @@ def suggest_plan(price, style, prim=None, wk52_high=None, style_label=None):
 def build(assets, signals, portfolio, news_items, market, now_ms,
           currency="$", fundamentals=None, max_ideas=None, style=DEFAULT_STYLE,
           targets=None, earnings=None, aggressiveness="balanced",
-          diversity="balanced"):
+          diversity="balanced", outlook=None):
     """Main entry. Returns {market_sentiment, briefing, recommendations}."""
     fundamentals = fundamentals or {}
     targets = targets or {}
@@ -593,6 +605,17 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
     capital = (total + max(cash, 0)) if cash is not None else total
     hold_by_id = {h["asset_id"]: h for h in portfolio.get("holdings", [])}
     n_holdings = len(portfolio.get("holdings", []))
+    outlook = outlook or {}   # {asset_id: projected 30d %} - phrasing only,
+    #                           never a conviction input (that would double-
+    #                           count the price momentum the technicals score)
+    wallet_class = ("small" if capital < SMALL_WALLET.get(currency, 2_000)
+                    else "large")
+    div_key = diversity if diversity in DIVERSITY else "balanced"
+    band_lo, band_hi = POSITION_BANDS[wallet_class][div_key]
+    # with a budget the base includes tracked cash ("wallet"); without one it
+    # is invested positions only - every string below must say which
+    wallet_word = "wallet" if cash is not None else "portfolio"
+    band_basis = "" if cash is not None else " (judged from your invested positions)"
 
     recs = []
     for a in assets:
@@ -613,9 +636,6 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
         # with a budget set, concentration is judged against the whole wallet
         # (positions + cash); without one, against invested positions only
         alloc_base = capital if cash is not None else total
-        # with a budget the base includes tracked cash ("wallet"); without one
-        # it is invested positions only - every string below must say which
-        wallet_word = "wallet" if cash is not None else "portfolio"
         alloc = (h["value"] / alloc_base * 100) if has_value and alloc_base > 0 else 0.0
         plpct = (h or {}).get("unrealized_pct")
         # what this position's unrealized gain adds to that base - the number
@@ -1088,6 +1108,46 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
             } if h else None),
         })
 
+    # ---- wallet-size position cap: at the band limit, new NAMES stop and
+    # rotation starts. Buying more of what you hold stays allowed (that's
+    # consolidation); it's the 10th small position that helps nobody.
+    count_gated_ids = set()
+    if n_holdings >= band_hi:
+        held_recs = [r for r in recs if r["holding"]]
+        weakest = min(held_recs, key=lambda r: r["conviction"]) if held_recs else None
+        for r in recs:
+            if r["action"] != "BUY" or r["holding"]:
+                continue
+            count_gated_ids.add(r["asset_id"])
+            r["action"], r["usd"], r["qty"] = "WATCH", None, None
+            r["suggested_plan"] = None
+            # earlier gates may have halved a size that no longer exists -
+            # retract those claims along with the amount
+            r["reasons"] = [x for x in r["reasons"] if "halved" not in x]
+            r["breakdown"]["gates"] = [
+                (g + " [superseded: no size suggested - position-count gate]"
+                 if "halved" in g else g)
+                for g in r["breakdown"]["gates"]]
+            r["breakdown"]["gates"].append(
+                f"Position-count gate: already holding {n_holdings} names on a "
+                f"{wallet_class} {wallet_word}{band_basis} (suggested max "
+                f"{band_hi} when {dv['label'].lower()}) - rotate, don't "
+                f"accumulate names")
+            if weakest is not None and weakest["conviction"] < r["conviction"]:
+                r["reasons"].insert(0,
+                    f"Good setup, but {n_holdings} positions on this {wallet_word} "
+                    f"is already {'past' if n_holdings > band_hi else 'at'} the "
+                    f"useful limit (~{band_hi}) - each new name makes every "
+                    f"position smaller. If you believe in this one, the natural "
+                    f"funding source is {weakest['symbol'] or weakest['name']} "
+                    f"(your weakest-rated holding at {weakest['conviction']:+.1f}).")
+            else:
+                r["reasons"].insert(0,
+                    f"Good setup, but {n_holdings} positions on this {wallet_word} "
+                    f"is already {'past' if n_holdings > band_hi else 'at'} the "
+                    f"useful limit (~{band_hi}) and nothing you hold rates "
+                    f"clearly worse - wait for a better spot or a freed slot.")
+
     recs.sort(key=lambda r: (-ACTION_RANK.get(r["action"], 0), -abs(r["conviction"])))
 
     # big universes (PSE = 283 companies): keep every holding, cap the ideas,
@@ -1165,6 +1225,44 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
         tweaks.append(f"{dv['label'].lower()} portfolio (trim above ~{max_alloc}%)")
     if tweaks:
         briefing += " Your settings: " + " and ".join(tweaks) + "."
+
+    # position-count guidance: a wallet this size works best in a band of
+    # names; outside it, say so plainly (guidance, never an instruction)
+    if n_holdings > band_hi:
+        briefing += (f" You're spread across {n_holdings} names on this "
+                     f"{wallet_word}{band_basis} - past the ~{band_hi} where "
+                     f"each position still pulls its weight; consolidating into "
+                     f"your strongest picks puts more force behind each winner.")
+    elif 0 < n_holdings < band_lo and cash is not None and cash > 0.15 * capital:
+        briefing += (f" You hold {n_holdings} name{'s' if n_holdings > 1 else ''} "
+                     f"with idle cash - you're below the ~{band_lo} names that "
+                     f"suit this wallet, so there's room for "
+                     f"{band_lo - n_holdings} more before it's even at its "
+                     f"suggested minimum spread.")
+
+    # rotation thought: the friend-group playbook is sell-strength-into-
+    # strength - when a clearly weak holding coexists with a clearly strong
+    # candidate, name the pair once in the briefing
+    held_rs = [r for r in recs if r["holding"]]
+    # only pair with names the engine itself would act on: a live BUY, or one
+    # held back solely by the position-count gate (which IS the rotation case).
+    # Earnings-gated / chase-gated names must not be endorsed here while their
+    # own cards say to wait.
+    fresh_rs = [r for r in recs if not r["holding"]
+                and (r["action"] == "BUY" or r["asset_id"] in count_gated_ids)]
+    weak = min(held_rs, key=lambda r: r["conviction"]) if held_rs else None
+    strong = max(fresh_rs, key=lambda r: r["conviction"]) if fresh_rs else None
+    if weak and strong and weak["conviction"] <= -1 and strong["conviction"] >= 2:
+        line = (f" Rotation thought: money in {weak['symbol'] or weak['name']} "
+                f"(rated {weak['conviction']:+.1f}) could arguably work harder in "
+                f"{strong['symbol'] or strong['name']} "
+                f"(rated {strong['conviction']:+.1f}).")
+        wp, sp_pct = outlook.get(weak["asset_id"]), outlook.get(strong["asset_id"])
+        if sp_pct is not None and sp_pct > 0 and (wp is None or wp < sp_pct):
+            line = line[:-1] + (f" - the 30-day trend agrees ({sp_pct:+.0f}%"
+                                + (f" vs {wp:+.0f}%" if wp is not None else "")
+                                + " projected).")
+        briefing += line
 
     actionable = [r for r in recs if r["action"] not in ("HOLD", "WATCH")]
     if not market_open:

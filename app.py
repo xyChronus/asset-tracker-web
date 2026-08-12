@@ -1627,7 +1627,11 @@ def get_advisor(market, user, force=False):
                            currency=config.CURRENCY[market], fundamentals=fund,
                            max_ideas=config.ADVISOR_MAX_IDEAS[market], style=style,
                            targets=tgts, earnings=earn,
-                           aggressiveness=agg, diversity=div)
+                           aggressiveness=agg, diversity=div,
+                           # 30d trend projections, for rotation PHRASING only
+                           outlook={k: v.get("pct30") for k, v in
+                                    (db.kv_get(f"predict:{market}", {})
+                                     .get("data") or {}).items()})
         # Attach the precomputed trend projections (display only — the fit is
         # built from the same price history the technicals already vote on, so
         # feeding it into conviction would double-count momentum).

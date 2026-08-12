@@ -20,9 +20,9 @@ const AGG_LEVELS = [
   { v: "aggressive", label: "Aggressive", desc: "Buy suggestions ×1.5 and a slightly lower bar to act. More action, more risk — sizing still never exceeds your cash." },
 ];
 const DIV_LEVELS = [
-  { v: "focused", label: "Focused", desc: "Lets single positions grow ~10 points larger before suggesting a trim. Fewer, bigger bets." },
-  { v: "balanced", label: "Balanced", desc: "The default concentration cap for your trading style (35–40% of the wallet)." },
-  { v: "spread", label: "Spread out", desc: "Suggests trimming ~10 points earlier so money spreads across more assets. Steadier, less dependent on any one pick." },
+  { v: "focused", label: "Focused", desc: "Fewer, bigger bets: positions may grow ~10 points larger before a trim, and the advisor keeps you to roughly 3–5 names on a smaller wallet (under ₱100k / $2k per market) or up to ~7 on a bigger one." },
+  { v: "balanced", label: "Balanced", desc: "The default: your style's concentration cap (35–40%), roughly 4–7 names on a smaller wallet, up to ~10 on a bigger one." },
+  { v: "spread", label: "Spread out", desc: "Trims ~10 points earlier and allows more names (up to ~9 on a smaller wallet, ~14 on a bigger one). Steadier, less dependent on any one pick." },
 ];
 
 const charts = {};
