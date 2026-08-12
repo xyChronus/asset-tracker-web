@@ -288,3 +288,11 @@ Web-only items are marked **(web)**.
 - Briefing nudges when you're outside your band: too many names ("consolidate into your strongest picks") or too few with idle cash.
 ### Fixed
 - Review round (6 findings): wording says "portfolio" not "wallet" when no budget is set (and the band notes it's judged from invested positions); a demoted card can no longer claim a halved buy size it doesn't have; the rotation thought never endorses a name whose own card says to wait (earnings/chasing gates); the room-to-add nudge counts against the band floor honestly.
+
+## [1.20.1] — 2026-08-12 — Honest charts for stocks that never trade
+### Fixed
+- Charts for rarely-traded / suspended names (e.g. Asia Amalgamated) no longer look broken: a perfectly flat price gets a properly padded axis and a plain-language note — the price genuinely hasn't moved, and thinly traded names are worth knowing about before buying in. (Reported by the admin.)
+- Those same names no longer show **RSI 100 → STRONG SELL**: zero price movement made the math degenerate into fake "overbought" readings. A stock with no meaningful movement in the window now reads WAIT — "technical reads need movement."
+- The Max-range note now distinguishes "deeper history still downloading" from "that's everything the data sources have" — for six PSE names the exchange itself serves no chart history, and the site now says so instead of promising more.
+### Notes
+- Full system check alongside: collectors fresh, deep-history backfill complete on all three markets (crypto's year filled after the provider's quota reset), 572k stored daily closes with zero bad values, advisor builds clean for every member, site healthy.

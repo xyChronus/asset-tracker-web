@@ -42,6 +42,8 @@ def rsi(closes, period=14):
     for g, l in zip(gains[period:], losses[period:]):
         avg_gain = (avg_gain * (period - 1) + g) / period
         avg_loss = (avg_loss * (period - 1) + l) / period
+    if avg_gain == 0 and avg_loss == 0:
+        return None   # no movement at all: RSI is undefined, not "overbought"
     if avg_loss == 0:
         return 100.0
     rs = avg_gain / avg_loss
@@ -134,6 +136,19 @@ def compute(closes, chg_24h=None, bars_per_day=24.0,
             "score": 0,
             "reasons": ["Still collecting hourly price history for this coin."],
             "indicators": {},
+            "plan": plan,
+        }
+    if max(closes) - min(closes) < abs(closes[-1]) * 0.001:
+        # effectively zero movement across the whole window (suspended or
+        # never-trading names): every indicator degenerates - RSI used to
+        # read 100 here and produced a STRONG SELL on a stock nobody trades
+        return {
+            "action": "WAIT",
+            "score": 0,
+            "reasons": ["No meaningful price movement in the stored window - "
+                        "this one rarely trades, and technical reads need "
+                        "movement."],
+            "indicators": {"price": closes[-1]},
             "plan": plan,
         }
 

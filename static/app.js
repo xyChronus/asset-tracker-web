@@ -1542,9 +1542,16 @@ async function drawHistory() {
             : items[0].label,
           label: c => fmtMoney(c.parsed.y) } } },
       scales: { x: { ticks: { maxTicksLimit: 8, maxRotation: 0 } },
-                y: { ticks: { callback: v => fmtMoney(v, true) } } },
+                y: { ticks: { callback: v => fmtMoney(v, true) },
+                     // a stock that never trades is a perfectly flat series;
+                     // give the axis breathing room or the chart looks broken
+                     ...(pts.length > 1 && Math.min(...pts.map(p => p[1])) === Math.max(...pts.map(p => p[1]))
+                       ? { suggestedMin: pts[0][1] * 0.95, suggestedMax: pts[0][1] * 1.05 } : {}) } },
     },
   });
+
+  const flatSeries = pts.length > 1 &&
+    Math.min(...pts.map(p => p[1])) === Math.max(...pts.map(p => p[1]));
 
   const indEl = document.getElementById("chart-indicators");
   if (!pts.length) {
@@ -1575,10 +1582,18 @@ async function drawHistory() {
   if (asset.pe != null) stats.push(["P/E", fmtNum(asset.pe, 1)]);
   if (asset.div_yield != null) stats.push(["Div Yield", fmtNum(asset.div_yield, 2) + "%"]);
   indEl.innerHTML = stats.map(x => `<div class="mini-stat"><span>${x[0]}</span><b>${x[1]}</b></div>`).join("");
+  if (flatSeries) {
+    indEl.innerHTML += `<div class="small-note muted" style="width:100%">The chart isn't broken —
+      the price has been exactly ${fmtMoney(pts[0][1])} across the entire stored window.
+      This one trades rarely (or is suspended), so there's no movement to draw. Thinly traded
+      names can be hard to exit — worth knowing before buying in.</div>`;
+  }
   if (longRange === "max" && pts.length > 1 && pts[pts.length - 1][0] - pts[0][0] < 350 * 86400000) {
     indEl.innerHTML += `<div class="small-note muted" style="width:100%">Our stored record for this asset starts
       ${new Date(pts[0][0]).toLocaleDateString([], { year: "numeric", month: "short", day: "numeric" })} —
-      deeper history may still be downloading.</div>`;
+      ${h.deep_done
+        ? "and that's as far back as our data sources go for this one."
+        : "deeper history may still be downloading."}</div>`;
   }
 }
 

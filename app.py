@@ -2438,7 +2438,11 @@ def api_history_daily(market, asset_id):
         for p in pts:
             by_bucket[(p[0] - pts[0][0]) // bucket] = p  # last close per bucket
         pts = [by_bucket[k] for k in sorted(by_bucket)]
-    return jsonify({"points": pts, "points_total": total})
+    # deep_done: the one-time deep backfill already ran for this asset, so a
+    # shallow record means the SOURCE has nothing older (e.g. long-suspended
+    # PSE names) - the UI must not promise more history is coming
+    deep_done = asset_id in db.kv_get(f"histfill:{market}", {})
+    return jsonify({"points": pts, "points_total": total, "deep_done": deep_done})
 
 
 @app.get("/api/<market>/predict_summary")
