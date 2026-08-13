@@ -296,3 +296,9 @@ Web-only items are marked **(web)**.
 - The Max-range note now distinguishes "deeper history still downloading" from "that's everything the data sources have" — for six PSE names the exchange itself serves no chart history, and the site now says so instead of promising more.
 ### Notes
 - Full system check alongside: collectors fresh, deep-history backfill complete on all three markets (crypto's year filled after the provider's quota reset), 572k stored daily closes with zero bad values, advisor builds clean for every member, site healthy.
+
+## [1.21.0] — 2026-08-12 — Suggestions you can resize
+### Added
+- **Accepting a suggestion now opens a small editor** — the suggested amount is prefilled but fully editable (with live quantity conversion at the current price), and you can add your broker/exchange fee before it's logged. The suggestion is a starting point; the size is yours. (Requested by the admin.)
+### Fixed
+- **Buy sizing now follows your Portfolio spread setting.** Starter buys were a flat 5% of the wallet no matter what; a "Focused" user whose own setting means 3–5 names was being handed 5% crumbs. Starters now size to your name band — Focused ≈15% of the wallet, Balanced ≈11%, Spread ≈8% (smaller wallets slightly larger, capped at 25%) — and each BUY card says exactly how it was sized. (Also reported by the admin.)

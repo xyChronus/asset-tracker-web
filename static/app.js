@@ -1062,23 +1062,72 @@ function bindDoneButtons(containerId, reload) {
       toast("No live price right now — log it manually in the Portfolio tab.");
       return;
     }
-    const what = qty ? `your whole position (${fmtQty(qty)} ${esc(b.dataset.name)})`
-                     : `${fmtMoney(usd)} of ${b.dataset.name}`;
-    if (!confirm(`Log this ${side.toUpperCase()}: ${what} `
-        + `at the current price of ${fmtMoney(price)}?\n\nTip: if your real fill price `
-        + `differs on your exchange/broker, fix it afterwards with the ✎ button in the Portfolio tab.`)) return;
-    b.disabled = true;
+    // editable confirm: the suggestion is a starting point - adjust the
+    // amount (and optional fee) before it's logged
+    showAcceptDialog({
+      asset_id: b.dataset.accept, name: b.dataset.name, side, price,
+      usd: usd || (qty ? qty * price : 0), qty,
+    }, () => { reload(); loadHeader(); });
+  });
+}
+
+function showAcceptDialog(t, onLogged) {
+  const old = document.getElementById("accept-overlay");
+  if (old) old.remove();
+  const overlay = document.createElement("div");
+  overlay.id = "accept-overlay";
+  overlay.className = "app-overlay";
+  overlay.innerHTML = `<div class="overlay-box">
+    <div class="panel-head"><h3>Log ${t.side.toUpperCase()} — ${esc(t.name)}</h3>
+      <button class="mini-btn" id="acc-close">Close</button></div>
+    <p class="muted small-note">The suggested amount is a starting point — change it to
+      whatever you actually want to ${t.side}. Logged at the current price of
+      <b>${fmtMoney(t.price)}</b>; if your real fill differs, fix it later with the ✎
+      button on the Portfolio tab.</p>
+    <label class="acct-field">Amount (${esc(CUR[state.market])})
+      <input type="number" step="any" min="0" id="acc-amt" value="${(+t.usd).toFixed(2)}"></label>
+    <div class="tgt-calc muted small-note" id="acc-calc"></div>
+    <label class="acct-field">Fee, optional (${esc(CUR[state.market])})
+      <input type="number" step="any" min="0" id="acc-fee" placeholder="broker/exchange fee"></label>
+    <div class="input-row">
+      <button class="primary-btn small" id="acc-log">Log it</button>
+    </div>
+    <div class="form-msg" id="acc-msg"></div>
+  </div>`;
+  document.body.appendChild(overlay);
+  document.getElementById("acc-close").onclick = () => overlay.remove();
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+  const calc = () => {
+    const v = parseFloat(document.getElementById("acc-amt").value);
+    document.getElementById("acc-calc").textContent =
+      v > 0 ? `≈ ${fmtQty(v / t.price)} at ${fmtMoney(t.price)}` : "";
+  };
+  document.getElementById("acc-amt").oninput = calc;
+  calc();
+  document.getElementById("acc-log").onclick = async () => {
+    const msg = document.getElementById("acc-msg");
+    const v = parseFloat(document.getElementById("acc-amt").value);
+    const fee = parseFloat(document.getElementById("acc-fee").value) || 0;
+    if (!(v > 0)) {
+      msg.innerHTML = '<span class="neg">Enter an amount above zero.</span>';
+      return;
+    }
+    // a full-position sell keeps its exact quantity when the amount is
+    // untouched, so no rounding dust is left behind
+    const untouched = t.qty && Math.abs(v - t.qty * t.price) < 0.01;
+    const body = untouched
+      ? { asset_id: t.asset_id, side: t.side, price: t.price, quantity: t.qty, fee }
+      : { asset_id: t.asset_id, side: t.side, price: t.price, value: v, fee };
     try {
       await api(M() + "/transactions", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(qty
-          ? { asset_id: b.dataset.accept, side, price, quantity: qty }
-          : { asset_id: b.dataset.accept, side, price, value: usd }),
+        body: JSON.stringify(body),
       });
-      toast(`${side === "buy" ? "Buy" : "Sell"} logged ✓ — edit it in the Portfolio tab if your real fill differed.`);
-      reload(); loadHeader();
-    } catch (e) { toast(e.message); b.disabled = false; }
-  });
+      overlay.remove();
+      toast(`${t.side === "buy" ? "Buy" : "Sell"} logged ✓ — edit it in the Portfolio tab if your real fill differed.`);
+      if (onLogged) onLogged();
+    } catch (e) { msg.innerHTML = `<span class="neg">${esc(e.message)}</span>`; }
+  };
 }
 
 /* ---------------------------------------------------------- portfolio */

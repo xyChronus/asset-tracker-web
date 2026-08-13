@@ -764,7 +764,12 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
                     f"{n_holdings} position(s) that's expected, but consider spreading "
                     "new money across more assets over time.")
         else:  # ---------- watchlist assets you don't own
-            base = max(0.05 * capital, 25)
+            # a starter sized to your SPREAD setting: the wallet split across
+            # the middle of your name band, opened at ~60% (BUY MORE tops up
+            # on strength). Focused/3-5 names => ~15% starters; spread/large
+            # => ~6%. The old flat 5% ignored the setting entirely.
+            band_mid = (band_lo + band_hi) / 2.0
+            base = max(min(capital / band_mid * 0.6, 0.25 * capital), 25)
             # in a caution regime (market weather), fresh entries need one
             # extra technical notch - the bar rises, it never drops
             bt = buy_bar + (1 if caution else 0)
@@ -810,6 +815,12 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
             elif good_setup:
                 action = "BUY"
                 amt = base
+                reasons.append(
+                    f"Suggested size fits your spread setting: a full "
+                    f"{wallet_word} here is ~{int(round(band_mid))} names, so "
+                    f"this opens at about "
+                    f"{base / capital * 100:.0f}% of it." if capital > 0 else
+                    "Starter-sized entry.")
                 if pullback:
                     reasons.append("In a solid uptrend but resting at its recent average - "
                                    "buying the dip in strength usually beats buying the breakout.")
