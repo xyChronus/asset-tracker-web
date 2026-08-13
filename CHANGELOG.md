@@ -318,3 +318,7 @@ Web-only items are marked **(web)**.
 ## [1.22.2] — 2026-08-13 — Suspended PSE stocks removed
 ### Removed
 - **17 more suspended or trade-dead PSE names removed** (18 total with AAA): Abra Mining, BHI Holdings, Bogo-Medellin, Coal Asia, Cyber Bay, IP E-Game, I-Remit, Manila Jockey Club, MJC Investments, Phoenix Petroleum, Roxas Holdings, Tubig Pilipinas, and five shells with no recorded trades at all (MGH, NXGEN, PNC, PORT, PTT). Criterion: no price change in 180+ days, measured against ~10 years of stored closes. Nobody held or targeted any of them. The PSE universe is now 265 genuinely tradeable companies, and the exchange-directory sync keeps the dead ones out. Reinstating any name is a one-line change if the exchange lifts a suspension.
+
+## [1.23.0] — 2026-08-14 — Your tickers, one click away
+### Added
+- **Your holdings as one-click chips on the Watchlist and Charts tabs** (matching the Predictions tab): tap a ticker you own to jump straight to it. On Charts it loads that asset's chart; on the Watchlist it filters the table to that name — tap again to clear.

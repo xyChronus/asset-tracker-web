@@ -1436,6 +1436,16 @@ function cardHtml(c) {
 async function loadWatchlist() {
   state.watch[state.market] = null;
   renderWatchlist(await ensureWatch());
+  renderHoldingChips("watch-holdings",
+    h => state.filter.toUpperCase() === (h.symbol || "").toUpperCase() && state.filter !== "",
+    (aid, hm, wasActive) => {
+      // clicking your ticker filters the list to it; clicking again clears
+      const f = document.getElementById("watch-filter");
+      f.value = wasActive ? "" : (hm.symbol || hm.name);
+      state.filter = f.value;
+      renderWatchlist(state.watch[state.market] || []);
+      return !wasActive;
+    }, "Show only");
 }
 
 function renderWatchlist(assets) {
@@ -1561,6 +1571,15 @@ async function loadCharts() {
   const saved = state.chartAsset[state.market];
   if (saved) chartCombo.set(saved, (state.chartMeta || {})[state.market]);
   state.chartAsset[state.market] = chartCombo.value;
+  renderHoldingChips("chart-holdings",
+    h => state.chartAsset[state.market] === h.asset_id,
+    (aid, hm) => {
+      state.chartAsset[state.market] = aid;
+      state.chartMeta = state.chartMeta || {};
+      state.chartMeta[state.market] = { symbol: hm.symbol, name: hm.name };
+      chartCombo.set(aid, { symbol: hm.symbol, name: hm.name });
+      drawHistory();
+    }, "Chart");
   await drawHistory();
 }
 
@@ -1849,6 +1868,27 @@ async function loadPredict() {
 }
 
 // one-click shortcuts: predictions for what the user actually holds
+// one-click chips of the user's own positions, reused across tabs: click a
+// ticker instead of hunting the combo / filter for something you already own
+async function renderHoldingChips(elId, isActive, onPick, verb) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+  try {
+    const p = await api(M() + "/portfolio");
+    const hs = (p.holdings || []).filter(h => h.price);
+    if (!hs.length) { el.innerHTML = ""; return; }
+    el.innerHTML = '<span class="muted small-note">Your holdings:</span>' + hs.map(h =>
+      `<button class="hold-chip${isActive(h) ? " active" : ""}" data-hc="${esc(h.asset_id)}"
+        title="${esc(verb)} ${esc(h.name)}">${esc(h.symbol || h.name)}</button>`).join("");
+    el.querySelectorAll("[data-hc]").forEach(b => b.onclick = () => {
+      const hm = hs.find(x => x.asset_id === b.dataset.hc) || {};
+      const nowActive = onPick(b.dataset.hc, hm, b.classList.contains("active"));
+      el.querySelectorAll(".hold-chip").forEach(x =>
+        x.classList.toggle("active", x === b && nowActive !== false));
+    });
+  } catch (e) { el.innerHTML = ""; }
+}
+
 async function loadPredHoldings() {
   const el = document.getElementById("pred-holdings");
   if (!el) return;
