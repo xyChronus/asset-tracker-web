@@ -114,9 +114,25 @@ METRICS_REFRESH_HOURS = 12      # Finnhub fundamentals refresh cadence
 ADVISOR_MAX_IDEAS = {"crypto": None, "pse": 15, "global": 12}
 
 # PSE symbols excluded from the whole system (watchlist, signals, charts,
-# predictions). These are listed on paper but haven't traded in years -
-# suspended shells that only add noise. The directory sync skips them and
+# predictions): suspended or trade-dead names that only add noise. Criterion
+# (checked 2026-08-13 against ~10y of stored closes): no price change for
+# 180+ days, or no recorded trade at all. The directory sync skips these and
 # removes any existing rows, so a re-sync can't resurrect them.
-# Candidates with the identical zero-movement profile, awaiting the admin's
-# call: MGH, NXGEN, PNC, PORT, PTT.
-PSE_EXCLUDED = {"AAA"}   # Asia Amalgamated - suspended ~10 years (admin request)
+# To REINSTATE one: remove it here; the next directory sync re-adds it, and
+# deleting its entry from the kv key histfill:pse re-fetches deep history.
+PSE_EXCLUDED = {
+    "AAA",    # Asia Amalgamated - no trades in stored history (~10y suspended)
+    "AR",     # Abra Mining - suspended, last trade 2021-03
+    "BH",     # BHI Holdings - last trade 2023-04
+    "BMM",    # Bogo-Medellin Milling - last trade 2022-12
+    "COAL",   # Coal Asia - frozen since 2025-12
+    "CYBR",   # Cyber Bay - last trade 2021-06
+    "EG",     # IP E-Game Ventures - last trade 2017-05
+    "I",      # I-Remit - frozen since 2025-05
+    "MJC",    # Manila Jockey Club - suspended, last trade 2023-05
+    "MJIC",   # MJC Investments - suspended, last trade 2023-05
+    "PNX",    # Phoenix Petroleum - suspended, last trade 2024-05
+    "ROX",    # Roxas Holdings - last trade 2024-05
+    "TUBIG",  # Tubig Pilipinas - frozen since 2025-12
+    "MGH", "NXGEN", "PNC", "PORT", "PTT",   # no trades in stored history
+}
