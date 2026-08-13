@@ -616,6 +616,12 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
     # is invested positions only - every string below must say which
     wallet_word = "wallet" if cash is not None else "portfolio"
     band_basis = "" if cash is not None else " (judged from your invested positions)"
+    # the smallest buy worth suggesting, scaled to the user's settings: a
+    # third of their starter size (spread band x aggressiveness). Suggesting
+    # someone spend their last few % of the wallet is noise, not advice -
+    # the old flat floor (25 currency units) was blind to wallet size.
+    _starter = (capital / ((band_lo + band_hi) / 2.0) * 0.6) if capital > 0 else 0.0
+    min_buy = max(25.0, _starter * ag["size_mult"] / 3.0)
 
     recs = []
     for a in assets:
@@ -738,7 +744,7 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
                         f"{sp['tp_pct']}% target")
             elif ((tech is not None and tech >= buy_bar) or (tech is None and value_votes >= sp["value_buy"])) \
                     and news_score >= -0.5 and alloc < buy_cap and headroom >= 10 \
-                    and (cash is None or cash >= 15):
+                    and (cash is None or cash >= min_buy):
                 action = "BUY MORE"
                 amt = min(0.10 * capital, headroom)
                 reasons.append(("Strong setup on a position you already own."
@@ -806,12 +812,16 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
                                     and value_votes >= -1
                                     and rpos is not None and 0.40 <= rpos <= 0.85)
             good_setup = good_setup or pullback
-            if good_setup and cash is not None and cash < 25:
+            if good_setup and cash is not None and cash < min_buy:
                 action = "WATCH"
                 reasons.append(
-                    f"Good setup, but your available cash ({currency}{max(cash, 0):,.0f}) "
-                    "is too low for a meaningful buy - raise the budget on the "
-                    "Portfolio tab or free up funds first.")
+                    f"Good setup, but your remaining cash ({currency}{max(cash, 0):,.0f}) "
+                    f"is below a meaningful buy for your settings "
+                    f"(~{currency}{min_buy:,.0f}"
+                    + (f", about {min_buy / capital * 100:.0f}% of your {wallet_word}"
+                       if capital > 0 else "")
+                    + ") - spending the last few pesos/dollars just feeds fees. "
+                    "Sit tight, or free up funds by rotating out of a weaker holding.")
             elif good_setup:
                 action = "BUY"
                 amt = base
@@ -958,10 +968,13 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
                 if cash is not None:
                     amt = min(amt, cash)
                 amt = max(10, int(amt // 5) * 5)
-                if cash is not None and amt > cash:
+                # after every clamp, a buy that shrank below the settings-based
+                # minimum is pocket change - drop it rather than look silly
+                if cash is not None and (amt > cash or amt < min_buy):
                     action, amt = "WATCH", None
-                    gate_notes.append("Cash gate: buy setup kept as WATCH - not enough "
-                                      "available cash for a meaningful buy")
+                    gate_notes.append("Cash gate: buy setup kept as WATCH - the "
+                                      "affordable amount is below a meaningful "
+                                      "size for your settings")
                     reasons.insert(0, "Good setup, but not enough available cash "
                                       "for a meaningful buy right now.")
 

@@ -578,7 +578,7 @@ async function loadDashboard() {
       sub: `<span class="muted">of a ${fmtMoney(s.budget)} budget</span>` });
   }
   cards.push(
-    { label: "Portfolio Value", val: fmtMoney(s.value), sub: pctSpan(s.change_24h_pct) + ` <span class="muted">(${moneySpan(s.change_24h_usd)} 24h)</span>` },
+    { label: "Holdings Value", val: fmtMoney(s.value), sub: pctSpan(s.change_24h_pct) + ` <span class="muted">(${moneySpan(s.change_24h_usd)} 24h)</span>` },
     { label: "Cost Basis (open)", val: fmtMoney(s.cost), sub: '<span class="muted">what your current positions cost you</span>' },
     { label: "Unrealized P/L", val: moneySpan(s.unrealized), sub: pctSpan(s.unrealized_pct) },
     { label: "Realized P/L", val: moneySpan(s.realized), sub: '<span class="muted">locked in from sells</span>' },
@@ -627,7 +627,7 @@ async function loadDashboard() {
 
   const ht = document.getElementById("holdings-table");
   if (!p.holdings.length) {
-    ht.innerHTML = `<tr><td class="empty-note">No open positions in ${MKT_LABEL[state.market]} yet. Add a buy on the Portfolio tab.</td></tr>`;
+    ht.innerHTML = `<tr><td class="empty-note">No open positions in ${MKT_LABEL[state.market]} yet. Add a buy on the Trades tab.</td></tr>`;
   } else {
     const chartTd = (h, inner) =>
       `<td class="chart-link" data-chart="${esc(h.asset_id)}" data-cs="${esc(h.symbol || "")}"
@@ -1059,7 +1059,7 @@ function bindDoneButtons(containerId, reload) {
     // advisor snapshot's price (minutes old) rather than dead-ending
     const price = (a && a.price != null) ? a.price : (parseFloat(b.dataset.price) || null);
     if (!price || (!usd && !qty)) {
-      toast("No live price right now — log it manually in the Portfolio tab.");
+      toast("No live price right now — log it manually in the Trades tab.");
       return;
     }
     // editable confirm: the suggestion is a starting point - adjust the
@@ -1083,7 +1083,7 @@ function showAcceptDialog(t, onLogged) {
     <p class="muted small-note">The suggested amount is a starting point — change it to
       whatever you actually want to ${t.side}. Logged at the current price of
       <b>${fmtMoney(t.price)}</b>; if your real fill differs, fix it later with the ✎
-      button on the Portfolio tab.</p>
+      button on the Trades tab.</p>
     <label class="acct-field">Amount (${esc(CUR[state.market])})
       <input type="number" step="any" min="0" id="acc-amt" value="${(+t.usd).toFixed(2)}"></label>
     <div class="tgt-calc muted small-note" id="acc-calc"></div>
@@ -1124,7 +1124,7 @@ function showAcceptDialog(t, onLogged) {
         body: JSON.stringify(body),
       });
       overlay.remove();
-      toast(`${t.side === "buy" ? "Buy" : "Sell"} logged ✓ — edit it in the Portfolio tab if your real fill differed.`);
+      toast(`${t.side === "buy" ? "Buy" : "Sell"} logged ✓ — edit it in the Trades tab if your real fill differed.`);
       if (onLogged) onLogged();
     } catch (e) { msg.innerHTML = `<span class="neg">${esc(e.message)}</span>`; }
   };
@@ -1134,6 +1134,15 @@ function showAcceptDialog(t, onLogged) {
 
 async function loadPortfolio() {
   const [txs, p] = await Promise.all([api(M() + "/transactions"), api(M() + "/portfolio")]);
+
+  // how much is left to spend, right where trades are logged
+  const s = p.summary || {};
+  document.getElementById("wallet-live").innerHTML = s.cash != null
+    ? `<div class="mini-stat"><span>Cash available</span>
+         <b class="${s.cash > 0 ? "pos" : "neg"}">${fmtMoney(s.cash)}</b></div>
+       <div class="mini-stat"><span>In positions</span><b>${fmtMoney(s.value)}</b></div>
+       <div class="mini-stat"><span>Budget</span><b>${fmtMoney(s.budget)}</b></div>`
+    : '<div class="mini-stat"><span>Cash tracking</span><b class="muted">off — set a budget below</b></div>';
 
   const tt = document.getElementById("tx-table");
   tt.innerHTML = `<thead><tr><th>Date</th><th>Type</th><th>Asset</th><th>Quantity</th>

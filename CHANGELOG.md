@@ -302,3 +302,11 @@ Web-only items are marked **(web)**.
 - **Accepting a suggestion now opens a small editor** — the suggested amount is prefilled but fully editable (with live quantity conversion at the current price), and you can add your broker/exchange fee before it's logged. The suggestion is a starting point; the size is yours. (Requested by the admin.)
 ### Fixed
 - **Buy sizing now follows your Portfolio spread setting.** Starter buys were a flat 5% of the wallet no matter what; a "Focused" user whose own setting means 3–5 names was being handed 5% crumbs. Starters now size to your name band — Focused ≈15% of the wallet, Balanced ≈11%, Spread ≈8% (smaller wallets slightly larger, capped at 25%) — and each BUY card says exactly how it was sized. (Also reported by the admin.)
+
+## [1.22.0] — 2026-08-13 — Trades, wallet in view, no pocket-change advice
+### Changed
+- **The Portfolio tab is now called "Trades"** — it's where buying and selling happens; "Portfolio" and "Holdings" meant the same thing. (The dashboard's value chart is now labelled "Holdings Value" to match.)
+### Added
+- **Your wallet, right on the Trades tab**: cash available, money in positions, and your budget — visible where you log trades, so you always know what's left to spend.
+### Fixed
+- **No more suggestions to spend your last few pesos.** With ₱700 left of a ₱20,700 wallet, the advisor was still proposing buys — technically affordable, practically silly. The minimum meaningful buy now scales with your wallet and settings (a third of your starter size — spread setting and aggressiveness included), and the card explains it: "your remaining cash is below a meaningful buy for your settings (~₱753, about 4% of your wallet) — spending the last few pesos just feeds fees." (Reported by the admin, from his own wallet.)
