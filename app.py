@@ -718,6 +718,8 @@ def pse_sync_directory_if_needed():
         return
     c = db.conn()
     for co in companies:
+        if co["symbol"] in config.PSE_EXCLUDED:
+            continue   # suspended shells stay out, even after a re-sync
         c.execute("""INSERT INTO pse_companies VALUES (%s,%s,%s,%s,%s,%s)
                      ON CONFLICT (symbol) DO UPDATE SET cmpy_id=EXCLUDED.cmpy_id,
                      security_id=EXCLUDED.security_id, name=EXCLUDED.name,
@@ -727,6 +729,9 @@ def pse_sync_directory_if_needed():
         c.execute("INSERT INTO watchlist VALUES (0,'pse',%s,%s,%s,%s)"
                   " ON CONFLICT DO NOTHING",
                   (co["symbol"], co["symbol"], co["name"], db.now_iso()))
+    for sym in config.PSE_EXCLUDED:   # purge any rows that predate the exclusion
+        c.execute("DELETE FROM pse_companies WHERE symbol=%s", (sym,))
+        c.execute("DELETE FROM watchlist WHERE market='pse' AND user_id=0 AND asset_id=%s", (sym,))
     db.kv_set("pse:directory_synced", now_ms())
     global _pse_backfill_done
     _pse_backfill_done = False  # new listings may need a history backfill

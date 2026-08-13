@@ -112,3 +112,11 @@ METRICS_REFRESH_HOURS = 12      # Finnhub fundamentals refresh cadence
 
 # Advisor: cap the number of not-owned "idea" cards for huge universes
 ADVISOR_MAX_IDEAS = {"crypto": None, "pse": 15, "global": 12}
+
+# PSE symbols excluded from the whole system (watchlist, signals, charts,
+# predictions). These are listed on paper but haven't traded in years -
+# suspended shells that only add noise. The directory sync skips them and
+# removes any existing rows, so a re-sync can't resurrect them.
+# Candidates with the identical zero-movement profile, awaiting the admin's
+# call: MGH, NXGEN, PNC, PORT, PTT.
+PSE_EXCLUDED = {"AAA"}   # Asia Amalgamated - suspended ~10 years (admin request)

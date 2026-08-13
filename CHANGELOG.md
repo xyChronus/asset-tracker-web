@@ -310,3 +310,7 @@ Web-only items are marked **(web)**.
 - **Your wallet, right on the Trades tab**: cash available, money in positions, and your budget — visible where you log trades, so you always know what's left to spend.
 ### Fixed
 - **No more suggestions to spend your last few pesos.** With ₱700 left of a ₱20,700 wallet, the advisor was still proposing buys — technically affordable, practically silly. The minimum meaningful buy now scales with your wallet and settings (a third of your starter size — spread setting and aggressiveness included), and the card explains it: "your remaining cash is below a meaningful buy for your settings (~₱753, about 4% of your wallet) — spending the last few pesos just feeds fees." (Reported by the admin, from his own wallet.)
+
+## [1.22.1] — 2026-08-13 — Delisting the dead
+### Removed
+- **Asia Amalgamated (AAA)** removed from the whole system — watchlist, signals, charts, predictions — at the admin's request: it hasn't been allowed to trade in about a decade. The exchange directory sync now maintains an exclusion list, so re-syncs can't quietly bring it back. Five more names share the identical zero-movement profile (MGH, NXGEN, PNC, PORT, PTT) and can be excluded with one word each when the admin decides.
