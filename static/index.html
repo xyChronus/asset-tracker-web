@@ -84,13 +84,7 @@
       <div><h4 class="neg-h">Projected Down</h4><div id="pred-down" class="gl-list"></div></div>
     </div>
   </div>
-  <div class="grid2" id="holdings-extra" style="display:none">
-    <div class="panel">
-      <div class="panel-head"><h3>📰 Your holdings in the news</h3></div>
-      <p class="muted small-note">Recent stories mentioning what you own, scored on the
-        advisor's −3..+3 news scale. Awareness, not instructions.</p>
-      <div id="holdings-news"></div>
-    </div>
+  <div id="holdings-extra" style="display:none">
     <div class="panel">
       <div class="panel-head"><h3>📅 Coming up for your holdings</h3></div>
       <p class="muted small-note">Dividend ex-dates and earnings reports the app already tracks.</p>
@@ -108,7 +102,9 @@
       </div>
     </div>
     <div class="panel">
-      <div class="panel-head"><h3>Latest News</h3><button class="link-btn" data-goto="news">all news →</button></div>
+      <div class="panel-head"><h3>Latest News</h3><span>
+        <button class="link-btn" id="dash-hnews">your holdings →</button>
+        <button class="link-btn" data-goto="news">all news →</button></span></div>
       <div id="dash-news" class="news-list compact"></div>
     </div>
   </div>
@@ -321,8 +317,18 @@
   <div class="panel">
     <div class="panel-head">
       <h3>News</h3>
-      <select id="news-source"><option value="">All sources</option></select>
+      <span class="news-controls">
+        <span class="scope-pills" id="news-scope">
+          <button data-nscope="all" class="active">All news</button>
+          <button data-nscope="holdings">Your holdings</button>
+        </span>
+        <select id="news-source"><option value="">All sources</option></select>
+      </span>
     </div>
+    <p class="muted small-note" id="news-scope-note" style="display:none">Stories that
+      mention what you own — plus sector-wide news that moves your kind of company —
+      scored on the advisor's −3..+3 news scale. Awareness, not instructions.</p>
+    <div id="news-holdings-summary" style="display:none"></div>
     <div id="news-list" class="news-list"></div>
   </div>
 </section>

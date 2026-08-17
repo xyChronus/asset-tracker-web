@@ -32,6 +32,7 @@ const state = {
   tab: localStorage.getItem("tab") || "dashboard",
   currency: localStorage.getItem("curmode") || "native",
   style: "swing",
+  newsScope: "all",      // News tab: "all" | "holdings"
   editingTx: null,
   pvHours: 168,
   chartHours: 168,
@@ -468,7 +469,8 @@ function showTargets(h) {
       <label class="acct-field">↗ Trailing-buy alert % — flags when the price has rebounded this far off its lowest point since you set it. Handy after selling: it watches the bottom for a re-entry (it survives selling the position, and clears itself after 30 days).
         <input type="number" step="any" min="0.5" max="50" id="tgt-trailbuy"
           value="${h.trail_buy_pct ?? ""}" placeholder="e.g. 5"></label>
-      <p class="muted small-note">Saving restarts trailing from the current price. A manual
+      <p class="muted small-note">A new or changed percentage starts trailing from the
+        current price; re-saving an unchanged one keeps its progress. A manual
         stop-loss and a trailing stop can coexist — whichever is higher applies.</p>
     </details>
     <label class="acct-field">📝 Why this trade? (your future self will thank you)
@@ -691,18 +693,8 @@ async function loadDashboard() {
     });
   }
 
-  // holdings-in-the-news + coming-up panels (only when there's something)
-  const hn = document.getElementById("holdings-news");
+  // coming-up panel (holdings-in-the-news lives on the News tab now)
   const cu = document.getElementById("coming-up");
-  const newsy = p.holdings.filter(h => h.news).sort((x, y) =>
-    Math.abs(y.news.score) - Math.abs(x.news.score)).slice(0, 6);
-  hn.innerHTML = newsy.length ? newsy.map(h => {
-    const n = h.news;
-    const cls = n.score > 0 ? "pos" : n.score < 0 ? "neg" : "muted";
-    return `<div class="rec-art"><span class="${cls}">${n.score > 0 ? "▲" : n.score < 0 ? "▼" : "•"}
-      ${n.score > 0 ? "+" : ""}${n.score}</span> <b>${esc(h.symbol || h.name)}</b>
-      ${linkHtml(n.link, n.top)} <span class="muted">· ${n.n} article${n.n > 1 ? "s" : ""}</span></div>`;
-  }).join("") : "";
   const upcoming = [];
   const today = new Date(); today.setHours(0, 0, 0, 0);
   for (const h of p.holdings) {
@@ -724,7 +716,7 @@ async function loadDashboard() {
   cu.innerHTML = upcoming.length ? upcoming.map(u => u.html).join("")
     : '<div class="empty-note">Nothing scheduled for what you hold.</div>';
   document.getElementById("holdings-extra").style.display =
-    (newsy.length || upcoming.length) ? "" : "none";
+    upcoming.length ? "" : "none";
 
   loadMarketPanels("dash");
   loadDashNews();
@@ -984,6 +976,22 @@ function recCard(r) {
     : "";
   const shareBtn = `<button class="mini-btn share-btn" data-share="${esc(r.asset_id)}"
        title="Copy this suggestion as plain text for the group chat">⧉</button>`;
+  const tgt = (state.targetsMap || {})[r.asset_id];
+  const trailArmed = tgt && (tgt.trail_pct || tgt.trail_buy_pct);
+  // honesty: if a manual stop sits above the trailing floor, the manual one
+  // is what actually governs - the tooltip must not claim otherwise
+  const trailFloor = tgt && tgt.trail_pct && tgt.peak_price
+    ? tgt.peak_price * (1 - tgt.trail_pct / 100) : null;
+  const manualGoverns = trailFloor != null && tgt.manual_sl_price > trailFloor;
+  const stopBlurb = tgt && tgt.trail_pct
+    ? (manualGoverns
+      ? ` — trailing stop ${tgt.trail_pct}% below the peak armed (your higher manual stop at ${fmtMoney(tgt.manual_sl_price)} currently governs)`
+      : ` — stop follows the price, ${tgt.trail_pct}% below its peak`)
+    : "";
+  const trailBtn = `<button class="mini-btn trail-btn${trailArmed ? " armed" : ""}" data-trailopen="${esc(r.asset_id)}"
+       title="${trailArmed
+         ? `Trailing plan armed${stopBlurb}${tgt.trail_buy_pct ? ` — buy alert when it rebounds ${tgt.trail_buy_pct}% off its low` : ""}. Click to adjust.`
+         : "Set a trailing buy or sell plan — alert levels that follow the price for you instead of standing still"}">⏳${trailArmed ? "✓" : ""}</button>`;
   const flagRow = (r.flags || []).length
     ? `<div class="flag-row">${r.flags.map(fl =>
         `<span class="flag-chip flag-${esc(fl.kind)}">${FLAG_ICONS[fl.kind] || "•"} ${esc(fl.text)}</span>`).join("")}</div>`
@@ -992,7 +1000,7 @@ function recCard(r) {
     <div class="sig-head">
       <div class="sig-coin">${r.image ? `<img src="${esc(r.image)}">` : ""}${esc(r.name)}
         <span class="muted">${fmtMoney(r.price)}</span></div>
-      <div class="head-right">${sigBadge(r)}${scorePill(r.conviction, 1)}${acceptBtn}${doneBtn}${shareBtn}</div>
+      <div class="head-right">${sigBadge(r)}${scorePill(r.conviction, 1)}${acceptBtn}${doneBtn}${trailBtn}${shareBtn}</div>
     </div>
     ${flagRow}${amount}${planLine}${fcLine}${holdLine}
     <div class="conv-bar" title="Conviction: ${conv}">
@@ -1030,7 +1038,12 @@ function moverChip(r) {
 }
 
 async function loadAdvisor() {
-  const a = await api(M() + "/advisor");
+  const [a, tg] = await Promise.all([
+    api(M() + "/advisor"),
+    api(M() + "/targets").catch(() => null),  // null = unknown, NOT "no plans"
+  ]);
+  state.targetsMap = tg ? {} : null;
+  ((tg && tg.targets) || []).forEach(t => { state.targetsMap[t.asset_id] = t; });
   if (!a || !a.recommendations) {
     document.getElementById("advisor-briefing").textContent =
       "Still analyzing — results appear a few minutes after startup, once prices, history and news are in.";
@@ -1092,6 +1105,95 @@ async function loadAdvisor() {
       .then(() => toast("Copied — paste it in the group chat."))
       .catch(() => toast("Couldn't reach the clipboard — copy manually.", "error"));
   });
+  // ⏳ trailing buy/sell straight from a suggestion card
+  document.querySelectorAll("#tab-advisor [data-trailopen]").forEach(btn => btn.onclick = async () => {
+    const r = a.recommendations.find(x => x.asset_id === btn.dataset.trailopen);
+    if (!r) return;
+    if (state.targetsMap === null) {
+      // the plans fetch failed earlier - retry rather than opening a dialog
+      // whose empty boxes would clear plans we couldn't see
+      try {
+        const tg = await api(M() + "/targets");
+        state.targetsMap = {};
+        (tg.targets || []).forEach(t => { state.targetsMap[t.asset_id] = t; });
+      } catch (e) {
+        toast("Couldn't load your existing plans — try again in a moment.", "error");
+        return;
+      }
+    }
+    showTrailDialog(r, state.targetsMap[r.asset_id] || {}, loadAdvisor);
+  });
+}
+
+function showTrailDialog(r, t, onSaved) {
+  const old = document.getElementById("trail-overlay");
+  if (old) old.remove();
+  const held = !!r.holding;
+  const overlay = document.createElement("div");
+  overlay.id = "trail-overlay";
+  overlay.className = "app-overlay";
+  overlay.innerHTML = `<div class="overlay-box">
+    <div class="panel-head"><h3>⏳ Trailing plan — ${esc(r.name)}</h3>
+      <button class="mini-btn" id="trail-close">Close</button></div>
+    <p class="muted small-note">Alert levels that follow the price instead of standing
+      still. The app only ever flags them — buying or selling stays your call.</p>
+    <label class="acct-field">↗ Trailing-buy alert %, optional — instead of buying now,
+      watch the dip: this flags ${esc(r.symbol || r.name)} once the price has rebounded
+      this far off its lowest point from today. It keeps watching even if you sell,
+      and clears itself after 30 days.
+      <input type="number" step="any" min="0.5" max="50" id="trail-buy"
+        value="${t.trail_buy_pct ?? ""}" placeholder="e.g. 5"></label>
+    ${held ? `<label class="acct-field">🛑↗ Trailing stop %, optional — follows the price
+      up, always this far below its highest point since you set it. Locks in gains on
+      the way up; never moves down.
+      <input type="number" step="any" min="0.5" max="50" id="trail-stop"
+        value="${t.trail_pct ?? ""}" placeholder="e.g. ${(r.suggested_plan && r.suggested_plan.sl_pct) || 8}"></label>`
+    : `<p class="muted small-note">A trailing stop protects a position you hold — you
+      don't hold ${esc(r.symbol || r.name)} right now, so only the buy-side alert
+      applies here.</p>`}
+    <p class="muted small-note">Current price ${fmtMoney(r.price)} — a new or changed %
+      starts measuring from here; re-saving an unchanged one keeps its progress.
+      Clearing a box removes that plan and any stop level it computed. A take-profit,
+      note, or stop you typed yourself stays put (though while a trailing stop is
+      armed, the stop that counts is whichever sits higher).</p>
+    <div class="input-row">
+      <button class="primary-btn small" id="trail-save">Save plan</button>
+    </div>
+    <div class="form-msg" id="trail-msg"></div>
+  </div>`;
+  document.body.appendChild(overlay);
+  document.getElementById("trail-close").onclick = () => overlay.remove();
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+  overlay.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && e.target.tagName === "INPUT") {
+      e.preventDefault();
+      document.getElementById("trail-save").click();
+    }
+  });
+  document.getElementById("trail-save").onclick = async () => {
+    // an unheld asset always posts trail_pct:"" - a trailing stop with no
+    // position behind it is meaningless, so any orphaned one is cleared
+    const body = { asset_id: r.asset_id,
+                   trail_buy_pct: document.getElementById("trail-buy").value.trim(),
+                   trail_pct: held ? document.getElementById("trail-stop").value.trim() : "" };
+    try {
+      await api(M() + "/targets", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      overlay.remove();
+      const buyArmed = parseFloat(body.trail_buy_pct) > 0;
+      const stopArmed = parseFloat(body.trail_pct) > 0;
+      toast(stopArmed
+        ? "Trailing plan armed — you'll see it flagged on the Advisor tab and in your Dashboard Plan column when it trips."
+        : buyArmed
+          ? "Rebound alert armed — its Advisor card flags ↗️ once the price turns back up that far."
+          : "Trailing plan cleared.");
+      if (onSaved) onSaved();
+    } catch (e) {
+      document.getElementById("trail-msg").innerHTML = `<span class="neg">${esc(e.message)}</span>`;
+    }
+  };
 }
 
 function bindDoneButtons(containerId, reload) {
@@ -1826,18 +1928,62 @@ function newsItemHtml(it) {
     const cls = it.sector_sent > 0 ? "pos" : it.sector_sent < 0 ? "neg" : "muted";
     return `<span class="badge sec-chip" title="Mentions the ${esc(s)} sector — the headline's overall tone reads ${it.sector_sent > 0 ? "positive" : it.sector_sent < 0 ? "negative" : "neutral"}">🏭 ${esc(s)} <span class="${cls}">${dir}</span></span>`;
   }).join(" ");
+  // asset chips: tracked names this story mentions (💼 = one you hold)
+  const mine = new Set(it._mine || []);
+  const achips = (it.assets || []).slice(0, 4).map(a => {
+    const dir = it.tone > 0 ? "▲" : it.tone < 0 ? "▼" : "•";
+    const cls = it.tone > 0 ? "pos" : it.tone < 0 ? "neg" : "muted";
+    const held = mine.has(a.symbol);
+    return `<span class="badge sec-chip${held ? " mine-chip" : ""}"
+      title="Mentions ${esc(a.symbol)}${held ? " — you hold this" : ""}; the headline's tone reads ${it.tone > 0 ? "positive" : it.tone < 0 ? "negative" : "neutral"}">${held ? "💼 " : ""}${esc(a.symbol)} <span class="${cls}">${dir}</span></span>`;
+  }).join(" ");
+  // in the "Your holdings" view, say WHY a sector-only story is here
+  const secWhy = (it._mySectors || []).map(x =>
+    `<span class="muted">· touches your ${esc(x.s)} holding${x.syms.length > 1 ? "s" : ""} (${x.syms.map(esc).join(", ")})</span>`).join(" ");
   return `<div class="news-item">
     <div class="news-meta"><span class="badge src">${esc(it.source)}</span>
-      <span>${timeAgo(it.published)}</span>${secs ? " " + secs : ""}</div>
+      <span>${timeAgo(it.published)}</span>${achips ? " " + achips : ""}${secs ? " " + secs : ""}${secWhy ? " " + secWhy : ""}</div>
     <div class="news-title">${linkHtml(it.link, it.title)}</div>
     <div class="news-summary">${esc(it.summary)}</div>
   </div>`;
 }
 
+// the per-holding score strip shown atop the "Your holdings" news view
+function holdingsNewsSummary(p) {
+  const newsy = (p.holdings || []).filter(h => h.news).sort((x, y) =>
+    Math.abs(y.news.score) - Math.abs(x.news.score)).slice(0, 8);
+  if (!newsy.length) return "";
+  return `<div class="hnews-strip">` + newsy.map(h => {
+    const n = h.news;
+    const cls = n.score > 0 ? "pos" : n.score < 0 ? "neg" : "muted";
+    return `<div class="rec-art"><span class="${cls}">${n.score > 0 ? "▲" : n.score < 0 ? "▼" : "•"}
+      ${n.score > 0 ? "+" : ""}${n.score}</span> <b>${esc(h.symbol || h.name)}</b>
+      ${linkHtml(n.link, n.top)} <span class="muted">· ${n.n} article${n.n > 1 ? "s" : ""}</span></div>`;
+  }).join("") + `</div>`;
+}
+
+let newsLoadSeq = 0;   // drops stale responses when the pill/market changes mid-fetch
+
 async function loadNews() {
+  const seq = ++newsLoadSeq;
   const sel = document.getElementById("news-source");
   const src = sel.value;
-  const n = await api(M() + "/news?limit=120" + (src ? "&source=" + encodeURIComponent(src) : ""));
+  const scoped = state.newsScope === "holdings";
+  document.querySelectorAll("#news-scope button").forEach(b =>
+    b.classList.toggle("active", b.dataset.nscope === (scoped ? "holdings" : "all")));
+  const note = document.getElementById("news-scope-note");
+  note.style.display = scoped ? "" : "none";
+  if (scoped) {
+    note.textContent = state.market === "crypto"
+      ? "Stories that mention coins you hold, marked 💼. The strip above them is the advisor's −3..+3 news read per holding. Awareness, not instructions."
+      : "Stories that mention companies you hold (marked 💼), plus sector-wide news that moves your kind of company. The strip above them is the advisor's −3..+3 news read per holding. Awareness, not instructions.";
+  }
+  const sum = document.getElementById("news-holdings-summary");
+  const [n, p] = await Promise.all([
+    api(M() + "/news?limit=120" + (src ? "&source=" + encodeURIComponent(src) : "")),
+    scoped ? api(M() + "/portfolio") : Promise.resolve(null),
+  ]);
+  if (seq !== newsLoadSeq) return;  // a newer load already owns the list
   const have = new Set([...sel.options].map(o => o.value));
   (n.sources || []).forEach(s => {
     if (!have.has(s)) {
@@ -1846,9 +1992,54 @@ async function loadNews() {
       sel.appendChild(o);
     }
   });
-  document.getElementById("news-list").innerHTML = n.items.length
-    ? n.items.map(newsItemHtml).join("")
-    : '<div class="empty-note">Fetching news… the first load takes a minute or two.</div>';
+  let items = n.items;
+  let anyHeld = false;
+  if (scoped) {
+    const held = new Map();          // asset_id -> holding
+    const heldSectors = new Map();   // sector key -> [symbols you own]
+    (p && p.holdings || []).forEach(h => {
+      if (!(h.qty > 0)) return;
+      held.set(h.asset_id, h);
+      if (h.sector_key) heldSectors.set(h.sector_key,
+        [...(heldSectors.get(h.sector_key) || []), h.symbol || h.name]);
+    });
+    anyHeld = held.size > 0;
+    items = items.filter(it =>
+      (it.assets || []).some(a => held.has(a.aid)) ||
+      (it.sectors || []).some(s => heldSectors.has(s)));
+    items.forEach(it => {
+      const direct = (it.assets || []).filter(a => held.has(a.aid));
+      it._mine = direct.map(a => a.symbol);
+      // put the names you own first so their 💼 chip is never trimmed off
+      if (direct.length && it.assets.length > 1) {
+        it.assets = [...it.assets].sort((a, b) =>
+          (held.has(b.aid) ? 1 : 0) - (held.has(a.aid) ? 1 : 0));
+      }
+      // only explain sector matches when the story doesn't name you directly
+      it._mySectors = direct.length ? [] : (it.sectors || [])
+        .filter(s => heldSectors.has(s))
+        .map(s => ({ s, syms: heldSectors.get(s) }));
+    });
+    // per-holding scores read the whole feed, so they don't apply to a
+    // single-source slice - hide the strip rather than mislabel it
+    sum.innerHTML = src ? "" : holdingsNewsSummary(p);
+    sum.style.display = sum.innerHTML ? "" : "none";
+  } else {
+    sum.style.display = "none";
+  }
+  const stripShowing = scoped && sum.style.display !== "none";
+  document.getElementById("news-list").innerHTML =
+    !n.items.length
+      ? '<div class="empty-note">Fetching news… the first load takes a minute or two.</div>'
+      : items.length
+        ? items.map(newsItemHtml).join("")
+        : !scoped
+          ? '<div class="empty-note">Fetching news… the first load takes a minute or two.</div>'
+          : !anyHeld
+            ? '<div class="empty-note">You don\'t hold anything in this market yet — once you do, news about your holdings collects here.</div>'
+            : stripShowing
+              ? '<div class="empty-note">No stories to list right now — the scores above summarize the last few days of coverage.</div>'
+              : `<div class="empty-note">Nothing in this week's news mentions what you hold${src ? " (from this source)" : ""} — quiet weeks are normal.</div>`;
 }
 
 /* ---------------------------------------------------------- tabs & boot */
@@ -1978,6 +2169,14 @@ document.querySelectorAll("#chart-range button").forEach(b => b.onclick = () => 
   drawHistory();
 });
 document.getElementById("news-source").onchange = loadNews;
+document.querySelectorAll("#news-scope button").forEach(b => b.onclick = () => {
+  state.newsScope = b.dataset.nscope;
+  loadNews();
+});
+document.getElementById("dash-hnews").onclick = () => {
+  state.newsScope = "holdings";
+  switchTab("news");
+};
 document.getElementById("changelog-btn").onclick = showChangelog;
 
 const curSel = document.getElementById("cur-select");
@@ -2372,7 +2571,7 @@ function autoRefresh() {
 }
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
-    const ov = document.querySelector("#accept-overlay, #targets-overlay, #account-overlay, #members-overlay");
+    const ov = document.querySelector("#accept-overlay, #targets-overlay, #account-overlay, #members-overlay, #trail-overlay");
     if (ov) ov.remove();
   }
 });

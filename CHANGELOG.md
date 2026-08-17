@@ -341,3 +341,14 @@ Web-only items are marked **(web)**.
 ### Fixed
 - The sign-in and register pages claimed "values include your logged fees" — fees have always been logged separately. They now say what's true: prices are slightly delayed, and logging fees keeps totals close.
 - A BUY MORE card said "% of your portfolio" where the number was % of the wallet. The card now uses the right word for the number it shows.
+
+## [1.25.0] — 2026-08-18 — Holdings news gets its own view, trailing plans on the cards
+### Changed
+- **"Your holdings in the news" moved from the Dashboard to the News tab**, where it belongs: the News tab now has two views — **All news** and **Your holdings**. The holdings view keeps the per-asset score strip and shows only stories that mention what you own (💼-marked, with the headline's tone) plus sector-wide news that moves your kind of company ("BSP cuts rates" shows up for a bank holder, labelled "touches your banks holding"). The Dashboard's Latest News panel has a "your holdings →" shortcut straight into it; the "Coming up" panel (dividends and earnings) stays on the Dashboard.
+- Stories in the All-news view are now tagged with the tracked assets they mention (BTC ▲ / ETH ▼ chips), so scanning the feed for names you care about is faster.
+### Added
+- **⏳ Trailing plans right on the Advisor cards.** Every suggestion card has a ⏳ button: arm a **trailing-buy alert** (instead of buying now, get flagged when the price has rebounded your chosen % off its low — useful on WATCH cards) and, for assets you hold, a **trailing stop** (follows the price up, stays your chosen % below its peak). A green ⏳✓ shows when a plan is armed. Same plans as the Dashboard's 🎯 editor, reachable where the suggestion is.
+### Fixed
+- **Saving one target no longer erases the others.** Setting a trailing stop from the accept dialog (or the new ⏳ button) used to silently wipe an existing take-profit, stop-loss or note on that asset — the save replaced the whole plan. Saves now change only the fields they mention.
+- **The stop you typed and the stop the trail computed are now kept separate.** Before, they shared one number — so a trailing stop could quietly swallow your manual stop-loss as prices rose, restarting a trail after a drop could pin the stop above the live price, and clearing a trail could either delete your own stop or leave the trail's computed level behind as a stop you never set. Now your typed stop always survives arming, re-arming and clearing a trail; the level that counts is simply whichever sits higher, and the ⏳ tooltip says which one that is.
+- Re-saving a trailing plan without changing the percentage now keeps its progress (the watched peak or low) instead of restarting the watch from today's price; changing the percentage restarts it, and the editor says so.

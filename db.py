@@ -210,6 +210,12 @@ def init():
     conn().execute("ALTER TABLE targets ADD COLUMN IF NOT EXISTS peak_price DOUBLE PRECISION")
     conn().execute("ALTER TABLE targets ADD COLUMN IF NOT EXISTS trail_buy_pct DOUBLE PRECISION")
     conn().execute("ALTER TABLE targets ADD COLUMN IF NOT EXISTS trough_price DOUBLE PRECISION")
+    # the stop the user actually typed; sl_price is derived from it + the
+    # trailing floor. Non-trailing rows predate the split: their stored stop
+    # is manual by definition (idempotent - only fills NULLs)
+    conn().execute("ALTER TABLE targets ADD COLUMN IF NOT EXISTS manual_sl_price DOUBLE PRECISION")
+    conn().execute("UPDATE targets SET manual_sl_price=sl_price"
+                   " WHERE manual_sl_price IS NULL AND trail_pct IS NULL AND sl_price IS NOT NULL")
     conn().execute("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS source TEXT")
     conn().execute("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS fee DOUBLE PRECISION DEFAULT 0")
     for col in ("eps_growth", "rev_growth", "net_margin", "debt_equity", "pb", "roe"):

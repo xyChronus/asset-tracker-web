@@ -1089,18 +1089,36 @@ def news_scores_tick(market):
         return
     assets = [{"asset_id": a, "name": (pm.get(a) or {}).get("name") or a,
                "symbol": (pm.get(a) or {}).get("symbol") or a} for a in ids]
-    per, _sent = adv._match_news(assets, _advisor_news(market), now_ms())
+    # one sweep over a full WEEK of articles (uncapped) so the News-tab
+    # "Your holdings" filter sees every mention; the SCORE is then computed
+    # from the 72h subset with the advisor's exact recency weighting, so the
+    # number shown always matches what the advisor itself would read
+    now = now_ms()
+    per, _sent = adv._match_news(assets, _advisor_news(market), now,
+                                 max_articles=400, max_age_h=168.0)
     out = {}
+    by_link = {}  # article link -> tracked assets it mentions (News-tab filter)
     for aid, b in per.items():
         if not b["articles"]:
             continue
-        score = max(-3.0, min(3.0, b["raw"] / 3.0))
-        if len(b["articles"]) == 1:
+        for a in b["articles"]:
+            if a.get("link"):
+                by_link.setdefault(a["link"], []).append(aid)
+        recent = [a for a in b["articles"]
+                  if (now - (a["published"] or now)) <= 72 * 3600000]
+        if not recent:
+            continue
+        raw = sum(a["sentiment"] *
+                  math.exp(-max(0.0, (now - a["published"]) / 3600000.0) / 24.0)
+                  for a in recent)
+        score = max(-3.0, min(3.0, raw / 3.0))
+        if len(recent) == 1:
             score *= 0.5  # one headline shouldn't read as a chorus
-        top = max(b["articles"], key=lambda x: abs(x["sentiment"]))
-        out[aid] = {"score": round(score, 1), "n": len(b["articles"]),
+        top = max(recent, key=lambda x: abs(x["sentiment"]))
+        out[aid] = {"score": round(score, 1), "n": len(recent),
                     "top": top["title"], "link": top["link"]}
-    db.kv_set(f"{market}:newsscores", {"updated": now_ms(), "data": out})
+    db.kv_set(f"{market}:newsscores",
+              {"updated": now, "data": out, "by_link": by_link})
 
 
 BARS_PER_DAY = {"crypto": 24.0, "pse": 1.5, "global": 7.0}  # stored closes per day
@@ -1743,6 +1761,9 @@ def api_portfolio(market):
             h["div_ps"] = f.get("div_ps")
             h["earnings_date"] = cal.get(
                 h["asset_id"] + (".PM" if market == "pse" else ""))
+            # canonical sector key so the News tab's "Your holdings" view can
+            # match sector-wide stories ("BSP cuts rates") to what you own
+            h["sector_key"] = adv._sector_key(f.get("sector"))
     return jsonify(p)
 
 
@@ -1826,6 +1847,7 @@ def api_add_transaction(market):
                 pm2, _ = price_map(market)
                 pnow = (pm2.get(asset_id) or {}).get("price")
                 c.execute("UPDATE targets SET tp_price=NULL, sl_price=NULL,"
+                          " manual_sl_price=NULL,"
                           " trail_pct=NULL, peak_price=NULL, trough_price=%s"
                           " WHERE user_id=%s AND market=%s AND asset_id=%s",
                           (pnow, uid(), market, asset_id))
@@ -2020,46 +2042,93 @@ def api_targets(market):
         return v
 
     try:
-        tp, sl = _num("tp_price"), _num("sl_price")
+        tp, sl_posted = _num("tp_price"), _num("sl_price")
         trail, trail_buy = _pct("trail_pct"), _pct("trail_buy_pct")
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
+    # PATCH semantics: only fields PRESENT in the request change; absent ones
+    # keep their stored value. The full target editor always sends every field
+    # (empty string = clear), so it behaves exactly as before - but one-field
+    # shortcuts (accept dialog, advisor trail button) no longer wipe the rest
+    # of an existing plan.
+    cur = db.conn().execute(
+        "SELECT * FROM targets WHERE user_id=%s AND market=%s AND asset_id=%s",
+        (uid(), market, aid)).fetchone()
+    cur = dict(cur) if cur else {}
+    if "tp_price" not in d:
+        tp = cur.get("tp_price")
+    # the stop the USER typed lives in manual_sl_price; the stored sl_price is
+    # always re-DERIVED below (higher of manual stop and trailing floor), so
+    # arming, re-arming or clearing a trail can never absorb a manual stop
+    # into itself or leave its own floor behind as a stop nobody typed
+    manual_sl = cur.get("manual_sl_price") if "sl_price" not in d else sl_posted
+    if "trail_pct" not in d:
+        trail = cur.get("trail_pct")
+    if "trail_buy_pct" not in d:
+        trail_buy = cur.get("trail_buy_pct")
+    note = cur.get("note") if "note" not in d else \
+        ((d.get("note") or "").strip()[:300] or None)
     price = (price_map(market)[0].get(aid) or {}).get("price")
-    # a trailing stop starts measuring from NOW: seed the peak at the current
-    # price and materialize the initial stop so flags work immediately
+    # trailing state: an UNCHANGED trail % keeps its ratcheted peak/trough, so
+    # re-saving a dialog never restarts a watch that was already measuring; a
+    # NEW or CHANGED % restarts from the current price
     peak = trough = None
     if trail is not None:
-        if not price:
-            return jsonify({"error": "no live price right now - a trailing stop "
-                                     "needs one to start from"}), 400
-        peak = price
-        floor = price * (1 - trail / 100.0)
-        sl = max(sl, floor) if sl is not None else floor
+        if cur.get("trail_pct") == trail and cur.get("peak_price"):
+            peak = cur["peak_price"]
+        else:
+            if not price:
+                return jsonify({"error": "no live price right now - a trailing stop "
+                                         "needs one to start from"}), 400
+            peak = price
     if trail_buy is not None:
-        if not price:
-            return jsonify({"error": "no live price right now - a trailing buy "
-                                     "alert needs one to start from"}), 400
-        trough = price
-    if tp is not None and sl is not None and sl >= tp:
+        if cur.get("trail_buy_pct") == trail_buy and cur.get("trough_price"):
+            trough = cur["trough_price"]
+        else:
+            if not price:
+                return jsonify({"error": "no live price right now - a trailing buy "
+                                         "alert needs one to start from"}), 400
+            trough = price
+    # materialize the flag-facing stop (advisor and dashboard read sl_price
+    # unchanged): the higher of the manual stop and the trailing floor
+    floor = peak * (1 - trail / 100.0) if (trail is not None and peak) else None
+    sl_parts = [v for v in (manual_sl, floor) if v is not None]
+    sl = max(sl_parts) if sl_parts else None
+    # typo guard on values the user actually typed; a trailing floor that has
+    # climbed past an old take-profit is a legitimate state, not a typo
+    if tp is not None and manual_sl is not None and manual_sl >= tp:
         return jsonify({"error": "the stop-loss must be below the take-profit"}), 400
-    note = (d.get("note") or "").strip()[:300] or None
     if tp is None and sl is None and trail is None and trail_buy is None and not note:
         db.conn().execute("DELETE FROM targets WHERE user_id=%s AND market=%s AND asset_id=%s",
                           (uid(), market, aid))
     else:
         db.conn().execute(
             "INSERT INTO targets (user_id, market, asset_id, tp_price, sl_price,"
-            " note, updated, trail_pct, peak_price, trail_buy_pct, trough_price)"
-            " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"
+            " manual_sl_price, note, updated, trail_pct, peak_price,"
+            " trail_buy_pct, trough_price)"
+            " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"
             " ON CONFLICT (user_id, market, asset_id) DO UPDATE SET"
             " tp_price=EXCLUDED.tp_price, sl_price=EXCLUDED.sl_price,"
+            " manual_sl_price=EXCLUDED.manual_sl_price,"
             " note=EXCLUDED.note, updated=EXCLUDED.updated,"
             " trail_pct=EXCLUDED.trail_pct, peak_price=EXCLUDED.peak_price,"
             " trail_buy_pct=EXCLUDED.trail_buy_pct, trough_price=EXCLUDED.trough_price",
-            (uid(), market, aid, tp, sl, note, db.now_iso(),
+            (uid(), market, aid, tp, sl, manual_sl, note, db.now_iso(),
              trail, peak, trail_buy, trough))
     _invalidate_advisor(market, uid())
     return jsonify({"ok": True})
+
+
+@app.get("/api/<market>/targets")
+def api_targets_list(market):
+    """The user's saved plans for this market - lets the Advisor tab show
+    which cards already have a trailing plan armed."""
+    _check(market)
+    rows = db.conn().execute(
+        "SELECT asset_id, tp_price, sl_price, manual_sl_price, note, trail_pct,"
+        " peak_price, trail_buy_pct, trough_price FROM targets"
+        " WHERE user_id=%s AND market=%s", (uid(), market)).fetchall()
+    return jsonify({"targets": [dict(r) for r in rows]})
 
 
 @app.get("/api/<market>/watchlist")
@@ -2718,9 +2787,22 @@ def api_news(market):
             (market, limit)).fetchall()
     sources = [r["source"] for r in db.conn().execute(
         "SELECT DISTINCT source FROM news WHERE market=%s ORDER BY source", (market,)).fetchall()]
+    rows = [dict(r) for r in rows]
+    # tag each story with the tracked assets it mentions - the same per-cycle
+    # match behind the watchlist News column, so the tab can filter to
+    # "your holdings" without re-scanning anything per request
+    by_link = db.kv_get(f"{market}:newsscores", {}).get("by_link") or {}
+    if by_link:
+        pm, _ = price_map(market)
+        for r in rows:
+            aids = by_link.get(r.get("link"))
+            if aids:
+                r["assets"] = [{"aid": a,
+                                "symbol": ((pm.get(a) or {}).get("symbol") or a).upper()}
+                               for a in aids[:8]]
+                r["tone"] = adv.article_sentiment(r.get("title"), r.get("summary"))
     # tag each story with the industries it moves (and which way) so the News
     # tab can show "banks ▲" style chips - same lexicon the advisor uses
-    rows = [dict(r) for r in rows]
     if market != "crypto":
         for r in rows:
             text = ((r.get("title") or "") + " " + (r.get("summary") or "")).lower()

@@ -230,6 +230,23 @@ tbody tr:hover { background: var(--panel-2); }
 .mover-chip.mover-sl { border-left-color: var(--red); }
 .mover-chip.mover-rebound { border-left-color: var(--accent); }
 .sec-chip { font-size: 10.5px; }
+.mine-chip { border-color: var(--green); }
+
+/* News tab scope switch (All news | Your holdings) */
+.news-controls { display: inline-flex; gap: 10px; align-items: center; }
+.scope-pills { display: inline-flex; gap: 4px; }
+.scope-pills button {
+  background: var(--panel-2); color: var(--muted); border: 1px solid var(--border);
+  border-radius: 20px; padding: 4px 11px; font: inherit; font-size: 12px; cursor: pointer;
+}
+.scope-pills button.active {
+  color: var(--text); border-color: var(--accent); background: var(--panel);
+}
+.hnews-strip {
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px;
+  padding: 8px 12px; margin-bottom: 12px;
+}
+.trail-btn.armed { border-color: var(--green); color: var(--green); }
 
 /* ---- TP/SL plan (paper-trading discipline) ---- */
 .tgt-btn.plain { background: none; border: none; padding: 0; cursor: pointer; display: inline-flex; gap: 4px; }

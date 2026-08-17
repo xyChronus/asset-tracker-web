@@ -127,7 +127,7 @@ def _asset_patterns(assets):
     return out
 
 
-def _match_news(assets, news_items, now_ms):
+def _match_news(assets, news_items, now_ms, max_articles=40, max_age_h=72.0):
     pats = _asset_patterns(assets)
     per_asset = {a["asset_id"]: {"raw": 0.0, "articles": []} for a in assets}
     total_sent = 0.0
@@ -135,7 +135,7 @@ def _match_news(assets, news_items, now_ms):
     for it in news_items:
         published = it.get("published") or now_ms
         age_h = max(0.0, (now_ms - published) / 3600000.0)
-        if age_h > 72:
+        if age_h > max_age_h:
             continue
         sent = article_sentiment(it.get("title"), it.get("summary"))
         w = math.exp(-age_h / 24.0)
@@ -152,7 +152,7 @@ def _match_news(assets, news_items, now_ms):
             if hit:
                 bucket = per_asset[aid]
                 bucket["raw"] += sent * w
-                if len(bucket["articles"]) < 40:
+                if len(bucket["articles"]) < max_articles:
                     bucket["articles"].append({
                         "title": it.get("title"), "link": it.get("link"),
                         "source": it.get("source"), "published": published,
