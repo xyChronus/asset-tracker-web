@@ -29,7 +29,7 @@ const charts = {};
 const state = {
   market: localStorage.getItem("mkt") || "crypto",
   valueMode: localStorage.getItem("valmode") || "pct",  // Day/7d/30d as % or $
-  tab: "dashboard",
+  tab: localStorage.getItem("tab") || "dashboard",
   currency: localStorage.getItem("curmode") || "native",
   style: "swing",
   editingTx: null,
@@ -220,9 +220,13 @@ function scorePill(v, dp) {
 }
 
 let toastTimer;
-function toast(msg) {
+function toast(msg, kind) {
+  // default is a calm confirmation; only genuine failures get alarm-red.
+  // (every "Saved ✓" used to render in error styling - non-coders read
+  // red as "something broke")
   const t = document.getElementById("toast");
   t.textContent = msg;
+  t.className = kind === "error" ? "toast-error" : "toast-ok";
   t.style.display = "block";
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => (t.style.display = "none"), 5000);
@@ -381,7 +385,9 @@ async function loadHeader() {
     const dot = document.getElementById("status-dot");
     const txt = document.getElementById("status-text");
     const age = st.quotes_updated ? Date.now() - st.quotes_updated : null;
-    const staleMs = state.market === "crypto" ? 3 * 60000 : 40 * 60000;
+    // ~2x each market's collection interval: amber must mean genuinely
+    // stale, or everyone learns to ignore the one warning that matters
+    const staleMs = state.market === "crypto" ? 15 * 60000 : 45 * 60000;
     if (age != null && age < staleMs) {
       dot.className = "status-dot ok";
       txt.textContent = "live · " + timeAgo(st.quotes_updated);
@@ -667,7 +673,7 @@ async function loadDashboard() {
         <td>${pctSpan(h.unrealized_pct)}</td>
         <td>${sigBadge(h.signal)}${h.signal && h.signal.action !== "WAIT" ? " " + scorePill(h.signal.score) : ""}</td>
         <td>${planCell(h)}</td>
-        <td>${h.qty && h.price ? `<button class="accept-btn sellall-btn" data-accept="${esc(h.asset_id)}"
+        <td>${h.qty && h.price ? `<button class="accept-btn sellall-btn" data-src="plan" data-accept="${esc(h.asset_id)}"
           data-action="SELL" data-qty="${h.qty}" data-price="${h.price}" data-name="${esc(h.name)}"
           title="Log selling this entire position at the current live price — asks for confirmation first">Sell all</button>` : ""}</td>
       </tr>`).join("") + "</tbody>";
@@ -684,6 +690,41 @@ async function loadDashboard() {
       switchTab("charts");
     });
   }
+
+  // holdings-in-the-news + coming-up panels (only when there's something)
+  const hn = document.getElementById("holdings-news");
+  const cu = document.getElementById("coming-up");
+  const newsy = p.holdings.filter(h => h.news).sort((x, y) =>
+    Math.abs(y.news.score) - Math.abs(x.news.score)).slice(0, 6);
+  hn.innerHTML = newsy.length ? newsy.map(h => {
+    const n = h.news;
+    const cls = n.score > 0 ? "pos" : n.score < 0 ? "neg" : "muted";
+    return `<div class="rec-art"><span class="${cls}">${n.score > 0 ? "▲" : n.score < 0 ? "▼" : "•"}
+      ${n.score > 0 ? "+" : ""}${n.score}</span> <b>${esc(h.symbol || h.name)}</b>
+      ${linkHtml(n.link, n.top)} <span class="muted">· ${n.n} article${n.n > 1 ? "s" : ""}</span></div>`;
+  }).join("") : "";
+  const upcoming = [];
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  for (const h of p.holdings) {
+    if (h.div_ex_date) {
+      const d = new Date(h.div_ex_date);
+      if (!isNaN(d) && d >= today) {
+        const est = h.div_ps && h.qty ? ` — roughly ${fmtMoney(h.div_ps * h.qty)} for your ${fmtQty(h.qty)} shares` : "";
+        upcoming.push({ d, html: `<div class="rec-art">💰 <b>${esc(h.symbol || h.name)}</b> dividend ex-date <b>${esc(h.div_ex_date)}</b>${est} <span class="muted">(own it before this date to receive it)</span></div>` });
+      }
+    }
+    if (h.earnings_date) {
+      const d = new Date(h.earnings_date);
+      if (!isNaN(d) && d >= today) {
+        upcoming.push({ d, html: `<div class="rec-art">📊 <b>${esc(h.symbol || h.name)}</b> reports earnings <b>${esc(h.earnings_date)}</b> <span class="muted">(expect a bigger-than-usual move around it)</span></div>` });
+      }
+    }
+  }
+  upcoming.sort((x, y) => x.d - y.d);
+  cu.innerHTML = upcoming.length ? upcoming.map(u => u.html).join("")
+    : '<div class="empty-note">Nothing scheduled for what you hold.</div>';
+  document.getElementById("holdings-extra").style.display =
+    (newsy.length || upcoming.length) ? "" : "none";
 
   loadMarketPanels("dash");
   loadDashNews();
@@ -714,7 +755,7 @@ async function loadTodayPlan() {
         <span class="badge ${isTp ? "take-profit" : "strong-sell"}">${isTp ? "🎯 TARGET HIT" : "🛑 STOP HIT"}</span>
         <span><b>${esc(r.name)}</b> <span class="muted">· ${esc(fl.text)}</span></span>
         <span class="plan-btns">
-          ${qty ? `<button class="accept-btn" data-accept="${esc(r.asset_id)}"
+          ${qty ? `<button class="accept-btn" data-src="plan" data-accept="${esc(r.asset_id)}"
             data-action="SELL" data-qty="${qty}" data-price="${r.price ?? ""}" data-name="${esc(r.name)}"
             title="Log selling the whole position at the current live price — your plan, your call">Log sell</button>` : ""}
           <button class="pdone-btn" data-plan-done="${esc(r.asset_id)}"
@@ -751,7 +792,7 @@ async function loadTodayPlan() {
     <span><b>${esc(r.name)}</b>${r.usd ? " — about " + fmtMoney(r.usd) : ""}
       <span class="muted">· ${esc((r.reasons && r.reasons[0]) || "")}</span></span>
     <span class="plan-btns">
-      ${r.usd ? `<button class="accept-btn" data-accept="${esc(r.asset_id)}" data-action="${esc(r.action)}"
+      ${r.usd ? `<button class="accept-btn" data-src="advisor" data-accept="${esc(r.asset_id)}" data-action="${esc(r.action)}"
         data-usd="${r.usd}" data-name="${esc(r.name)}" title="Log this trade at the current live price">Accept</button>` : ""}
       <button class="done-btn" data-done="${esc(r.asset_id)}" data-action="${esc(r.action)}"
         title="Hide this suggestion for today without logging anything">✓</button>
@@ -905,7 +946,7 @@ function recCard(r) {
         🛑 ${fmtMoney(sp.sl)} <span class="neg">(−${sp.sl_pct}%)</span>${sp.rr ? " · r:r 1:" + sp.rr : ""} — a starting point, not a rule</div>`
     : "";
   const holdLine = h
-    ? `<div class="rec-holding muted">You hold ${fmtMoney(h.value)} (${h.alloc_pct}% of portfolio${h.unrealized_pct != null ? ", " + (h.unrealized_pct >= 0 ? "up " : "down ") + Math.abs(h.unrealized_pct).toFixed(0) + "%" : ""})</div>`
+    ? `<div class="rec-holding muted">You hold ${fmtMoney(h.value)} (${h.alloc_pct}% of your ${r.wallet_word === "wallet" ? "wallet" : "portfolio"}${h.unrealized_pct != null ? ", " + (h.unrealized_pct >= 0 ? "up " : "down ") + Math.abs(h.unrealized_pct).toFixed(0) + "%" : ""})</div>`
     : "";
   const fc = r.forecast;
   // % comes from the trend fit; the money figure is anchored at the card's own
@@ -934,13 +975,15 @@ function recCard(r) {
   const actionable = !["HOLD", "WATCH"].includes(r.action);
   const acceptBtn = actionable && r.usd
     ? `<button class="accept-btn" data-accept="${esc(r.asset_id)}" data-action="${esc(r.action)}"
-         data-usd="${r.usd}" data-name="${esc(r.name)}"
+         data-src="advisor" data-usd="${r.usd}" data-name="${esc(r.name)}"
          title="Log this trade in your portfolio at the current live price">Accept</button>`
     : "";
   const doneBtn = actionable
     ? `<button class="done-btn" data-done="${esc(r.asset_id)}" data-action="${esc(r.action)}"
          title="Hide this suggestion for today without logging anything">✓ Done</button>`
     : "";
+  const shareBtn = `<button class="mini-btn share-btn" data-share="${esc(r.asset_id)}"
+       title="Copy this suggestion as plain text for the group chat">⧉</button>`;
   const flagRow = (r.flags || []).length
     ? `<div class="flag-row">${r.flags.map(fl =>
         `<span class="flag-chip flag-${esc(fl.kind)}">${FLAG_ICONS[fl.kind] || "•"} ${esc(fl.text)}</span>`).join("")}</div>`
@@ -949,7 +992,7 @@ function recCard(r) {
     <div class="sig-head">
       <div class="sig-coin">${r.image ? `<img src="${esc(r.image)}">` : ""}${esc(r.name)}
         <span class="muted">${fmtMoney(r.price)}</span></div>
-      <div class="head-right">${sigBadge(r)}${scorePill(r.conviction, 1)}${acceptBtn}${doneBtn}</div>
+      <div class="head-right">${sigBadge(r)}${scorePill(r.conviction, 1)}${acceptBtn}${doneBtn}${shareBtn}</div>
     </div>
     ${flagRow}${amount}${planLine}${fcLine}${holdLine}
     <div class="conv-bar" title="Conviction: ${conv}">
@@ -1035,6 +1078,20 @@ async function loadAdvisor() {
     setPredAsset(el.dataset.fc, el.dataset.fcs, el.dataset.fcn);
     switchTab("predict");
   });
+  // "Copy for Discord": suggestion -> paste-ready plain text
+  document.querySelectorAll("#tab-advisor [data-share]").forEach(btn => btn.onclick = () => {
+    const r = a.recommendations.find(x => x.asset_id === btn.dataset.share);
+    if (!r) return;
+    const lines = [
+      `📊 ${r.action} ${r.name} (${r.symbol}) @ ${fmtMoney(r.price)}`,
+      r.usd ? `Suggested: ${r.action.includes("BUY") ? "buy" : "sell"} ~${fmtMoney(r.usd)}` : null,
+      ...(r.reasons || []).slice(0, 2).map(x => `• ${x}`),
+      `(Asset Tracker advisor, ${new Date().toLocaleDateString()} — guidance, not instructions)`,
+    ].filter(Boolean);
+    navigator.clipboard.writeText(lines.join("\n"))
+      .then(() => toast("Copied — paste it in the group chat."))
+      .catch(() => toast("Couldn't reach the clipboard — copy manually.", "error"));
+  });
 }
 
 function bindDoneButtons(containerId, reload) {
@@ -1047,7 +1104,7 @@ function bindDoneButtons(containerId, reload) {
       });
       toast("Marked done — it'll stay hidden today unless the situation changes.");
       reload();
-    } catch (e) { toast(e.message); b.disabled = false; }
+    } catch (e) { toast(e.message, "error"); b.disabled = false; }
   });
   document.querySelectorAll(`#${containerId} .accept-btn`).forEach(b => b.onclick = async () => {
     const side = ["BUY", "BUY MORE"].includes(b.dataset.action) ? "buy" : "sell";
@@ -1059,7 +1116,7 @@ function bindDoneButtons(containerId, reload) {
     // advisor snapshot's price (minutes old) rather than dead-ending
     const price = (a && a.price != null) ? a.price : (parseFloat(b.dataset.price) || null);
     if (!price || (!usd && !qty)) {
-      toast("No live price right now — log it manually in the Trades tab.");
+      toast("No live price right now — log it manually in the Trades tab.", "error");
       return;
     }
     // editable confirm: the suggestion is a starting point - adjust the
@@ -1067,6 +1124,8 @@ function bindDoneButtons(containerId, reload) {
     showAcceptDialog({
       asset_id: b.dataset.accept, name: b.dataset.name, side, price,
       usd: usd || (qty ? qty * price : 0), qty,
+      source: b.dataset.src === "advisor" ? "advisor:" + state.style
+            : (b.dataset.src || "manual"),
     }, () => { reload(); loadHeader(); });
   });
 }
@@ -1089,6 +1148,11 @@ function showAcceptDialog(t, onLogged) {
     <div class="tgt-calc muted small-note" id="acc-calc"></div>
     <label class="acct-field">Fee, optional (${esc(CUR[state.market])})
       <input type="number" step="any" min="0" id="acc-fee" placeholder="broker/exchange fee"></label>
+    ${t.side === "buy" ? `<label class="acct-field">Trailing stop %, optional — a stop-loss that
+      follows the price up, staying this far below its peak. Set it now and the plan is
+      armed the moment the buy is logged.
+      <input type="number" step="any" min="0.5" max="50" id="acc-trail" placeholder="e.g. 8"></label>` : ""}
+    <div class="muted small-note" id="acc-cash"></div>
     <div class="input-row">
       <button class="primary-btn small" id="acc-log">Log it</button>
     </div>
@@ -1097,11 +1161,30 @@ function showAcceptDialog(t, onLogged) {
   document.body.appendChild(overlay);
   document.getElementById("acc-close").onclick = () => overlay.remove();
   overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+  let cashNow = null;
+  api(M() + "/portfolio").then(p => {
+    cashNow = (p.summary || {}).cash;
+    calc();
+  }).catch(() => {});
   const calc = () => {
     const v = parseFloat(document.getElementById("acc-amt").value);
     document.getElementById("acc-calc").textContent =
       v > 0 ? `≈ ${fmtQty(v / t.price)} at ${fmtMoney(t.price)}` : "";
+    const cashEl = document.getElementById("acc-cash");
+    if (cashNow == null || !(v > 0)) { cashEl.textContent = ""; return; }
+    const fee = parseFloat(document.getElementById("acc-fee").value) || 0;
+    const after = t.side === "buy" ? cashNow - v - fee : cashNow + v - fee;
+    cashEl.innerHTML = `Cash after this ${t.side}: <b class="${after < 0 ? "neg" : "pos"}">${fmtMoney(after)}</b>`
+      + (after < 0 ? ' <span class="neg">— that\'s more than your tracked cash; the wallet would go negative.</span>' : "");
   };
+  const feeEl0 = document.getElementById("acc-fee");
+  if (feeEl0) feeEl0.oninput = calc;
+  overlay.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && e.target.tagName === "INPUT") {
+      e.preventDefault();
+      document.getElementById("acc-log").click();
+    }
+  });
   document.getElementById("acc-amt").oninput = calc;
   calc();
   document.getElementById("acc-log").onclick = async () => {
@@ -1115,14 +1198,26 @@ function showAcceptDialog(t, onLogged) {
     // a full-position sell keeps its exact quantity when the amount is
     // untouched, so no rounding dust is left behind
     const untouched = t.qty && Math.abs(v - t.qty * t.price) < 0.01;
+    const src = t.source || "manual";
     const body = untouched
-      ? { asset_id: t.asset_id, side: t.side, price: t.price, quantity: t.qty, fee }
-      : { asset_id: t.asset_id, side: t.side, price: t.price, value: v, fee };
+      ? { asset_id: t.asset_id, side: t.side, price: t.price, quantity: t.qty, fee, source: src }
+      : { asset_id: t.asset_id, side: t.side, price: t.price, value: v, fee, source: src };
     try {
       await api(M() + "/transactions", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
+      // optional trailing stop, armed the moment the buy exists
+      const trailEl = document.getElementById("acc-trail");
+      const trail = trailEl ? parseFloat(trailEl.value) : NaN;
+      if (t.side === "buy" && trail >= 0.5 && trail <= 50) {
+        try {
+          await api(M() + "/targets", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ asset_id: t.asset_id, trail_pct: trail }),
+          });
+        } catch (e2) { toast("Logged, but the trailing stop didn't save: " + e2.message, "error"); }
+      }
       overlay.remove();
       toast(`${t.side === "buy" ? "Buy" : "Sell"} logged ✓ — edit it in the Trades tab if your real fill differed.`);
       if (onLogged) onLogged();
@@ -1143,6 +1238,41 @@ async function loadPortfolio() {
        <div class="mini-stat"><span>In positions</span><b>${fmtMoney(s.value)}</b></div>
        <div class="mini-stat"><span>Budget</span><b>${fmtMoney(s.budget)}</b></div>`
     : '<div class="mini-stat"><span>Cash tracking</span><b class="muted">off — set a budget below</b></div>';
+
+  // Fix-records widgets: position picker + handlers
+  const sel = document.getElementById("adj-asset");
+  sel.innerHTML = '<option value="">— pick a position —</option>' +
+    p.holdings.map(h => `<option value="${esc(h.asset_id)}">${esc(h.symbol || h.name)}
+      (${fmtQty(h.qty)} recorded)</option>`).join("");
+  const fixMsg = document.getElementById("fix-msg");
+  document.getElementById("fix-cash-save").onclick = async () => {
+    fixMsg.textContent = "";
+    const v = parseFloat(document.getElementById("fix-cash").value);
+    if (!(v >= 0)) { fixMsg.innerHTML = '<span class="neg">Enter your actual cash (0 or more).</span>'; return; }
+    try {
+      await api(M() + "/set_cash", { method: "POST",
+        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ cash: v }) });
+      toast("Cash set ✓ — the budget was recalculated to match.");
+      document.getElementById("fix-cash").value = "";
+      loadPortfolio(); loadHeader();
+    } catch (e) { fixMsg.innerHTML = `<span class="neg">${esc(e.message)}</span>`; }
+  };
+  document.getElementById("adj-save").onclick = async () => {
+    fixMsg.textContent = "";
+    const aid = sel.value;
+    const qty = document.getElementById("adj-qty").value;
+    if (!aid) { fixMsg.innerHTML = '<span class="neg">Pick a position first.</span>'; return; }
+    if (qty === "") { fixMsg.innerHTML = '<span class="neg">Enter the true quantity you hold.</span>'; return; }
+    try {
+      await api(M() + "/adjust", { method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ asset_id: aid, quantity: qty,
+                               avg_buy: document.getElementById("adj-avg").value }) });
+      toast("Position corrected ✓ — cash was left untouched.");
+      document.getElementById("adj-qty").value = document.getElementById("adj-avg").value = "";
+      loadPortfolio(); loadHeader();
+    } catch (e) { fixMsg.innerHTML = `<span class="neg">${esc(e.message)}</span>`; }
+  };
 
   const tt = document.getElementById("tx-table");
   tt.innerHTML = `<thead><tr><th>Date</th><th>Type</th><th>Asset</th><th>Quantity</th>
@@ -1448,6 +1578,15 @@ async function loadWatchlist() {
     }, "Show only");
 }
 
+function newsCell(a) {
+  // quantified news read: advisor-scale score (-3..+3), top headline on hover
+  const n = a.news;
+  if (!n) return '<td class="muted">—</td>';
+  const cls = n.score > 0 ? "pos" : n.score < 0 ? "neg" : "muted";
+  const arrow = n.score > 0 ? "▲" : n.score < 0 ? "▼" : "•";
+  return `<td><span class="${cls}" title="${esc(n.top || "")} — ${n.n} recent article${n.n > 1 ? "s" : ""}, scored ${n.score > 0 ? "+" : ""}${n.score} on the advisor's −3..+3 news scale">${arrow} ${n.score > 0 ? "+" : ""}${n.score}</span></td>`;
+}
+
 function renderWatchlist(assets) {
   const isPse = state.market === "pse";
   const isCrypto = state.market === "crypto";
@@ -1472,13 +1611,14 @@ function renderWatchlist(assets) {
       th("Coin", "name", sortKey) + th("Price", "price", sortKey) +
       th("1h", "chg_1h", sortKey) + th("24h", "chg_24h", sortKey) +
       th("7d", "chg_7d", sortKey) + th("30d", "chg_30d", sortKey) +
-      th("Market Cap", "market_cap", sortKey) +
+      th("News", "news.score", sortKey) + th("Market Cap", "market_cap", sortKey) +
       `<th>7d Trend</th>` + th("Signal", "signal.score", sortKey) + `<th></th></tr></thead><tbody>` +
       rows.map((a, i) => `<tr>
         <td><div class="coin-cell">${a.image ? `<img src="${esc(a.image)}">` : ""}<span class="nm">${esc(a.name)}</span><span class="sym">${esc(a.symbol)}</span></div></td>
         <td><b>${fmtMoney(a.price)}</b></td>
         <td>${pctSpan(a.chg_1h, 1)}</td><td>${pctSpan(a.chg_24h, 1)}</td>
         <td>${pctSpan(a.chg_7d, 1)}</td><td>${pctSpan(a.chg_30d, 1)}</td>
+        ${newsCell(a)}
         <td class="muted">${fmtMoney(a.market_cap, true)}</td>
         <td><canvas class="spark" id="spark-${i}"></canvas></td>
         <td>${sigBadge(a.signal)}${a.signal && a.signal.action !== "WAIT" ? " " + scorePill(a.signal.score) : ""}</td>
@@ -1493,6 +1633,7 @@ function renderWatchlist(assets) {
       th("EPS", "eps", sortKey) + th("P/E", "pe", sortKey) +
       th("Div/Share", "div_ps", sortKey) + th("Div Yield", "div_yield", sortKey) +
       th("Ex-Date", "div_ex_date", sortKey) +
+      th("News", "news.score", sortKey) +
       `<th>30d Trend</th>` + th("Signal", "signal.score", sortKey) + rm + `</tr></thead><tbody>` +
       rows.map((a, i) => `<tr>
         <td><div class="coin-cell">${a.image ? `<img src="${esc(a.image)}">` : ""}<span class="nm">${esc(a.name)}</span><span class="sym">${esc(a.symbol)}</span></div></td>
@@ -1504,6 +1645,7 @@ function renderWatchlist(assets) {
         <td>${a.div_ps != null ? fmtMoney(a.div_ps) : (a.div_rate ? esc(a.div_rate).slice(0, 24) : "—")}</td>
         <td>${a.div_yield != null ? fmtNum(a.div_yield, 2) + "%" : "—"}</td>
         <td class="muted">${esc(a.div_ex_date || "—")}</td>
+        ${newsCell(a)}
         <td><canvas class="spark" id="spark-${i}"></canvas></td>
         <td>${sigBadge(a.signal)}${a.signal && a.signal.action !== "WAIT" ? " " + scorePill(a.signal.score) : ""}</td>
         ${isPse ? "" : `<td><button class="del-btn" data-rm="${esc(a.asset_id)}">✕</button></td>`}
@@ -1556,7 +1698,7 @@ function setupWatchTools() {
       toast("Added " + r.added.name + " — prices & history will appear within a minute or two.");
       inp.value = "";
       loadWatchlist();
-    } catch (err) { toast(err.message); }
+    } catch (err) { toast(err.message, "error"); }
   };
   document.getElementById("watch-filter").oninput = (e) => {
     state.filter = e.target.value;
@@ -1773,6 +1915,7 @@ const loaders = {
 
 function switchTab(name) {
   state.tab = name;
+  localStorage.setItem("tab", name);
   document.querySelectorAll("nav#tabs button").forEach(b =>
     b.classList.toggle("active", b.dataset.tab === name));
   document.querySelectorAll(".tab").forEach(s =>
@@ -1845,7 +1988,15 @@ curSel.onchange = () => {
   refresh();
 };
 
-const txCombo = setupCombo("tx-coin");
+const txCombo = setupCombo("tx-coin", async (aid) => {
+  // the app already knows the live price - fill it in, keep it editable
+  const priceEl = document.getElementById("tx-price");
+  if (priceEl && !priceEl.value) {
+    const assets = await ensureWatch();
+    const m = assets.find(x => x.asset_id === aid);
+    if (m && m.price) priceEl.value = m.price;
+  }
+});
 const predCombo = setupCombo("pred-coin", (v) => {
   state.predAsset = state.predAsset || {};
   state.predAsset[state.market] = v;
@@ -2195,7 +2346,7 @@ async function showMembers() {
       chip.textContent = "CODE OUT";
       cell.insertBefore(chip, b);
       cell.insertBefore(document.createTextNode(" "), b);
-    } catch (e) { toast(e.message); }
+    } catch (e) { toast(e.message, "error"); }
     b.disabled = false;
   });
 }
@@ -2205,7 +2356,8 @@ setupWatchTools();
 document.querySelectorAll("#mkt-switch button").forEach(b =>
   b.classList.toggle("active", b.dataset.market === state.market));
 loadUser();
-refresh();
+if (state.tab !== "dashboard") switchTab(state.tab);  // restore last tab
+else refresh();
 // Auto-refresh, kept cheap: a background tab polls nothing at all (it used to
 // pull ~400 KB every 2 minutes forever, which dominated our database's data
 // budget), and the heavy watchlist payload is only re-fetched on the tab that
@@ -2218,7 +2370,18 @@ function autoRefresh() {
   if (state.tab === "watchlist") state.watch[state.market] = null;
   refresh();
 }
-setInterval(() => { if (!document.hidden) autoRefresh(); }, REFRESH_MS);
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    const ov = document.querySelector("#accept-overlay, #targets-overlay, #account-overlay, #members-overlay");
+    if (ov) ov.remove();
+  }
+});
+setInterval(() => {
+  const el = document.activeElement;
+  const typing = el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA");
+  const dialogOpen = document.querySelector(".app-overlay, #accept-overlay, #targets-overlay");
+  if (!document.hidden && !typing && !dialogOpen) autoRefresh();
+}, REFRESH_MS);
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden && Date.now() - lastRefreshAt > REFRESH_MS) autoRefresh();
 });

@@ -210,6 +210,7 @@ def init():
     conn().execute("ALTER TABLE targets ADD COLUMN IF NOT EXISTS peak_price DOUBLE PRECISION")
     conn().execute("ALTER TABLE targets ADD COLUMN IF NOT EXISTS trail_buy_pct DOUBLE PRECISION")
     conn().execute("ALTER TABLE targets ADD COLUMN IF NOT EXISTS trough_price DOUBLE PRECISION")
+    conn().execute("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS source TEXT")
     conn().execute("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS fee DOUBLE PRECISION DEFAULT 0")
     for col in ("eps_growth", "rev_growth", "net_margin", "debt_equity", "pb", "roe"):
         conn().execute(f"ALTER TABLE fundamentals ADD COLUMN IF NOT EXISTS {col} DOUBLE PRECISION")
@@ -237,6 +238,7 @@ _KV_HOT = {
     "global:history_fetched", "fx:usdphp",
     "earnings:cal", "global:regime", "pse:regime",
     "predict:crypto", "predict:pse", "predict:global",
+    "crypto:newsscores", "pse:newsscores", "global:newsscores",
 }
 _KV_TTL = 900.0
 _kv_cache = {}          # key -> (expires_monotonic, value)

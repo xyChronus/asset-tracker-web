@@ -322,3 +322,22 @@ Web-only items are marked **(web)**.
 ## [1.23.0] — 2026-08-14 — Your tickers, one click away
 ### Added
 - **Your holdings as one-click chips on the Watchlist and Charts tabs** (matching the Predictions tab): tap a ticker you own to jump straight to it. On Charts it loads that asset's chart; on the Watchlist it filters the table to that name — tap again to clear.
+
+## [1.24.0] — 2026-08-17 — Fix your records, see your news
+### Added
+- **🔧 Fix records on the Trades tab** — when the site's numbers drift from your real exchange or broker, correct them directly: set your true cash, or pick a position and enter the real quantity (and optionally your true average buy price). Corrections are logged as cash-neutral "Adjust" entries — they change what you hold without touching your cash or inventing profit/loss, so your history stays honest. (Requested by the admin.)
+- **News scored per asset** — every watchlist now has a News column: ▲/▼ with a score from −3 (very bad week) to +3 (very good week), built from the same headline analysis the advisor uses. Hover for the top headline and article count.
+- **"Your holdings in the news"** on the dashboard — the assets you own with the strongest news this week, good or bad, with the headline behind each score.
+- **"Coming up"** on the dashboard — dividend ex-dates (with an estimate of what your shares would pay) and earnings dates for stocks you hold, soonest first.
+- **Trailing stop at buy time** — the accept dialog now offers an optional trailing-stop % on any buy, armed the moment the trade is logged. Trailing buys and stops for existing positions still live in the 🎯 target editor, as before.
+- **Cash check before logging** — the accept dialog shows "Cash after this buy/sell" live, and warns in red if the trade would push your tracked wallet negative.
+- **⧉ Copy for the group chat** — every advisor card has a copy button that turns the suggestion into plain text (action, price, sizing, top reasons, and a "guidance, not instructions" footer) ready to paste into Discord.
+- **Where a trade came from** — new trades are quietly tagged manual / advisor / plan, so a future "advisor track record" page can tell which calls were the advisor's.
+### Changed
+- **Success messages are now green.** Every confirmation toast was styled like an error — red, alarming, and wrong. Success is green-bordered; only real failures are red.
+- The tab you were on survives a reload, price fills itself in when you pick an asset in the trade form, Esc closes any dialog, Enter submits the accept dialog, and the auto-refresh no longer yanks the page while you're typing or mid-dialog.
+- The freshness dot now matches each market's real update pace (crypto ~5 min, stocks ~15 min), so it no longer cries "stale" over normal gaps.
+- Eight blunt error messages reworded into plain instructions ("Pick an asset first." instead of "asset_id is required").
+### Fixed
+- The sign-in and register pages claimed "values include your logged fees" — fees have always been logged separately. They now say what's true: prices are slightly delayed, and logging fees keeps totals close.
+- A BUY MORE card said "% of your portfolio" where the number was % of the wallet. The card now uses the right word for the number it shows.

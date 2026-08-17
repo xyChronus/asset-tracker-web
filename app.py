@@ -440,20 +440,20 @@ def api_settings():
     if "trading_style" in d:
         style = (d.get("trading_style") or "").strip().lower()
         if style not in adv.STYLE_PARAMS:
-            return jsonify({"error": "unknown trading style"}), 400
+            return jsonify({"error": "That trading style isn't one of the options."}), 400
         updates["trading_style"] = style
     if "aggressiveness" in d:
         agg = (d.get("aggressiveness") or "").strip().lower()
         if agg not in adv.AGGRESSIVENESS:
-            return jsonify({"error": "unknown aggressiveness level"}), 400
+            return jsonify({"error": "That aggressiveness level isn't one of the options."}), 400
         updates["aggressiveness"] = agg
     if "diversity" in d:
         div = (d.get("diversity") or "").strip().lower()
         if div not in adv.DIVERSITY:
-            return jsonify({"error": "unknown diversity level"}), 400
+            return jsonify({"error": "That spread level isn't one of the options."}), 400
         updates["diversity"] = div
     if not updates:
-        return jsonify({"error": "nothing to change"}), 400
+        return jsonify({"error": "Nothing to save - pick a setting first."}), 400
     sets = ", ".join(f"{k}=%s" for k in updates)   # keys are whitelisted above
     db.conn().execute(f"UPDATE users SET {sets} WHERE id=%s",
                       (*updates.values(), uid()))
@@ -1079,6 +1079,30 @@ def fetch_news(market):
         _news_cache.pop(market, None)
 
 
+def news_scores_tick(market):
+    """Quantified per-asset news read for the whole market, computed ONCE per
+    news cycle and shared by every user (zero per-request cost). Same scoring
+    the advisor uses: sentiment-weighted, recency-decayed, -3..+3."""
+    pm, _ = price_map(market)
+    ids = tracked_ids_all_users(market)
+    if not ids:
+        return
+    assets = [{"asset_id": a, "name": (pm.get(a) or {}).get("name") or a,
+               "symbol": (pm.get(a) or {}).get("symbol") or a} for a in ids]
+    per, _sent = adv._match_news(assets, _advisor_news(market), now_ms())
+    out = {}
+    for aid, b in per.items():
+        if not b["articles"]:
+            continue
+        score = max(-3.0, min(3.0, b["raw"] / 3.0))
+        if len(b["articles"]) == 1:
+            score *= 0.5  # one headline shouldn't read as a chorus
+        top = max(b["articles"], key=lambda x: abs(x["sentiment"]))
+        out[aid] = {"score": round(score, 1), "n": len(b["articles"]),
+                    "top": top["title"], "link": top["link"]}
+    db.kv_set(f"{market}:newsscores", {"updated": now_ms(), "data": out})
+
+
 BARS_PER_DAY = {"crypto": 24.0, "pse": 1.5, "global": 7.0}  # stored closes per day
 
 
@@ -1156,6 +1180,9 @@ def scheduler():
         [lambda: 6 * 3600, 0, fetch_fx],
         [lambda: 2 * 86400, 0, supabase_keepalive],
         [lambda: iv["crypto"]["news"], 0, lambda: fetch_news("crypto")],
+        [lambda: iv["crypto"]["news"], 0, lambda: news_scores_tick("crypto")],
+        [lambda: iv["pse"]["news"], 0, lambda: news_scores_tick("pse")],
+        [lambda: iv["global"]["news"], 0, lambda: news_scores_tick("global")],
         [lambda: iv["crypto"]["signals"], 0, lambda: recompute_signals("crypto")],
         [lambda: iv["pse"]["directory"], 0, pse_sync_directory_if_needed],
         [lambda: iv["pse"]["quotes"] if _pse_open() else 1800, 0, pse_fetch_quotes],
@@ -1230,8 +1257,11 @@ def portfolio_state(market, user):
     w = db.conn().execute("SELECT budget FROM wallets WHERE user_id=%s AND market=%s",
                           (user, market)).fetchone()
     budget = w["budget"] if w else None
-    # money currently tied up = trade values + every fee paid (fees are cash out)
-    net_flow = sum((t["value"] or 0) + (t["fee"] or 0) for t in txs)
+    # money currently tied up = trade values + every fee paid (fees are cash
+    # out). 'Adjust' rows are reconciliations, not trades - they change what
+    # you HOLD, never what you SPENT, so they stay out of the cash math.
+    net_flow = sum((t["value"] or 0) + (t["fee"] or 0) for t in txs
+                   if t["type"] != "Adjust")
     tot_fees = sum((t["fee"] or 0) for t in txs)
     pos = {}
     for t in txs:
@@ -1242,6 +1272,18 @@ def portfolio_state(market, user):
         q = t["quantity"]
         fee = t["fee"] or 0
         val = abs(t["value"] if t["value"] else q * t["price"])
+        if t["type"] == "Adjust":
+            if q >= 0:
+                p["qty"] += q
+                p["cost"] += val          # no fee, no cash, no realized P/L
+            else:
+                adj = min(-q, p["qty"])
+                avg = p["cost"] / p["qty"] if p["qty"] > 1e-12 else 0.0
+                p["qty"] -= adj
+                p["cost"] -= avg * adj
+                if p["qty"] <= 1e-9:
+                    p["qty"], p["cost"] = 0.0, 0.0
+            continue
         if q >= 0:
             p["qty"] += q
             p["cost"] += val + fee          # buy fees fold into the cost basis
@@ -1685,7 +1727,23 @@ def index():
 @app.get("/api/<market>/portfolio")
 def api_portfolio(market):
     _check(market)
-    return jsonify(portfolio_state(market, uid()))
+    p = portfolio_state(market, uid())
+    # per-holding news read (same shared per-cycle scores the watchlist shows)
+    ns = db.kv_get(f"{market}:newsscores", {}).get("data") or {}
+    for h in p["holdings"]:
+        h["news"] = ns.get(h["asset_id"])
+    # "coming up" data for holdings: dividend dates the app already tracks
+    # and the earnings calendar it already fetches - surfaced, not re-fetched
+    if market != "crypto":
+        fund = db.get_fundamentals(market)
+        cal = db.kv_get("earnings:cal", {}).get("data", {})
+        for h in p["holdings"]:
+            f = fund.get(h["asset_id"]) or {}
+            h["div_ex_date"] = f.get("div_ex_date")
+            h["div_ps"] = f.get("div_ps")
+            h["earnings_date"] = cal.get(
+                h["asset_id"] + (".PM" if market == "pse" else ""))
+    return jsonify(p)
 
 
 @app.get("/api/<market>/portfolio_history")
@@ -1731,11 +1789,14 @@ def api_add_transaction(market):
            (wrow["name"] if wrow and wrow["name"] else asset_id)
     signed_qty = qty if side == "buy" else -qty
     c = db.conn()
+    # where the trade came from ("advisor:swing", "plan", "manual") - lets the
+    # stats later answer whether following the advisor beats going solo
+    source = (str(d.get("source") or "manual"))[:40]
     c.execute(
-        "INSERT INTO transactions (user_id, market, ts, asset_id, quantity, price, value, type, name, fee)"
-        " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+        "INSERT INTO transactions (user_id, market, ts, asset_id, quantity, price, value, type, name, fee, source)"
+        " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
         (uid(), market, ts, asset_id, signed_qty, price, signed_qty * price,
-         "Buy" if side == "buy" else "Sell", name, fee))
+         "Buy" if side == "buy" else "Sell", name, fee, source))
     if not wrow and market != "pse":
         m = pm.get(asset_id, {})
         c.execute("INSERT INTO watchlist VALUES (%s,%s,%s,%s,%s,%s)"
@@ -1813,6 +1874,94 @@ def api_delete_transaction(market, tx_id):
     return jsonify({"ok": True})
 
 
+@app.post("/api/<market>/adjust")
+def api_adjust(market):
+    """Reconcile a position to reality: the user states the TRUE quantity
+    (and optionally the true average buy price) and the tracker meets them
+    there via 'Adjust' rows - holdings change, cash never moves. For when
+    the tracker has drifted from the real exchange/broker account."""
+    _check(market)
+    d = request.get_json(force=True)
+    aid = (d.get("asset_id") or "").strip()
+    aid = aid.lower() if market == "crypto" else aid.upper()
+    if not aid:
+        return jsonify({"error": "Pick an asset first."}), 400
+    try:
+        true_qty = float(d.get("quantity"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "Enter the actual quantity you hold (0 is fine)."}), 400
+    if not math.isfinite(true_qty) or true_qty < 0:
+        return jsonify({"error": "The quantity must be zero or more."}), 400
+    avg_raw = d.get("avg_buy")
+    avg = None
+    if avg_raw not in (None, ""):
+        try:
+            avg = float(avg_raw)
+        except (TypeError, ValueError):
+            return jsonify({"error": "The average buy price must be a plain number."}), 400
+        if not math.isfinite(avg) or avg <= 0:
+            return jsonify({"error": "The average buy price must be above zero."}), 400
+    port = portfolio_state(market, uid())
+    h = next((x for x in port["holdings"] if x["asset_id"] == aid), None)
+    cur_qty = h["qty"] if h else 0.0
+    cur_avg = h["avg_buy"] if h else None
+    pm, _ = price_map(market)
+    name = (pm.get(aid) or {}).get("name") or (h["name"] if h else aid)
+    ts = db.now_iso().replace("T", " ")[:16]
+    c = db.conn()
+
+    def adj_row(qty, price):
+        c.execute("INSERT INTO transactions (user_id, market, ts, asset_id,"
+                  " quantity, price, value, type, name, fee, source)"
+                  " VALUES (%s,%s,%s,%s,%s,%s,%s,'Adjust',%s,0,'adjust')",
+                  (uid(), market, ts, aid, qty, price, qty * price, name))
+
+    if avg is not None:
+        # rebase: clear the old position at its old basis, restate at the
+        # true qty x true avg (two rows keep every step auditable)
+        if cur_qty > 1e-12:
+            adj_row(-cur_qty, cur_avg or 0.0)
+        if true_qty > 1e-12:
+            adj_row(true_qty, avg)
+    else:
+        delta = true_qty - cur_qty
+        if abs(delta) < 1e-12:
+            return jsonify({"error": "That's already the recorded quantity - "
+                                     "nothing to adjust."}), 400
+        price = cur_avg or (pm.get(aid) or {}).get("price")
+        if not price:
+            return jsonify({"error": "No price available to value the adjustment - "
+                                     "enter the average buy price too."}), 400
+        adj_row(delta, price)
+    _invalidate_advisor(market, uid())
+    return jsonify({"ok": True})
+
+
+@app.post("/api/<market>/set_cash")
+def api_set_cash(market):
+    """Set the TRUE cash on hand; the budget is back-computed so available
+    cash lands exactly where the user says it is."""
+    _check(market)
+    d = request.get_json(force=True)
+    try:
+        cash = float(d.get("cash"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "Enter your actual cash as a plain number."}), 400
+    if not math.isfinite(cash) or cash < 0:
+        return jsonify({"error": "Cash can't be negative."}), 400
+    txs = db.conn().execute(
+        "SELECT value, fee, type FROM transactions WHERE market=%s AND user_id=%s",
+        (market, uid())).fetchall()
+    net_flow = sum((t["value"] or 0) + (t["fee"] or 0) for t in txs
+                   if t["type"] != "Adjust")
+    budget = cash + net_flow
+    db.conn().execute("INSERT INTO wallets VALUES (%s,%s,%s)"
+                      " ON CONFLICT (user_id, market) DO UPDATE SET budget=EXCLUDED.budget",
+                      (uid(), market, budget))
+    _invalidate_advisor(market, uid())
+    return jsonify({"ok": True, "budget": budget, "cash": cash})
+
+
 @app.post("/api/<market>/wallet")
 def api_wallet(market):
     _check(market)
@@ -1842,7 +1991,7 @@ def api_targets(market):
     d = request.get_json(force=True)
     aid = (d.get("asset_id") or "").strip()
     if not aid:
-        return jsonify({"error": "asset_id is required"}), 400
+        return jsonify({"error": "Pick an asset first."}), 400
 
     def _num(field):
         raw = d.get(field)
@@ -1919,6 +2068,7 @@ def api_watchlist(market):
     pm, updated = price_map(market)
     signals_data = db.kv_get(f"{market}:signals", {}).get("data", {})
     fund = db.get_fundamentals(market) if market != "crypto" else {}
+    newsscores = db.kv_get(f"{market}:newsscores", {}).get("data") or {}
     sparks = {}
     if market != "crypto":
         # one close per day from the daily store instead of every raw tick of
@@ -1960,6 +2110,7 @@ def api_watchlist(market):
             "sector": f.get("sector"),
             "sparkline": spark,
             "signal": signals_data.get(aid),
+            "news": newsscores.get(aid),
         })
     return jsonify({"updated": updated, "assets": out})
 
@@ -1971,13 +2122,13 @@ def api_watchlist_add(market):
         return jsonify({"error": "The PSE watchlist tracks all listed companies automatically."}), 400
     q = (request.get_json(force=True).get("query") or "").strip()
     if not q:
-        return jsonify({"error": "empty search"}), 400
+        return jsonify({"error": "Type something to search for."}), 400
     c = db.conn()
     if market == "crypto":
         try:
             res = coingecko.get("/search", {"query": q})
         except Exception as e:
-            return jsonify({"error": f"search failed: {e}"}), 502
+            return jsonify({"error": "The search service hiccuped - try again in a moment."}), 502
         coins = res.get("coins") or []
         if not coins:
             return jsonify({"error": f'no coin found for "{q}"'}), 404
@@ -2137,7 +2288,7 @@ def api_advisor_dismiss(market):
     asset_id = (d.get("asset_id") or "").strip()
     action = (d.get("action") or "").strip()
     if not asset_id or not action:
-        return jsonify({"error": "asset_id and action are required"}), 400
+        return jsonify({"error": "Pick a suggestion first."}), 400
     dismiss_suggestion(uid(), market, asset_id, action)
     return jsonify({"ok": True})
 

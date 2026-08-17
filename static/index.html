@@ -84,6 +84,19 @@
       <div><h4 class="neg-h">Projected Down</h4><div id="pred-down" class="gl-list"></div></div>
     </div>
   </div>
+  <div class="grid2" id="holdings-extra" style="display:none">
+    <div class="panel">
+      <div class="panel-head"><h3>📰 Your holdings in the news</h3></div>
+      <p class="muted small-note">Recent stories mentioning what you own, scored on the
+        advisor's −3..+3 news scale. Awareness, not instructions.</p>
+      <div id="holdings-news"></div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h3>📅 Coming up for your holdings</h3></div>
+      <p class="muted small-note">Dividend ex-dates and earnings reports the app already tracks.</p>
+      <div id="coming-up"></div>
+    </div>
+  </div>
   <div class="grid2">
     <div class="panel">
       <div class="panel-head"><h3>Market Situation</h3></div>
@@ -175,6 +188,29 @@
           automatically: available cash = budget − money currently in positions.
           Update it whenever you add or withdraw money. Leave empty to turn off.</div>
         <div class="form-msg" id="wallet-msg"></div>
+      </div>
+      <div class="panel-head"><h3>🔧 Fix records</h3></div>
+      <div class="wallet-box">
+        <div class="muted small-note">If the tracker has drifted from your real
+          exchange or broker, set the true numbers here — corrections change your
+          records without touching cash or profit/loss history.</div>
+        <label>Set actual cash on hand
+          <div class="input-row">
+            <input type="number" step="any" min="0" id="fix-cash" placeholder="what's really available">
+            <button type="button" id="fix-cash-save" class="mini-btn">Set</button>
+          </div>
+        </label>
+        <label>Correct a position
+          <div class="input-row">
+            <select id="adj-asset"></select>
+          </div>
+          <div class="input-row">
+            <input type="number" step="any" min="0" id="adj-qty" placeholder="true quantity (0 = none)">
+            <input type="number" step="any" min="0" id="adj-avg" placeholder="avg buy price (optional)">
+            <button type="button" id="adj-save" class="mini-btn">Adjust</button>
+          </div>
+        </label>
+        <div class="form-msg" id="fix-msg"></div>
       </div>
       <div class="panel-head"><h3>Add Transaction</h3></div>
       <form id="tx-form" class="tx-form">
