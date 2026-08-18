@@ -352,3 +352,13 @@ Web-only items are marked **(web)**.
 - **Saving one target no longer erases the others.** Setting a trailing stop from the accept dialog (or the new ⏳ button) used to silently wipe an existing take-profit, stop-loss or note on that asset — the save replaced the whole plan. Saves now change only the fields they mention.
 - **The stop you typed and the stop the trail computed are now kept separate.** Before, they shared one number — so a trailing stop could quietly swallow your manual stop-loss as prices rose, restarting a trail after a drop could pin the stop above the live price, and clearing a trail could either delete your own stop or leave the trail's computed level behind as a stop you never set. Now your typed stop always survives arming, re-arming and clearing a trail; the level that counts is simply whichever sits higher, and the ⏳ tooltip says which one that is.
 - Re-saving a trailing plan without changing the percentage now keeps its progress (the watched peak or low) instead of restarting the watch from today's price; changing the percentage restarts it, and the editor says so.
+
+## [1.26.0] — 2026-08-18 — Fits in your pocket
+### Changed
+- **The whole site now adapts to phones.** On screens under ~760px the header reflows into compact rows, the tab bar becomes the sticky element, summary cards pair up two to a row, dialogs use the full screen height, and every table scrolls sideways inside its own panel instead of stretching the page. No feature was removed — it's the same app, arranged for a thumb.
+- **Touch-friendly controls**: on any touchscreen, the small buttons (✎, ✓ Done, Accept, ⏳, filters, range pickers) grow to finger size, and inputs render at 16px so phones stop auto-zooming into every form field.
+### Fixed
+- The tab bar's sticky position now tracks the header's real height — before, whenever the header stats wrapped to a second line, the tab bar slid underneath it while scrolling.
+- Wide content (the holdings table, advisor card buttons) could push the page sideways on narrow windows; grids now let their columns shrink and card buttons wrap instead.
+### Added
+- Small comforts everywhere: smooth color transitions on buttons and tabs, a visible focus outline for keyboard navigation, slim dark scrollbars, and soft shadows on dialogs and toasts.

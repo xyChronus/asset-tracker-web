@@ -2561,6 +2561,13 @@ else refresh();
 // pull ~400 KB every 2 minutes forever, which dominated our database's data
 // budget), and the heavy watchlist payload is only re-fetched on the tab that
 // actually shows live prices. Coming back to the page refreshes immediately.
+// keep the tab bar's sticky offset in sync with the header's actual height
+// (the stats line wraps on narrower windows, so the height isn't a constant)
+const _syncHdrHeight = () => document.documentElement.style.setProperty(
+  "--hdr-h", document.querySelector("header").offsetHeight + "px");
+_syncHdrHeight();
+new ResizeObserver(_syncHdrHeight).observe(document.querySelector("header"));
+
 const REFRESH_MS = 300000;
 let lastRefreshAt = Date.now();
 
