@@ -646,7 +646,7 @@ async function loadDashboard() {
     const chg = (h, pct, win) => {
       if (!abs || pct == null || !h.value) return pctSpan(pct);
       const delta = h.value - h.value / (1 + pct / 100);
-      return `<span title="${esc(h.symbol || h.name)} moved ${pct >= 0 ? "+" : ""}${pct.toFixed(2)}% over the last ${win} — worth ${delta >= 0 ? "+" : "−"}${fmtMoney(Math.abs(delta), false, 2)} at your current position size. This is the market's move, not your personal profit — that's the P/L columns.">${moneySpan(delta)}</span>`;
+      return `<span title="${esc(h.symbol || h.name)} moved ${pct >= 0 ? "+" : ""}${pct.toFixed(2)}% over the last ${win} — worth ${delta >= 0 ? "+" : "−"}${fmtMoney(Math.abs(delta), false, 2)} at your current position size. This is the market's move, not your personal profit — that's the P/L column.">${moneySpan(delta)}</span>`;
     };
     if (abs) p.holdings.forEach(h => {   // sort by what's displayed, not by %
       for (const k of ["chg_24h", "chg_7d", "chg_30d"])
@@ -654,12 +654,27 @@ async function loadDashboard() {
           ? h.value - h.value / (1 + h[k] / 100) : null;
     });
     const ck = (k) => abs ? k + "_abs" : k;
+    // one Change column and one P/L column, each with a picker in its header
+    // (the merged-away numbers stay a hover away, so nothing is lost)
+    const CHG = { chg_24h: ["Day", "day"], chg_7d: ["7d", "7 days"], chg_30d: ["30d", "30 days"] };
+    const chgKey = CHG[localStorage.getItem("dash-chg")] ? localStorage.getItem("dash-chg") : "chg_24h";
+    const plPct = (localStorage.getItem("dash-pl") || "abs") === "pct";
+    const chgSel = `<select id="hold-chg-sel" class="th-select" title="Which window the Change column shows">` +
+      Object.entries(CHG).map(([k, v]) =>
+        `<option value="${k}"${k === chgKey ? " selected" : ""}>${v[0]}</option>`).join("") + `</select>`;
+    const plSel = `<select id="hold-pl-sel" class="th-select" title="Show your unrealized profit/loss as money or as a percentage">
+        <option value="abs"${plPct ? "" : " selected"}>${esc(CUR[state.market])}</option>
+        <option value="pct"${plPct ? " selected" : ""}>%</option></select>`;
+    const plCell = (h) => {
+      const both = `Unrealized: ${h.unrealized >= 0 ? "+" : "−"}${fmtMoney(Math.abs(h.unrealized || 0), false, 2)}`
+        + (h.unrealized_pct != null ? ` (${h.unrealized_pct >= 0 ? "+" : ""}${h.unrealized_pct.toFixed(2)}%)` : "");
+      return `<td title="${esc(both)}">${plPct ? pctSpan(h.unrealized_pct) : moneySpan(h.unrealized)}</td>`;
+    };
     ht.innerHTML = `<thead><tr>` +
       th("Asset", "name", "holdings") + th("Quantity", "qty", "holdings") +
       th("Avg Buy", "avg_buy", "holdings") + th("Price", "price", "holdings") +
-      th("Day", ck("chg_24h"), "holdings") + th("7d", ck("chg_7d"), "holdings") +
-      th("30d", ck("chg_30d"), "holdings") + th("Value", "value", "holdings") +
-      th("Unrealized P/L", "unrealized", "holdings") + th("P/L %", "unrealized_pct", "holdings") +
+      th(`Change ${chgSel}`, ck(chgKey), "holdings") + th("Value", "value", "holdings") +
+      th(`P/L ${plSel}`, plPct ? "unrealized_pct" : "unrealized", "holdings") +
       th("Signal", "signal.score", "holdings") + th("Plan", "plan_sort", "holdings") +
       `<th></th></tr></thead><tbody>` +
       applySort(p.holdings, "holdings").map(h => `<tr>
@@ -667,12 +682,9 @@ async function loadDashboard() {
         <td>${fmtQty(h.qty)}</td>
         <td>${fmtMoney(h.avg_buy)}</td>
         <td>${fmtMoney(h.price)}</td>
-        ${chartTd(h, chg(h, h.chg_24h, "day"))}
-        ${chartTd(h, chg(h, h.chg_7d, "7 days"))}
-        ${chartTd(h, chg(h, h.chg_30d, "30 days"))}
+        ${chartTd(h, chg(h, h[chgKey], CHG[chgKey][1]))}
         <td><b>${fmtMoney(h.value)}</b></td>
-        <td>${moneySpan(h.unrealized)}</td>
-        <td>${pctSpan(h.unrealized_pct)}</td>
+        ${plCell(h)}
         <td>${sigBadge(h.signal)}${h.signal && h.signal.action !== "WAIT" ? " " + scorePill(h.signal.score) : ""}</td>
         <td>${planCell(h)}</td>
         <td>${h.qty && h.price ? `<button class="accept-btn sellall-btn" data-src="plan" data-accept="${esc(h.asset_id)}"
@@ -680,6 +692,26 @@ async function loadDashboard() {
           title="Log selling this entire position at the current live price — asks for confirmation first">Sell all</button>` : ""}</td>
       </tr>`).join("") + "</tbody>";
     bindSort(ht, "holdings", loadDashboard);
+    // the header pickers sit inside sortable <th>s: swallow their clicks so
+    // choosing an option never doubles as a sort toggle, and carry an active
+    // sort over to whatever the picker now shows
+    const chgSelEl = document.getElementById("hold-chg-sel");
+    const plSelEl = document.getElementById("hold-pl-sel");
+    [chgSelEl, plSelEl].forEach(s => { if (s) s.onclick = (e) => e.stopPropagation(); });
+    if (chgSelEl) chgSelEl.onchange = () => {
+      localStorage.setItem("dash-chg", chgSelEl.value);
+      const st = state.sort.holdings;
+      if (st && Object.keys(CHG).some(k => st.key === k || st.key === k + "_abs"))
+        st.key = ck(chgSelEl.value);
+      loadDashboard();
+    };
+    if (plSelEl) plSelEl.onchange = () => {
+      localStorage.setItem("dash-pl", plSelEl.value);
+      const st = state.sort.holdings;
+      if (st && (st.key === "unrealized" || st.key === "unrealized_pct"))
+        st.key = plSelEl.value === "pct" ? "unrealized_pct" : "unrealized";
+      loadDashboard();
+    };
     bindDoneButtons("holdings-table", loadDashboard);  // wires the Sell-all buttons
     ht.querySelectorAll("[data-tgt]").forEach(b => b.onclick = () => {
       const h = p.holdings.find(x => x.asset_id === b.dataset.tgt);

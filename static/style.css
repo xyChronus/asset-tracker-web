@@ -254,6 +254,13 @@ tbody tr:hover { background: var(--panel-2); }
 }
 .trail-btn.armed { border-color: var(--green); color: var(--green); }
 
+/* tiny picker inside a sortable table header (Change window, P/L unit) */
+.th-select {
+  background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+  border-radius: 6px; font: inherit; font-size: 11px; padding: 1px 3px;
+  width: auto; text-transform: none; letter-spacing: 0; cursor: pointer;
+}
+
 /* ---- TP/SL plan (paper-trading discipline) ---- */
 .tgt-btn.plain { background: none; border: none; padding: 0; cursor: pointer; display: inline-flex; gap: 4px; }
 .tgt-chip {

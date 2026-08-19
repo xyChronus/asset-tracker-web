@@ -370,3 +370,7 @@ Web-only items are marked **(web)**.
 ### Notes
 - Crypto is deliberately unchanged: analysts don't publish recommendations for coins, and the "crypto projection" websites are algorithmic extrapolations we don't consider signal. Crypto keeps its news-sentiment and market-mood inputs.
 - As always: professional opinion is context, not instruction — analysts are frequently wrong too, and the cards say so.
+
+## [1.28.0] — 2026-08-19 — A slimmer holdings table
+### Changed
+- **The Dashboard holdings table went from 13 columns to 10.** The Day / 7d / 30d columns merged into one **Change** column with a small picker in its header (choose which window it shows), and Unrealized P/L + P/L % merged into one **P/L** column with a $/% picker. Your choices stick between visits, sorting follows whatever the pickers show, clicking a Change cell still opens the chart — and hovering the P/L cell always shows both the money and the percentage, so nothing was actually removed. (Requested by the admin.)
