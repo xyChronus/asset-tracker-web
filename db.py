@@ -245,6 +245,7 @@ _KV_HOT = {
     "earnings:cal", "global:regime", "pse:regime",
     "predict:crypto", "predict:pse", "predict:global",
     "crypto:newsscores", "pse:newsscores", "global:newsscores",
+    "pse:analystvotes", "global:analystvotes",
 }
 _KV_TTL = 900.0
 _kv_cache = {}          # key -> (expires_monotonic, value)

@@ -362,3 +362,11 @@ Web-only items are marked **(web)**.
 - Wide content (the holdings table, advisor card buttons) could push the page sideways on narrow windows; grids now let their columns shrink and card buttons wrap instead.
 ### Added
 - Small comforts everywhere: smooth color transitions on buttons and tabs, a visible focus outline for keyboard navigation, slim dark scrollbars, and soft shadows on dialogs and toasts.
+
+## [1.27.0] — 2026-08-19 — The Street gets a vote
+### Added
+- **Analyst consensus now feeds the advisor's score.** The buy/hold/sell tallies that professional analysts publish (the same "consensus rating" the projection sites summarize) are collected for every tracked PSE and global stock and give each card up to ±1 conviction point. The grading respects a measured reality — analysts say "buy" by default (the median covered name is ~84% buy-side) — so only near-unanimity (90%+) earns the full point, merely-lukewarm coverage (≤55%) already counts against, and a real sell-side share (25%+) scores −1. Every vote is visible in the card's Full-reasoning ledger ("Analyst consensus — 16 covering, 94% buy-side"), and a big month-over-month mood shift is called out in the reasons.
+- Works for **PSE names too** — Ayala, ALI, ACEN and dozens more carry real coverage (and a few carry genuine sell-side warnings the tracker now surfaces).
+### Notes
+- Crypto is deliberately unchanged: analysts don't publish recommendations for coins, and the "crypto projection" websites are algorithmic extrapolations we don't consider signal. Crypto keeps its news-sentiment and market-mood inputs.
+- As always: professional opinion is context, not instruction — analysts are frequently wrong too, and the cards say so.

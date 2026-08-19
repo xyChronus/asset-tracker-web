@@ -566,14 +566,59 @@ def suggest_plan(price, style, prim=None, wk52_high=None, style_label=None):
     }
 
 
+def analyst_vote(rec):
+    """One conviction point from Wall-Street/PSE analyst recommendation counts
+    (Finnhub's free buy/hold/sell tallies - the same 'consensus rating' the
+    projection sites summarize). Deliberately modest: +-1 max, and only when
+    at least 5 analysts cover the name - two people agreeing is a coincidence,
+    not a consensus. Analysts skew bullish as a profession, so the sell bar
+    sits far lower than the buy bar.
+    Returns {vote, n, buy_pct, shift_pp, period} or None when coverage is
+    missing/too thin to say anything."""
+    if not rec or not isinstance(rec, list):
+        return None
+    cur = rec[0] or {}
+    n = sum(int(cur.get(k) or 0) for k in
+            ("strongBuy", "buy", "hold", "sell", "strongSell"))
+    if n < 5:
+        return None
+    buys = int(cur.get("strongBuy") or 0) + int(cur.get("buy") or 0)
+    sells = int(cur.get("sell") or 0) + int(cur.get("strongSell") or 0)
+    buy_pct = buys / n * 100.0
+    # graded against the profession's measured bullish skew (median covered
+    # name sits near 84% buy-side): only near-unanimity earns the full point,
+    # and merely-lukewarm coverage is already a bearish tell
+    if buy_pct <= 35 or sells / n >= 0.25:
+        vote = -1.0
+    elif buy_pct <= 55:
+        vote = -0.5
+    elif buy_pct >= 90:
+        vote = 1.0
+    elif buy_pct >= 78:
+        vote = 0.5
+    else:
+        vote = 0.0
+    shift_pp = None
+    if len(rec) > 1 and rec[1]:
+        prev = rec[1]
+        pn = sum(int(prev.get(k) or 0) for k in
+                 ("strongBuy", "buy", "hold", "sell", "strongSell"))
+        if pn >= 5:
+            pb = int(prev.get("strongBuy") or 0) + int(prev.get("buy") or 0)
+            shift_pp = round(buy_pct - pb / pn * 100.0, 1)
+    return {"vote": vote, "n": n, "buy_pct": round(buy_pct, 1),
+            "shift_pp": shift_pp, "period": cur.get("period")}
+
+
 def build(assets, signals, portfolio, news_items, market, now_ms,
           currency="$", fundamentals=None, max_ideas=None, style=DEFAULT_STYLE,
           targets=None, earnings=None, aggressiveness="balanced",
-          diversity="balanced", outlook=None):
+          diversity="balanced", outlook=None, analyst_votes=None):
     """Main entry. Returns {market_sentiment, briefing, recommendations}."""
     fundamentals = fundamentals or {}
     targets = targets or {}
     earnings = earnings or {}
+    analyst_votes = analyst_votes or {}
     is_crypto = market.get("name") == "crypto"
     regime = market.get("regime") or {}
     caution = regime.get("state") == "caution"
@@ -676,7 +721,12 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
                             and news_score >= 0) else 0.0
         ind_n = industry_news.get(aid)
         ind_score = ind_n["score"] if ind_n else 0.0
-        conviction = (tech or 0) + news_score + value_votes + base_vote + ind_score
+        # the Street's view: what professional analysts covering this name
+        # collectively recommend - a real outside opinion, not our own math
+        street = analyst_votes.get(aid)
+        street_score = street["vote"] if street else 0.0
+        conviction = ((tech or 0) + news_score + value_votes + base_vote
+                      + ind_score + street_score)
 
         reasons = []
         gate_notes = []  # interventions recorded for the breakdown ledger
@@ -997,6 +1047,22 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
                 f"{ind_n['sector'].capitalize()}-sector news is "
                 f"{'a tailwind' if ind_score > 0 else 'a headwind'} for this one "
                 f"({ind_score:+.2f}) - e.g. \"{(ind_n['headline'] or '')[:90]}\"")
+        if street and street_score:
+            stance = ("near-unanimously behind it" if street_score >= 1
+                      else "leaning buy" if street_score > 0
+                      else "leaning away" if street_score <= -1
+                      else "notably cool on it - lukewarm is a tell in a "
+                           "profession that says buy by default")
+            shift = ""
+            if street.get("shift_pp") is not None and abs(street["shift_pp"]) >= 10:
+                shift = (", and the mood has brightened since last month"
+                         if street["shift_pp"] > 0
+                         else ", and the mood has cooled since last month")
+            reasons.append(
+                f"The {street['n']} analysts covering it are {stance}: "
+                f"{street['buy_pct']:.0f}% of their recommendations are buy-side"
+                f"{shift}. (Professional opinion for context - they're "
+                f"frequently wrong too.)")
 
         if tech is None and not f:
             confidence = "Low"
@@ -1115,7 +1181,10 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
                 "extras": (([{"label": "Basing pattern (fall gone quiet)", "score": base_vote}]
                             if base_vote else [])
                            + ([{"label": f"Industry news ({ind_n['sector']})",
-                                "score": ind_score}] if ind_n else [])),
+                                "score": ind_score}] if ind_n else [])
+                           + ([{"label": f"Analyst consensus ({street['n']} covering, "
+                                         f"{street['buy_pct']:.0f}% buy-side)",
+                                "score": street_score}] if street else [])),
                 "gates": gate_notes,
                 "total": round(conviction, 1),
             },

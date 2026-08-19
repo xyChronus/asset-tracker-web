@@ -1121,6 +1121,33 @@ def news_scores_tick(market):
               {"updated": now, "data": out, "by_link": by_link})
 
 
+def analyst_votes_tick(market, fetch_budget=40):
+    """Keep analyst recommendation counts fresh for every tracked stock and
+    fold them into one small kv snapshot the advisor reads for free. Each run
+    refreshes at most `fetch_budget` symbols whose 24h cache has expired (the
+    per-symbol `analyst:{sym}` cache is shared with the Predictions tab), so
+    the full universe cycles gently within the day without API bursts."""
+    if market == "crypto":
+        return  # analysts publish recommendations for stocks, not coins
+    ids = tracked_ids_all_users(market)
+    fetched = 0
+    votes = {}
+    for aid in ids:
+        sym = aid + ".PM" if market == "pse" else aid
+        cached = db.kv_get(f"analyst:{sym}")
+        stale = not cached or now_ms() - cached.get("updated", 0) >= 86400000
+        if stale and fetched < fetch_budget:
+            fetched += 1
+            v = adv.analyst_vote(_analyst_recs(market, aid))
+        else:
+            # fresh cache, or out of budget: yesterday's counts still beat
+            # dropping the name from the snapshot until its refresh turn
+            v = adv.analyst_vote((cached or {}).get("data"))
+        if v:
+            votes[aid] = v
+    db.kv_set(f"{market}:analystvotes", {"updated": now_ms(), "data": votes})
+
+
 BARS_PER_DAY = {"crypto": 24.0, "pse": 1.5, "global": 7.0}  # stored closes per day
 
 
@@ -1218,6 +1245,8 @@ def scheduler():
         [lambda: iv["global"]["signals"] if market_session("global")[0] else 6 * 3600, 0,
          lambda: recompute_signals("global")],
         [lambda: 43200, 0, earnings_calendar_tick],
+        [lambda: 1800, 0, lambda: analyst_votes_tick("pse")],
+        [lambda: 1800, 0, lambda: analyst_votes_tick("global")],
         [lambda: 86400, 0, spx_daily_tick],
         [lambda: 21600, 0, lambda: predictions_tick("crypto")],
         [lambda: 21600, 0, lambda: predictions_tick("pse")],
@@ -1696,7 +1725,11 @@ def get_advisor(market, user, force=False):
                            # 30d trend projections, for rotation PHRASING only
                            outlook={k: v.get("pct30") for k, v in
                                     (db.kv_get(f"predict:{market}", {})
-                                     .get("data") or {}).items()})
+                                     .get("data") or {}).items()},
+                           # the Street's buy/hold/sell tallies (stocks only;
+                           # read-only view of the hot kv snapshot)
+                           analyst_votes=db.kv_get(
+                               f"{market}:analystvotes", {}).get("data") or {})
         # Attach the precomputed trend projections (display only — the fit is
         # built from the same price history the technicals already vote on, so
         # feeding it into conviction would double-count momentum).
