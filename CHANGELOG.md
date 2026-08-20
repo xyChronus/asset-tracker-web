@@ -389,3 +389,10 @@ Web-only items are marked **(web)**.
 - Tablet-width screens (between phone and desktop) now wrap the header and card buttons properly instead of overflowing.
 ### Fixed
 - A removed account's old browser session could linger half-alive (pages loaded, data queries returned nothing). Deleted accounts now sign out fully on their next request.
+
+## [1.30.0] — 2026-08-21 — Holiday-aware markets
+### Added
+- **The PSE and US markets now know their holidays.** Both exchange calendars (all of 2026 for the PSE, 2026–2027 for NYSE/Nasdaq) are built in: on a trading holiday the advisor pauses buy/sell suggestions exactly as it does on weekends, and the collectors stop sweeping a market that isn't moving.
+- **Today's Plan and the Advisor now say WHY the market is closed and when it reopens** — today, for example: "The market is closed for Ninoy Aquino Day — suggestions resume Monday at 9:30 AM." Weekends say "the weekend"; the resume time skips weekends and holidays (the Christmas cluster correctly resumes the following Monday).
+### Notes
+- Philippine special non-working days can be proclaimed mid-year and Eid dates move with the lunar calendar — the calendar gets updated when Malacañang proclaims new dates. US calendars are final years ahead.

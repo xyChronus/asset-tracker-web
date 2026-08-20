@@ -808,8 +808,8 @@ async function loadTodayPlan() {
   if (a.market_open === false) {
     // your plan's stop/target hits stay visible even while the market sleeps
     el.innerHTML = tpslHtml + `<div class="plan-item"><span class="badge wait">MARKET CLOSED</span>
-      <span>Buy/sell suggestions pause while the market is closed — they resume
-      ${esc(a.next_open || "when it reopens")}.</span></div>`;
+      <span>${a.closed_reason ? `The market is closed for <b>${esc(a.closed_reason)}</b>` : "Buy/sell suggestions pause while the market is closed"}
+      — ${a.closed_reason ? "suggestions" : "they"} resume ${esc(a.next_open || "when it reopens")}.</span></div>`;
     bindDoneButtons("today-plan", loadTodayPlan); bindPlanDone();
     return;
   }
@@ -1160,7 +1160,7 @@ async function loadAdvisor() {
     : actions.length
     ? `<div class="empty-note">No ${af === "buy" ? "buy" : "sell"}-side suggestions right now — the "${af === "buy" ? "Sells" : "Buys"}" and "All" filters have the rest.</div>`
     : (a.market_open === false
-      ? `<div class="empty-note">The market is closed — buy/sell suggestions resume ${esc(a.next_open || "when it reopens")}. (Crypto never sleeps; stocks do.)</div>`
+      ? `<div class="empty-note">The market is closed${a.closed_reason ? ` for <b>${esc(a.closed_reason)}</b>` : ""} — buy/sell suggestions resume ${esc(a.next_open || "when it reopens")}. (Crypto never sleeps; stocks do.)</div>`
       : doneCount
       ? `<div class="empty-note">All ${doneCount} suggestion(s) cleared for today — dismissed or already acted on. New ones appear when the situation changes.</div>`
       : '<div class="empty-note">No buy or sell suggestions right now — the advisor only speaks up when several signals line up. That caution is a feature.</div>');

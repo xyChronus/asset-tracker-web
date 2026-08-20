@@ -1360,8 +1360,10 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
     actionable = [r for r in recs if r["action"] not in ("HOLD", "WATCH")]
     if not market_open:
         nxt = market.get("next_open")
-        briefing += (" The market is closed right now - buy/sell suggestions "
-                     "resume when it reopens" + (f" ({nxt})." if nxt else "."))
+        why = market.get("closed_reason")
+        briefing += (f" The market is closed{' for ' + why if why else ''} right now"
+                     " - buy/sell suggestions resume when it reopens"
+                     + (f" ({nxt})." if nxt else "."))
     elif actionable:
         top = actionable[0]
         verb = "buying" if top["action"] in ("BUY", "BUY MORE") else "selling"

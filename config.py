@@ -136,3 +136,55 @@ PSE_EXCLUDED = {
     "TUBIG",  # Tubig Pilipinas - frozen since 2025-12
     "MGH", "NXGEN", "PNC", "PORT", "PTT",   # no trades in stored history
 }
+
+# Exchange trading holidays: date -> holiday name, per market. The advisor
+# and the schedulers treat these exactly like weekends.
+# MAINTENANCE: extend each December for the coming year.
+#  - "global" (NYSE/Nasdaq) publishes years ahead - 2026 and 2027 are final.
+#  - "pse" follows Philippine proclamations, which can ADD special
+#    non-working days mid-year (and Eid dates move with the lunar calendar);
+#    update this list when Malacañang proclaims new ones.
+MARKET_HOLIDAYS = {
+    "pse": {
+        "2026-01-01": "New Year's Day",
+        "2026-02-17": "Chinese New Year",
+        "2026-03-20": "Eid'l Fitr",              # proclaimed date
+        "2026-04-02": "Maundy Thursday",
+        "2026-04-03": "Good Friday",
+        "2026-04-09": "Araw ng Kagitingan",
+        "2026-05-01": "Labor Day",
+        "2026-05-27": "Eid'l Adha",              # proclaimed date
+        "2026-06-12": "Independence Day",
+        "2026-08-21": "Ninoy Aquino Day",
+        "2026-08-31": "National Heroes Day",
+        "2026-11-02": "All Souls' Day",
+        "2026-11-30": "Bonifacio Day",
+        "2026-12-08": "Feast of the Immaculate Conception",
+        "2026-12-24": "Christmas Eve",
+        "2026-12-25": "Christmas Day",
+        "2026-12-30": "Rizal Day",
+        "2026-12-31": "New Year's Eve",
+    },
+    "global": {
+        "2026-01-01": "New Year's Day",
+        "2026-01-19": "Martin Luther King Jr. Day",
+        "2026-02-16": "Washington's Birthday",
+        "2026-04-03": "Good Friday",
+        "2026-05-25": "Memorial Day",
+        "2026-06-19": "Juneteenth",
+        "2026-07-03": "Independence Day (observed)",
+        "2026-09-07": "Labor Day",
+        "2026-11-26": "Thanksgiving",
+        "2026-12-25": "Christmas Day",
+        "2027-01-01": "New Year's Day",
+        "2027-01-18": "Martin Luther King Jr. Day",
+        "2027-02-15": "Washington's Birthday",
+        "2027-03-26": "Good Friday",
+        "2027-05-31": "Memorial Day",
+        "2027-06-18": "Juneteenth (observed)",
+        "2027-07-05": "Independence Day (observed)",
+        "2027-09-06": "Labor Day",
+        "2027-11-25": "Thanksgiving",
+        "2027-12-24": "Christmas Day (observed)",
+    },
+}

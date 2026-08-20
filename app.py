@@ -711,9 +711,15 @@ def fetch_fx():
 # which eliminated ~640 CoinGecko market_chart calls per day.
 
 
+def _holiday(market, d):
+    """Holiday name if `d` (a date) is a trading holiday for this market."""
+    return config.MARKET_HOLIDAYS.get(market, {}).get(d.strftime("%Y-%m-%d"))
+
+
 def _pse_open():
     n = datetime.now()  # server clock is Asia/Manila (TZ env var on Render)
-    return n.weekday() < 5 and (9, 0) <= (n.hour, n.minute) <= (15, 30)
+    return (n.weekday() < 5 and not _holiday("pse", n.date())
+            and (9, 0) <= (n.hour, n.minute) <= (15, 30))
 
 
 def pse_sync_directory_if_needed():
@@ -1546,26 +1552,38 @@ def dismissals(user, market):
 
 
 def market_session(market):
-    """(is_open, human 'reopens at' text). Crypto never closes.
-    PSE: 9:30-12:00 & 13:00-15:00 Manila, Mon-Fri (holidays not modeled).
-    Global: US session 9:30-16:00 Eastern, shown in Manila time."""
+    """(is_open, human 'reopens at' text, closed_reason). Crypto never closes.
+    PSE: 9:30-12:00 & 13:00-15:00 Manila, Mon-Fri, minus PH trading holidays.
+    Global: US session 9:30-16:00 Eastern minus NYSE holidays, in Manila time.
+    closed_reason names WHY when it's a whole-day closure (holiday name,
+    "the weekend"); None while open or during intraday breaks."""
     from datetime import timedelta, timezone as _tz
     if market == "crypto":
-        return True, None
+        return True, None, None
     now = datetime.now()  # Manila clock (TZ=Asia/Manila)
+
+    def not_trading(d):   # weekend or exchange holiday
+        return d.weekday() >= 5 or _holiday(market, d)
+
     if market == "pse":
         wd, t = now.weekday(), (now.hour, now.minute)
-        if wd < 5 and ((9, 30) <= t < (12, 0) or (13, 0) <= t < (15, 0)):
-            return True, None
-        if wd < 5 and t < (9, 30):
-            return False, "today at 9:30 AM"
-        if wd < 5 and (12, 0) <= t < (13, 0):
-            return False, "at 1:00 PM, after the lunch break"
+        hol = _holiday("pse", now.date())
+        if wd < 5 and not hol:
+            if (9, 30) <= t < (12, 0) or (13, 0) <= t < (15, 0):
+                return True, None, None
+            if t < (9, 30):
+                return False, "today at 9:30 AM", None
+            if (12, 0) <= t < (13, 0):
+                return False, "at 1:00 PM, after the lunch break", None
         nxt = now + timedelta(days=1)
-        while nxt.weekday() >= 5:
+        while not_trading(nxt.date()):
             nxt += timedelta(days=1)
-        label = "tomorrow" if (nxt.date() - now.date()).days == 1 else nxt.strftime("%A")
-        return False, f"{label} at 9:30 AM"
+        gap = (nxt.date() - now.date()).days
+        label = ("tomorrow" if gap == 1
+                 else nxt.strftime("%A") if gap < 7
+                 else nxt.strftime("%A, %b %d"))
+        reason = hol or ("the weekend" if wd >= 5 else None)
+        return False, f"{label} at 9:30 AM", reason
     # global: US-listed names, NYSE/Nasdaq hours
     try:
         from zoneinfo import ZoneInfo
@@ -1576,22 +1594,26 @@ def market_session(market):
         et = datetime.now(_tz.utc) + timedelta(hours=off)
         have_tz = False
     wd, t = et.weekday(), (et.hour, et.minute)
-    if wd < 5 and (9, 30) <= t < (16, 0):
-        return True, None
+    hol = _holiday("global", et.date())
+    if wd < 5 and not hol and (9, 30) <= t < (16, 0):
+        return True, None, None
+    reason = hol or ("the weekend" if wd >= 5 else None)
     nxt = et
-    if wd >= 5 or t >= (16, 0):
+    if wd >= 5 or hol or t >= (16, 0):
         nxt = et + timedelta(days=1)
-        while nxt.weekday() >= 5:
+        while not_trading(nxt.date()):
             nxt += timedelta(days=1)
     open_et = nxt.replace(hour=9, minute=30, second=0, microsecond=0)
     if have_tz:
         try:
             from zoneinfo import ZoneInfo
             manila = open_et.astimezone(ZoneInfo("Asia/Manila"))
-            return False, manila.strftime("%A %I:%M %p").replace(" 0", " ") + " Manila time"
+            return (False,
+                    manila.strftime("%A %I:%M %p").replace(" 0", " ") + " Manila time",
+                    reason)
         except Exception:
             pass
-    return False, "around 9:30-10:30 PM Manila time"
+    return False, "around 9:30-10:30 PM Manila time", reason
 
 
 def _regime(market):
@@ -1721,7 +1743,7 @@ def get_advisor(market, user, force=False):
         port = portfolio_state(market, user)
         news_rows = _advisor_news(market)
         fund = db.get_fundamentals(market) if market != "crypto" else None
-        is_open, next_open = market_session(market)
+        is_open, next_open, closed_reason = market_session(market)
         srow = db.conn().execute(
             "SELECT trading_style, aggressiveness, diversity FROM users WHERE id=%s",
             (user,)).fetchone()
@@ -1740,7 +1762,8 @@ def get_advisor(market, user, force=False):
             earn = {}
         result = adv.build(assets, signals_data, port, news_rows,
                            {"line": _market_line(market), "open": is_open,
-                            "next_open": next_open, "name": market,
+                            "next_open": next_open, "closed_reason": closed_reason,
+                            "name": market,
                             "regime": _regime(market)}, now_ms(),
                            currency=config.CURRENCY[market], fundamentals=fund,
                            max_ideas=config.ADVISOR_MAX_IDEAS[market], style=style,
@@ -1766,6 +1789,7 @@ def get_advisor(market, user, force=False):
         result["updated"] = now_ms()
         result["market_open"] = is_open
         result["next_open"] = next_open
+        result["closed_reason"] = closed_reason
         db.kv_set(key, result)
         return result
 
