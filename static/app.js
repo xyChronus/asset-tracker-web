@@ -71,6 +71,15 @@ function applySort(rows, tableKey) {
   });
 }
 
+// "12 Jul" or "12 Jul 25" when it wasn't this year - for held-since labels
+function fmtSince(ts) {
+  const d = new Date(String(ts).replace(" ", "T"));
+  if (isNaN(d)) return "";
+  const opts = { month: "short", day: "numeric" };
+  if (d.getFullYear() !== new Date().getFullYear()) opts.year = "2-digit";
+  return d.toLocaleDateString([], opts);
+}
+
 // Build a clickable, sortable <th>. `field` may be a dotted path (e.g. signal.score).
 function th(label, field, tableKey, extra = "") {
   const st = state.sort[tableKey] || {};
@@ -678,7 +687,7 @@ async function loadDashboard() {
       th("Signal", "signal.score", "holdings") + th("Plan", "plan_sort", "holdings") +
       `<th></th></tr></thead><tbody>` +
       applySort(p.holdings, "holdings").map(h => `<tr>
-        ${chartTd(h, `<div class="coin-cell">${h.image ? `<img src="${esc(h.image)}">` : ""}<span class="nm">${esc(h.name)}</span><span class="sym">${esc(h.symbol)}</span></div>`)}
+        ${chartTd(h, `<div class="coin-cell">${h.image ? `<img src="${esc(h.image)}">` : ""}<span class="nm">${esc(h.name)}</span><span class="sym">${esc(h.symbol)}${h.first_ts ? ` <span class="held-since" title="This position has been in your records since ${esc(h.first_ts)} (a full sell-out restarts the clock)">since ${fmtSince(h.first_ts)}</span>` : ""}</span></div>`)}
         <td>${fmtQty(h.qty)}</td>
         <td>${fmtMoney(h.avg_buy)}</td>
         <td>${fmtMoney(h.price)}</td>
@@ -783,7 +792,7 @@ async function loadTodayPlan() {
             data-action="SELL" data-qty="${qty}" data-price="${r.price ?? ""}" data-name="${esc(r.name)}"
             title="Log selling the whole position at the current live price — your plan, your call">Log sell</button>` : ""}
           <button class="pdone-btn" data-plan-done="${esc(r.asset_id)}"
-            title="I've seen this — hide it for today (letting it run is a valid call too)">✓</button>
+            title="Dismiss for today — logs nothing (letting it run is a valid call too)">✗</button>
         </span>
       </div>`;
     }).join("");
@@ -819,7 +828,7 @@ async function loadTodayPlan() {
       ${r.usd ? `<button class="accept-btn" data-src="advisor" data-accept="${esc(r.asset_id)}" data-action="${esc(r.action)}"
         data-usd="${r.usd}" data-name="${esc(r.name)}" title="Log this trade at the current live price">Accept</button>` : ""}
       <button class="done-btn" data-done="${esc(r.asset_id)}" data-action="${esc(r.action)}"
-        title="Hide this suggestion for today without logging anything">✓</button>
+        title="Dismiss this suggestion for today — logs nothing">✗</button>
     </span>
   </div>`).join("");
   bindDoneButtons("today-plan", loadTodayPlan); bindPlanDone();
@@ -1004,8 +1013,11 @@ function recCard(r) {
     : "";
   const doneBtn = actionable
     ? `<button class="done-btn" data-done="${esc(r.asset_id)}" data-action="${esc(r.action)}"
-         title="Hide this suggestion for today without logging anything">✓ Done</button>`
+         title="Dismiss this suggestion for today — logs nothing">✗</button>`
     : "";
+  const pinned = (state.pins || []).includes(r.asset_id);
+  const pinBtn = `<button class="mini-btn pin-btn${pinned ? " pinned" : ""}" data-pin="${esc(r.asset_id)}"
+       title="${pinned ? "Unpin this card" : "Pin this card to the front of the list"}">📌</button>`;
   const shareBtn = `<button class="mini-btn share-btn" data-share="${esc(r.asset_id)}"
        title="Copy this suggestion as plain text for the group chat">⧉</button>`;
   const tgt = (state.targetsMap || {})[r.asset_id];
@@ -1032,7 +1044,7 @@ function recCard(r) {
     <div class="sig-head">
       <div class="sig-coin">${r.image ? `<img src="${esc(r.image)}">` : ""}${esc(r.name)}
         <span class="muted">${fmtMoney(r.price)}</span></div>
-      <div class="head-right">${sigBadge(r)}${scorePill(r.conviction, 1)}${acceptBtn}${doneBtn}${trailBtn}${shareBtn}</div>
+      <div class="head-right">${sigBadge(r)}${scorePill(r.conviction, 1)}${acceptBtn}${doneBtn}${trailBtn}${shareBtn}${pinBtn}</div>
     </div>
     ${flagRow}${amount}${planLine}${fcLine}${holdLine}
     <div class="conv-bar" title="Conviction: ${conv}">
@@ -1040,9 +1052,23 @@ function recCard(r) {
     </div>
     <div class="conv-labels"><span>strong sell</span><span class="muted">confidence: ${esc(r.confidence || "")}</span><span>strong buy</span></div>
     ${chips.length ? `<div class="sig-chips">${chips.map(x => `<div class="mini-stat">${x}</div>`).join("")}</div>` : ""}
-    <ul>${(r.reasons || []).map(x => `<li>${esc(x)}</li>`).join("")}</ul>
+    ${(() => {
+      // compact: two reasons visible, the rest folded - but a rotation hint
+      // (where to move the freed money) is the actionable half of a sell
+      // suggestion and must never hide behind a fold
+      const all = r.reasons || [];
+      let vis = all.slice(0, 2);
+      const rot = all.find(x => /rotat/i.test(x));
+      if (rot && !vis.includes(rot)) vis = [vis[0], rot].filter(Boolean);
+      const hidden = all.filter(x => !vis.includes(x));
+      return `<ul>${vis.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` +
+        (hidden.length || arts ? `<details class="breakdown">
+          <summary>More detail (${hidden.length + (r.articles || []).length})</summary>
+          <ul>${hidden.map(x => `<li>${esc(x)}</li>`).join("")}</ul>
+          ${arts ? `<div class="rec-arts">${arts}</div>` : ""}
+        </details>` : "");
+    })()}
     ${breakdownHtml(r.breakdown)}
-    ${arts ? `<div class="rec-arts">${arts}</div>` : ""}
   </div>`;
 }
 
@@ -1093,7 +1119,7 @@ async function loadAdvisor() {
     ["Trading Style", esc(a.style_label || styleLabel(state.style))],
     ["News Sentiment", esc(ms.label || "—") + (ms.score != null ? ` (${ms.score > 0 ? "+" : ""}${ms.score})` : "")],
     ["Suggestions", actions.length + " action(s)"],
-    ["Done Today", doneCount + " ✓"],
+    ["Cleared Today", String(doneCount)],   // dismissed by ✗ or settled by a logged trade
   ].map(x => `<div class="mini-stat"><span>${x[0]}</span><b>${x[1]}</b></div>`).join("");
 
   const movers = a.recommendations.filter(r => (r.flags || []).length);
@@ -1109,13 +1135,34 @@ async function loadAdvisor() {
     moversEl.innerHTML = "";
   }
 
-  const rest = a.recommendations.filter(r => ["HOLD", "WATCH"].includes(r.action));
-  document.getElementById("advisor-actions").innerHTML = actions.length
-    ? actions.map(recCard).join("")
+  // pins, filter and sort: reorder the advisor's list without re-scoring it
+  state.pins = JSON.parse(localStorage.getItem("pins:" + state.market) || "[]");
+  const af = state.advFilter || "all";
+  document.querySelectorAll("#adv-filter button").forEach(b =>
+    b.classList.toggle("active", b.dataset.af === af));
+  const sortSel = document.getElementById("adv-sort");
+  if (sortSel) sortSel.value = state.advSort || "advisor";
+  const arrange = (list) => {
+    let out = list;
+    if (af === "buy") out = out.filter(r => r.action.includes("BUY") || !r.usd);
+    if (af === "sell") out = out.filter(r => !r.action.includes("BUY") || !r.usd);
+    const mode = state.advSort || "advisor";
+    if (mode === "conviction") out = [...out].sort((x, y) => Math.abs(y.conviction || 0) - Math.abs(x.conviction || 0));
+    if (mode === "amount") out = [...out].sort((x, y) => (y.usd || 0) - (x.usd || 0));
+    if (mode === "name") out = [...out].sort((x, y) => (x.name || "").localeCompare(y.name || ""));
+    return [...out.filter(r => state.pins.includes(r.asset_id)),
+            ...out.filter(r => !state.pins.includes(r.asset_id))];
+  };
+  const rest = arrange(a.recommendations.filter(r => ["HOLD", "WATCH"].includes(r.action)));
+  const shown = arrange(actions);
+  document.getElementById("advisor-actions").innerHTML = shown.length
+    ? shown.map(recCard).join("")
+    : actions.length
+    ? `<div class="empty-note">No ${af === "buy" ? "buy" : "sell"}-side suggestions right now — the "${af === "buy" ? "Sells" : "Buys"}" and "All" filters have the rest.</div>`
     : (a.market_open === false
       ? `<div class="empty-note">The market is closed — buy/sell suggestions resume ${esc(a.next_open || "when it reopens")}. (Crypto never sleeps; stocks do.)</div>`
       : doneCount
-      ? `<div class="empty-note">All ${doneCount} suggestion(s) marked done for today — nice work. New ones appear when the situation changes.</div>`
+      ? `<div class="empty-note">All ${doneCount} suggestion(s) cleared for today — dismissed or already acted on. New ones appear when the situation changes.</div>`
       : '<div class="empty-note">No buy or sell suggestions right now — the advisor only speaks up when several signals line up. That caution is a feature.</div>');
   document.getElementById("advisor-holds").innerHTML = rest.map(recCard).join("");
   bindDoneButtons("advisor-actions", loadAdvisor);
@@ -1136,6 +1183,14 @@ async function loadAdvisor() {
     navigator.clipboard.writeText(lines.join("\n"))
       .then(() => toast("Copied — paste it in the group chat."))
       .catch(() => toast("Couldn't reach the clipboard — copy manually.", "error"));
+  });
+  // 📌 pins: a per-market list in this browser, first in line on every reload
+  document.querySelectorAll("#tab-advisor [data-pin]").forEach(btn => btn.onclick = () => {
+    const aid = btn.dataset.pin;
+    const pins = new Set(state.pins || []);
+    if (pins.has(aid)) pins.delete(aid); else pins.add(aid);
+    localStorage.setItem("pins:" + state.market, JSON.stringify([...pins]));
+    loadAdvisor();
   });
   // ⏳ trailing buy/sell straight from a suggestion card
   document.querySelectorAll("#tab-advisor [data-trailopen]").forEach(btn => btn.onclick = async () => {
@@ -1236,7 +1291,7 @@ function bindDoneButtons(containerId, reload) {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ asset_id: b.dataset.done, action: b.dataset.action }),
       });
-      toast("Marked done — it'll stay hidden today unless the situation changes.");
+      toast("Dismissed — it stays hidden today unless the situation changes.");
       reload();
     } catch (e) { toast(e.message, "error"); b.disabled = false; }
   });
@@ -2136,6 +2191,27 @@ const loaders = {
   news: loadNews,
 };
 
+/* Skeleton placeholders: shimmering stand-ins roughly the size the real
+   content will be, so a tab's first load doesn't jump the layout around.
+   Only injected into still-empty containers - refreshes keep live content. */
+const _skelBar = (h, w) => `<div class="skel" style="height:${h}px${w ? `;width:${w}` : ""}"></div>`;
+const SKELETONS = {
+  dashboard: { "dash-cards": Array(5).fill(`<div class="card">${_skelBar(13, "60%")}${_skelBar(24, "80%")}</div>`).join(""),
+               "holdings-table": `<tbody><tr><td style="border:none">${_skelBar(34) + _skelBar(34) + _skelBar(34)}</td></tr></tbody>` },
+  advisor: { "advisor-stats": Array(4).fill(`<div class="mini-stat">${_skelBar(12, "70px")}${_skelBar(14, "50px")}</div>`).join(""),
+             "advisor-actions": Array(2).fill(`<div class="rec-card">${_skelBar(20, "55%")}${_skelBar(14)}${_skelBar(14, "85%")}${_skelBar(6)}${_skelBar(14, "70%")}</div>`).join("") },
+  portfolio: { "tx-table": `<tbody><tr><td style="border:none">${_skelBar(30) + _skelBar(30) + _skelBar(30)}</td></tr></tbody>` },
+  market: { "market-table": `<tbody><tr><td style="border:none">${_skelBar(30) + _skelBar(30) + _skelBar(30) + _skelBar(30)}</td></tr></tbody>` },
+  watchlist: { "watch-table": `<tbody><tr><td style="border:none">${_skelBar(30) + _skelBar(30) + _skelBar(30) + _skelBar(30) + _skelBar(30)}</td></tr></tbody>` },
+  news: { "news-list": Array(4).fill(`<div class="news-item">${_skelBar(12, "30%")}${_skelBar(16, "85%")}${_skelBar(12, "65%")}</div>`).join("") },
+};
+function showSkeletons(tab) {
+  for (const [id, html] of Object.entries(SKELETONS[tab] || {})) {
+    const el = document.getElementById(id);
+    if (el && !el.childElementCount && !el.textContent.trim()) el.innerHTML = html;
+  }
+}
+
 function switchTab(name) {
   state.tab = name;
   localStorage.setItem("tab", name);
@@ -2143,6 +2219,7 @@ function switchTab(name) {
     b.classList.toggle("active", b.dataset.tab === name));
   document.querySelectorAll(".tab").forEach(s =>
     s.classList.toggle("active", s.id === "tab-" + name));
+  showSkeletons(name);
   refresh();
 }
 
@@ -2164,7 +2241,16 @@ function switchMarket(mkt) {
 async function refresh() {
   try { const fx = await api("/api/fx"); fxRate = fx.rate || null; } catch (e) { }
   try { await loaders[state.tab](); }
-  catch (e) { console.error(e); toast("Couldn't refresh: " + e.message); }
+  catch (e) {
+    console.error(e);
+    toast("Couldn't refresh: " + e.message, "error");
+    // a failed load must not leave placeholder shimmer pretending to load
+    for (const id of Object.keys(SKELETONS[state.tab] || {})) {
+      const el = document.getElementById(id);
+      if (el && el.querySelector(".skel"))
+        el.innerHTML = '<div class="empty-note">Couldn\'t load this just now — it retries on the next refresh.</div>';
+    }
+  }
   loadHeader();
 }
 
@@ -2208,6 +2294,14 @@ document.querySelectorAll("#news-scope button").forEach(b => b.onclick = () => {
 document.getElementById("dash-hnews").onclick = () => {
   state.newsScope = "holdings";
   switchTab("news");
+};
+document.querySelectorAll("#adv-filter button").forEach(b => b.onclick = () => {
+  state.advFilter = b.dataset.af;
+  loadAdvisor();
+});
+document.getElementById("adv-sort").onchange = (e) => {
+  state.advSort = e.target.value;
+  loadAdvisor();
 };
 document.getElementById("changelog-btn").onclick = showChangelog;
 
@@ -2275,13 +2369,24 @@ async function loadPredHoldings() {
   const el = document.getElementById("pred-holdings");
   if (!el) return;
   try {
-    const p = await api(M() + "/portfolio");
+    const [p, ps] = await Promise.all([
+      api(M() + "/portfolio"),
+      api(M() + "/predict_summary?mine=1").catch(() => ({})),
+    ]);
     const hs = (p.holdings || []).filter(h => h.price);
     if (!hs.length) { el.innerHTML = ""; return; }
+    const mine = ps.mine || {};
+    // ▲/▼ = where the 30d trend fit points for each holding (ruler estimate,
+    // not a promise - the same fit as the chart below)
+    const dir = (aid) => {
+      const pct = mine[aid];
+      if (pct == null) return "";
+      return ` <span class="${pct >= 0 ? "pos" : "neg"}" title="The recent trend, if it simply continues, points ${pct >= 0 ? "up" : "down"} about ${pct >= 0 ? "+" : ""}${pct}% over 30 days - an estimate, not a promise">${pct >= 0 ? "▲" : "▼"}</span>`;
+    };
     const cur = (state.predAsset || {})[state.market];
     el.innerHTML = '<span class="muted small-note">Your holdings:</span>' + hs.map(h =>
       `<button class="hold-chip${cur === h.asset_id ? " active" : ""}" data-ph="${esc(h.asset_id)}"
-        title="Show the projection for ${esc(h.name)}">${esc(h.symbol || h.name)}</button>`).join("");
+        title="Show the projection for ${esc(h.name)}">${esc(h.symbol || h.name)}${dir(h.asset_id)}</button>`).join("");
     el.querySelectorAll("[data-ph]").forEach(b => b.onclick = () => {
       const hm = hs.find(x => x.asset_id === b.dataset.ph) || {};
       setPredAsset(b.dataset.ph, hm.symbol, hm.name);
@@ -2340,6 +2445,11 @@ async function drawPrediction() {
   const m = d.method;
   const far = d.proj[d.proj.length - 1];
   const ts = (m.tech_score == null) ? 0 : m.tech_score;
+  // each projected level as a % move from the latest close, colored by sign
+  const lastClose = d.history[histN - 1] && d.history[histN - 1][1];
+  const predPct = (v, base) => (base && v != null)
+    ? `<span class="${v >= base ? "pos" : "neg"}">(${v >= base ? "+" : ""}${((v / base - 1) * 100).toFixed(1)}%)</span>`
+    : "";
   methodEl.innerHTML = `
     <ul class="bd-sec">
       <li><b>1. The drawn line:</b> a best-fit trend over the last ${m.lookback_bars} closes
@@ -2353,8 +2463,8 @@ async function drawPrediction() {
         predicts days, not months.</li>
     </ul>
     <div class="bd-total">By ${new Date(far.ts).toLocaleDateString([], { month: "short", day: "numeric" })}:
-      likely ${fmtMoney(far.lo)} \u2013 ${fmtMoney(far.hi)}
-      <span class="muted">(center ${fmtMoney(far.center)})</span></div>`;
+      likely ${fmtMoney(far.lo)} ${predPct(far.lo, lastClose)} \u2013 ${fmtMoney(far.hi)} ${predPct(far.hi, lastClose)}
+      <span class="muted">\u00b7 center ${fmtMoney(far.center)} ${predPct(far.center, lastClose)} from today</span></div>`;
   if (d.analyst && d.analyst.length) {
     const a0 = d.analyst[0], a1 = d.analyst[1];
     const tot = (x) => (x.strongBuy||0)+(x.buy||0)+(x.hold||0)+(x.sell||0)+(x.strongSell||0);
@@ -2584,11 +2694,150 @@ async function showMembers() {
 
 setupTxForm();
 setupWatchTools();
+/* ------------------------------------------------------------- guided tour
+   Spotlight walkthrough for new members: darkens the page, rings one part of
+   the app at a time, explains it in plain words. Runs once after registering
+   (and any time from the footer's "Take the quick tour"). */
+const TOUR_STEPS = [
+  { sel: "#mkt-switch", title: "Three markets, one tracker",
+    text: "Crypto, Philippine stocks, and global stocks. Everything below — your money, suggestions, news — follows whichever one is selected here. Each keeps its own wallet and portfolio." },
+  { tab: "dashboard", sel: "#dash-cards", title: "Your money at a glance",
+    text: "Once you log a budget and your first trades, this row shows your total worth, cash and profit/loss. The numbers are estimates from slightly-delayed prices — close, not to the centavo." },
+  { tab: "dashboard", sel: ".plan-panel", title: "Today's Plan",
+    text: "The advisor's top thoughts for the day. They're suggestions with reasons, never orders — the final call is always yours." },
+  { tab: "dashboard", sel: "#holdings-table", title: "What you hold",
+    text: "Every position with live value and P/L. The little pickers in the header switch the Change window and the P/L unit; clicking an asset's name or its Change cell opens the chart; the Plan column sets take-profit / stop-loss levels that flag you when the price crosses them." },
+  { tab: "advisor", sel: "#advisor-actions", title: "The Advisor",
+    text: "Scored buy/sell suggestions with their full reasoning ledger — technicals and news, plus fundamentals and professional analyst consensus on stocks. Accept logs the trade, ✗ dismisses it for today, ⏳ arms a trailing plan, ⧉ copies it for the group chat, 📌 pins it up top." },
+  { tab: "portfolio", sel: ".tx-form", title: "Log what you actually did",
+    text: "Record your real buys and sells (fees too) and the tracker mirrors your exchange. If the numbers ever drift, the 🔧 Fix records box on this tab sets them straight without inventing profit." },
+  { tab: "watchlist", sel: "#watch-table", title: "Watchlist & Signals",
+    text: "Every tracked asset with its technical read and a News score from −3 to +3. Sort the columns, filter by name — and once you hold something, its ticker appears as a one-tap chip up top." },
+  { tab: "news", sel: "#news-scope", title: "News that's about YOU",
+    text: "All news, or just the stories that touch your holdings — 💼 marks a story naming something you own. On the stock markets, sector-wide news that moves your kind of company is included too." },
+  { sel: "#account-btn", title: "Make it yours",
+    text: "Set your trading style (scalper to long-term), aggressiveness, and portfolio spread — the advisor re-tunes every suggestion around them. That's the loop: watch, decide, log. Welcome aboard! 📈" },
+];
+let _tourIdx = -1;
+let _tourGen = 0;        // bumped on every end/step so stale awaits abort
+let _tourObs = null;     // watches the spotlighted element for size changes
+let _tourReturnTab = null;
+
+function _tourEnd() {
+  _tourGen++;
+  _tourIdx = -1;
+  if (_tourObs) { _tourObs.disconnect(); _tourObs = null; }
+  ["tour-hl", "tour-card"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.remove();
+  });
+  // the tour walked through several tabs; the member's SAVED tab preference
+  // shouldn't be whichever tab the tour happened to end on
+  if (_tourReturnTab) { localStorage.setItem("tab", _tourReturnTab); _tourReturnTab = null; }
+}
+
+// position (or re-position) the ring and card around the current target -
+// called on entry, and again whenever the target grows/shrinks/scrolls
+function _tourPlace(target, i, st) {
+  const r = target.getBoundingClientRect();
+  let hl = document.getElementById("tour-hl");
+  if (!hl) {
+    hl = document.createElement("div");
+    hl.id = "tour-hl";
+    document.body.appendChild(hl);
+  }
+  Object.assign(hl.style, {
+    top: r.top - 7 + "px", left: Math.max(2, r.left - 7) + "px",
+    width: Math.min(innerWidth - 8, r.width + 14) + "px",
+    height: Math.min(innerHeight - 12, r.height + 14) + "px",
+  });
+  let card = document.getElementById("tour-card");
+  if (!card) {
+    card = document.createElement("div");
+    card.id = "tour-card";
+    document.body.appendChild(card);
+  }
+  card.innerHTML = `
+    <div class="tour-step muted">${i + 1} of ${TOUR_STEPS.length}</div>
+    <h3>${esc(st.title)}</h3>
+    <p>${st.text}</p>
+    <div class="tour-btns">
+      <button class="mini-btn" id="tour-skip">Skip tour</button>
+      <span style="flex:1"></span>
+      ${i > 0 ? '<button class="mini-btn" id="tour-back">← Back</button>' : ""}
+      <button class="primary-btn small" id="tour-next">${i === TOUR_STEPS.length - 1 ? "Done ✓" : "Next →"}</button>
+    </div>`;
+  const ch = 210;   // approximate card height, for above/below placement
+  card.style.top = (r.bottom + ch + 30 < innerHeight ? r.bottom + 14
+                    : Math.max(10, r.top - ch - 14)) + "px";
+  card.style.left = Math.max(10, Math.min(innerWidth - 330, r.left)) + "px";
+  document.getElementById("tour-skip").onclick = _tourEnd;
+  document.getElementById("tour-next").onclick = () =>
+    i === TOUR_STEPS.length - 1 ? _tourEnd() : _tourShow(i + 1);
+  const back = document.getElementById("tour-back");
+  if (back) back.onclick = () => _tourShow(i - 1);
+}
+
+async function _tourShow(i, hops) {
+  if ((hops || 0) > TOUR_STEPS.length) return _tourEnd();  // all steps missing
+  const st = TOUR_STEPS[i];
+  if (!st) return _tourEnd();
+  const gen = ++_tourGen;   // entering a step invalidates every older await
+  _tourIdx = i;
+  if (_tourObs) { _tourObs.disconnect(); _tourObs = null; }
+  if (st.tab && state.tab !== st.tab) {
+    switchTab(st.tab);
+    await new Promise(r => setTimeout(r, 900));
+    if (gen !== _tourGen) return;   // ended (or moved on) while we waited
+  }
+  const target = document.querySelector(st.sel);
+  if (!target || !target.offsetParent) {   // missing/hidden? skip forward
+    return _tourShow(i + 1, (hops || 0) + 1);
+  }
+  target.scrollIntoView({ block: "center" });
+  await new Promise(r => setTimeout(r, 250));
+  if (gen !== _tourGen) return;
+  _tourPlace(target, i, st);
+  // content can land under the ring after we measured (slow first load
+  // replacing a skeleton): follow the target's real size while on this step
+  _tourObs = new ResizeObserver(() => {
+    if (_tourIdx === i && document.body.contains(target)) _tourPlace(target, i, st);
+  });
+  _tourObs.observe(target);
+}
+
+function startTour() {
+  _tourEnd();
+  _tourReturnTab = localStorage.getItem("tab") || "dashboard";
+  switchTab("dashboard");
+  setTimeout(() => _tourShow(0), 600);
+}
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && _tourIdx >= 0) {
+    // if a dialog is open on top, this Esc belongs to the dialog - the tour
+    // stays; the next Esc reaches us
+    if (!document.querySelector(".app-overlay, #accept-overlay, #targets-overlay")) _tourEnd();
+  }
+});
+addEventListener("resize", () => { if (_tourIdx >= 0) _tourShow(_tourIdx); });
+addEventListener("scroll", () => {
+  if (_tourIdx < 0) return;
+  const st = TOUR_STEPS[_tourIdx];
+  const target = st && document.querySelector(st.sel);
+  if (target) _tourPlace(target, _tourIdx, st);
+}, { passive: true });
+
 document.querySelectorAll("#mkt-switch button").forEach(b =>
   b.classList.toggle("active", b.dataset.market === state.market));
 loadUser();
 if (state.tab !== "dashboard") switchTab(state.tab);  // restore last tab
-else refresh();
+else { showSkeletons("dashboard"); refresh(); }
+// first visit after registering: walk the new member through the app
+if (localStorage.getItem("tour") === "pending") {
+  localStorage.setItem("tour", "done");
+  setTimeout(startTour, 1600);   // let the first data land under the spotlight
+}
+document.getElementById("tour-btn").onclick = startTour;
 // Auto-refresh, kept cheap: a background tab polls nothing at all (it used to
 // pull ~400 KB every 2 minutes forever, which dominated our database's data
 // budget), and the heavy watchlist payload is only re-fetched on the tab that
@@ -2618,7 +2867,7 @@ setInterval(() => {
   const el = document.activeElement;
   const typing = el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA");
   const dialogOpen = document.querySelector(".app-overlay, #accept-overlay, #targets-overlay");
-  if (!document.hidden && !typing && !dialogOpen) autoRefresh();
+  if (!document.hidden && !typing && !dialogOpen && _tourIdx < 0) autoRefresh();
 }, REFRESH_MS);
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden && Date.now() - lastRefreshAt > REFRESH_MS) autoRefresh();

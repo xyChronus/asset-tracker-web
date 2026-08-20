@@ -125,6 +125,20 @@
   <div class="panel-head standalone"><h3>Suggested Actions</h3>
     <span class="muted small-note">Automated analysis of technicals + news + fundamentals + your holdings. A strong second opinion — the final call is always yours.</span>
   </div>
+  <div class="adv-controls">
+    <span class="scope-pills" id="adv-filter">
+      <button data-af="all" class="active">All</button>
+      <button data-af="buy">Buys</button>
+      <button data-af="sell">Sells</button>
+    </span>
+    <select id="adv-sort" class="cur-select" title="Order of the suggestion cards">
+      <option value="advisor">Advisor's order</option>
+      <option value="conviction">Strongest conviction</option>
+      <option value="amount">Biggest amount</option>
+      <option value="name">A–Z</option>
+    </select>
+    <span class="muted small-note">📌 pins a card to the front</span>
+  </div>
   <div id="advisor-actions" class="rec-grid"></div>
   <div class="panel-head standalone"><h3>Holds &amp; Watches</h3></div>
   <div id="advisor-holds" class="rec-grid"></div>
@@ -338,6 +352,7 @@
 <footer>
   Crypto data: CoinGecko · PSE data: PSE Edge &amp; phisix · Global stocks: Finnhub &amp; Yahoo Finance · News from major outlets per market ·
   Signals and advisor suggestions are automated heuristics, <b>not financial advice</b>. Markets are risky — never invest more than you can afford to lose.
+  · <button class="link-btn" id="tour-btn">Take the quick tour</button>
 </footer>
 
 <div id="toast"></div>

@@ -374,3 +374,18 @@ Web-only items are marked **(web)**.
 ## [1.28.0] — 2026-08-19 — A slimmer holdings table
 ### Changed
 - **The Dashboard holdings table went from 13 columns to 10.** The Day / 7d / 30d columns merged into one **Change** column with a small picker in its header (choose which window it shows), and Unrealized P/L + P/L % merged into one **P/L** column with a $/% picker. Your choices stick between visits, sorting follows whatever the pickers show, clicking a Change cell still opens the chart — and hovering the P/L cell always shows both the money and the percentage, so nothing was actually removed. (Requested by the admin.)
+
+## [1.29.0] — 2026-08-20 — Welcome aboard
+### Added
+- **A guided tour for new members.** Right after registering, the app walks you through itself — spotlighting the market switcher, your money cards, Today's Plan, the holdings table, the Advisor, trade logging, the watchlist, holdings news and your settings, one plain-English card at a time. Skippable any time; replayable from "Take the quick tour" in the footer.
+- **Predictions show the % move, not just the price.** The projection line now reads "likely ₱X (−5.2%) – ₱Y (+15.9%) · center ₱Z (+4.9%) from today", and your holdings chips on that tab carry a green ▲ or red ▼ showing which way each one's 30-day trend points (an estimate, not a promise — the tooltip says so).
+- **"Held since" on every position** — the holdings table shows the date of the first buy of your current position next to the ticker (a full sell-out resets it, so the date is honest about what you hold now).
+- **Advisor tab controls**: filter suggestions to Buys or Sells, re-sort them (advisor's order, strongest conviction, biggest amount, A–Z), and 📌 pin any card to the front of the list.
+### Changed
+- **Advisor cards are half the height.** The top two reasons stay visible; the rest, plus the headlines, fold into a "More detail" section, with the full reasoning ledger below it as before. Less scrolling, same information.
+- **The dismiss button is now a red ✗** (it removes the suggestion for today without logging anything — a checkmark implied "done/agreed", which it never meant). The stat panel now says "Dismissed Today" to match.
+- **Loading no longer jumps the page around**: tabs show gray placeholder shapes where content is about to appear, so the layout doesn't shift when data lands.
+- Visiting the sign-in or register page while already signed in now takes you straight into the app.
+- Tablet-width screens (between phone and desktop) now wrap the header and card buttons properly instead of overflowing.
+### Fixed
+- A removed account's old browser session could linger half-alive (pages loaded, data queries returned nothing). Deleted accounts now sign out fully on their next request.

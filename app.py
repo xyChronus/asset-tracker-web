@@ -66,7 +66,10 @@ def _pw_version(user_id):
     if user_id not in _pw_versions:
         row = db.conn().execute(
             "SELECT COALESCE(pw_version, 0) AS v FROM users WHERE id=%s", (user_id,)).fetchone()
-        _pw_versions[user_id] = row["v"] if row else 0
+        # None (never equal to any cookie's integer) for a DELETED account -
+        # returning 0 here let a removed user's old cookie keep a ghost
+        # session alive, since legacy cookies legitimately carry pwv 0
+        _pw_versions[user_id] = row["v"] if row else None
     return _pw_versions[user_id]
 
 
@@ -119,11 +122,16 @@ def healthz():
 
 @app.get("/login")
 def login_page():
+    # already signed in? the app is the place to be, not another sign-in form
+    if session.get("uid"):
+        return redirect("/")
     return send_from_directory("static", "login.html")
 
 
 @app.get("/register")
 def register_page():
+    if session.get("uid"):
+        return redirect("/")
     return send_from_directory("static", "register.html")
 
 
@@ -1323,6 +1331,13 @@ def portfolio_state(market, user):
             if q >= 0:
                 p["qty"] += q
                 p["cost"] += val          # no fee, no cash, no realized P/L
+                # an avg-rebase from Fix records passes through zero as a
+                # same-timestamp -current/+true pair: that must not restamp
+                # a position the user never actually left
+                keep = p.pop("_rebase_keep", None)
+                if p.get("first_ts") is None and q > 0:
+                    p["first_ts"] = (keep[1] if keep and keep[0] == t["ts"]
+                                     and keep[1] else t["ts"])
             else:
                 adj = min(-q, p["qty"])
                 avg = p["cost"] / p["qty"] if p["qty"] > 1e-12 else 0.0
@@ -1330,11 +1345,18 @@ def portfolio_state(market, user):
                 p["cost"] -= avg * adj
                 if p["qty"] <= 1e-9:
                     p["qty"], p["cost"] = 0.0, 0.0
+                    p["_rebase_keep"] = (t["ts"], p.get("first_ts"))
+                    p["first_ts"] = None
             continue
         if q >= 0:
             p["qty"] += q
             p["cost"] += val + fee          # buy fees fold into the cost basis
             p["bought_usd"] += val + fee
+            p.pop("_rebase_keep", None)
+            # "held since": the first buy of the CURRENT position - a full
+            # sell-out resets it, so the date is about what you hold now
+            if p.get("first_ts") is None:
+                p["first_ts"] = t["ts"]
         else:
             sell_qty = -q
             avg = p["cost"] / p["qty"] if p["qty"] > 1e-12 else t["price"]
@@ -1345,6 +1367,7 @@ def portfolio_state(market, user):
             p["sold_usd"] += proceeds
             if p["qty"] <= 1e-9:
                 p["qty"], p["cost"] = 0.0, 0.0
+                p["first_ts"] = None
     tgts = {r["asset_id"]: r for r in db.conn().execute(
         "SELECT * FROM targets WHERE user_id=%s AND market=%s", (user, market)).fetchall()}
     srow = db.conn().execute(
@@ -1362,6 +1385,7 @@ def portfolio_state(market, user):
     # from the 6-hourly prediction snapshot's actual history — zero extra reads
     pred = db.kv_get(f"predict:{market}", {}).get("data") or {}
     for aid, p in pos.items():
+        p.pop("_rebase_keep", None)   # fold-internal scratch, not API surface
         m = pm.get(aid) or {}
         tot_realized += p["realized"]
         if p["qty"] <= 1e-9:
@@ -2711,8 +2735,20 @@ def api_predict_summary(market):
     data = snap.get("data") or {}
     ranked = sorted(({"asset_id": k, **v} for k, v in data.items()),
                     key=lambda x: x["pct30"])
+    # 30d trend direction for the caller's transacted assets - the ▲/▼ on the
+    # Predictions tab's holdings chips. Opt-in via ?mine=1 so the dashboard's
+    # movers panel (which polls this endpoint) pays neither the extra query
+    # nor the extra payload.
+    mine = {}
+    if request.args.get("mine"):
+        for t in db.conn().execute(
+                "SELECT DISTINCT asset_id FROM transactions WHERE market=%s AND user_id=%s",
+                (market, uid())).fetchall():
+            p = data.get(t["asset_id"])
+            if p and p.get("pct30") is not None:
+                mine[t["asset_id"]] = round(p["pct30"], 1)
     return jsonify({"updated": snap.get("updated"),
-                    "down": ranked[:10], "up": ranked[::-1][:10]})
+                    "down": ranked[:10], "up": ranked[::-1][:10], "mine": mine})
 
 
 def _analyst_recs(market, asset_id):

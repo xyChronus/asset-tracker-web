@@ -61,7 +61,11 @@ document.getElementById("f").onsubmit = async (e) => {
     }),
   });
   const d = await r.json().catch(() => ({}));
-  if (r.ok) location.href = "/";
+  if (r.ok) {
+    // greet the new member with the guided tour on their first visit
+    try { localStorage.setItem("tour", "pending"); } catch (e2) {}
+    location.href = "/";
+  }
   else msg.innerHTML = '<span class="neg">' + (d.error || "Registration failed") + "</span>";
 };
 </script>
