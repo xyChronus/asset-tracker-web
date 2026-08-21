@@ -1725,7 +1725,8 @@ def get_advisor(market, user, force=False):
                            "image": m.get("image"), "price": m.get("price"),
                            "chg_24h": m.get("chg_24h"),
                            "chg_7d": (m.get("_raw") or {}).get("price_change_percentage_7d_in_currency"),
-                           "chg_30d": (m.get("_raw") or {}).get("price_change_percentage_30d_in_currency")})
+                           "chg_30d": (m.get("_raw") or {}).get("price_change_percentage_30d_in_currency"),
+                           "market_cap": (m.get("_raw") or {}).get("market_cap")})
         for r in db.conn().execute(
                 "SELECT DISTINCT asset_id, name FROM transactions"
                 " WHERE market=%s AND user_id=%s", (market, user)).fetchall():
@@ -1738,7 +1739,8 @@ def get_advisor(market, user, force=False):
                            "image": m.get("image"), "price": m.get("price"),
                            "chg_24h": m.get("chg_24h"),
                            "chg_7d": (m.get("_raw") or {}).get("price_change_percentage_7d_in_currency"),
-                           "chg_30d": (m.get("_raw") or {}).get("price_change_percentage_30d_in_currency")})
+                           "chg_30d": (m.get("_raw") or {}).get("price_change_percentage_30d_in_currency"),
+                           "market_cap": (m.get("_raw") or {}).get("market_cap")})
         signals_data = db.kv_get(f"{market}:signals", {}).get("data", {})
         port = portfolio_state(market, user)
         news_rows = _advisor_news(market)

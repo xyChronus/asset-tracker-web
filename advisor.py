@@ -457,6 +457,20 @@ QUIET_COIL = 0.12         # extremely tight recent action
 QUIET_MIN_VOL = 1.5       # only meaningful for assets that normally move
 BASE_MIN_VOL = 1.0
 
+# Recovery-candidate lane: buying INTO a decline, with evidence. The advisor is
+# trend-respecting by default (buying falling assets loses more often than it
+# wins), so this door opens only when a real month-long drop meets an oversold
+# read, NO active bad-news driver, and a reason to believe the name comes back
+# (solid fundamentals / analyst backing for stocks; established large-cap for
+# crypto). Entries are half-sized and framed as staged - the bottom is unknowable.
+DIP_CHG30 = {"crypto": -20, "stocks": -12}   # a genuine decline over ~30d
+DIP_RSI = {"crypto": 30, "stocks": 35}        # oversold
+DIP_RSI_CAUTION = 28                          # deeper when the whole market is selling
+DIP_RANGE_POS = 0.30                          # in the bottom third of its recent range
+DIP_CRYPTO_MIN_CAP = 1e9                      # "established" coin, not a micro-cap
+DIP_MAX_DROP = {"crypto": -50, "stocks": -35}  # beyond this it's a collapse with a story, not a dip
+DIP_MIN_BARS = 20                              # ~a month of daily closes (global windows give ~25)
+
 
 def _round_amt(v, floor=10):
     return max(floor, int(round(v / 5.0) * 5))
@@ -733,6 +747,41 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
         action, amt = "HOLD", None
         sale_reasons_n = 0  # how many leading reasons argue for a sell action
         pullback = False  # set by the watchlist buy path; read by the chase gate
+        dip, dip_vote = False, 0.0  # recovery-candidate lane (buying into a decline)
+
+        def _dip_setup():
+            """Evidence string when this is a recovery candidate, else None:
+            real decline + oversold + bottom of range + no bad-news driver +
+            a concrete reason to expect the name to come back."""
+            if style == "scalper" or not price:
+                return None
+            rsi_d = ind.get("rsi")
+            chg30d = a.get("chg_30d") if is_crypto else ind.get("chg_30d")
+            if rsi_d is None or chg30d is None:
+                return None
+            # thin names fake oversold reads (RSI 0 on a stock that trades
+            # twice a week): demand real history and real movement, the same
+            # liquidity floor the basing detector uses
+            if rsi_d <= 0 or (prim0.get("bars") or 0) < DIP_MIN_BARS or (vol0 or 0) < BASE_MIN_VOL:
+                return None
+            kind = "crypto" if is_crypto else "stocks"
+            if chg30d > DIP_CHG30[kind] or chg30d < DIP_MAX_DROP[kind]:
+                return None
+            if rsi_d > (DIP_RSI_CAUTION if caution else DIP_RSI[kind]):
+                return None
+            if rpos0 is not None and rpos0 > DIP_RANGE_POS:
+                return None
+            if news_score < -0.5 or ind_score < -0.25:
+                return None
+            if is_crypto:
+                return ("an established large-cap coin"
+                        if (a.get("market_cap") or 0) >= DIP_CRYPTO_MIN_CAP else None)
+            ev = []
+            if value_votes >= 2:
+                ev.append("solid fundamentals")
+            if street and street_score >= 0.5:
+                ev.append(f"analysts still {street['buy_pct']:.0f}% buy-side")
+            return " and ".join(ev) if ev else None
 
         if h and not has_value:
             reasons.append(
@@ -804,6 +853,22 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
                                 "normally waits out."))
                 if news_score >= 1:
                     reasons.append("News flow around it is clearly positive.")
+            elif (plpct is not None and plpct <= -10 and alloc <= max_alloc / 2.0
+                  and headroom >= 10 and (cash is None or cash >= min_buy)
+                  and _dip_setup()):
+                # averaging down, ONCE: a position that fell with the market
+                # but still has the evidence for a comeback, and is small
+                # enough that adding isn't doubling down
+                dip, dip_vote = True, 2.0
+                action = "BUY MORE"
+                amt = min(0.05 * capital, headroom)
+                reasons.append(
+                    f"Recovery setup on a position you're {abs(plpct):.0f}% under water on: "
+                    f"{_dip_setup()}, oversold, and no bad-news driver behind the fall. "
+                    f"Sized small (~5% of your {wallet_word}) and only because it's still "
+                    f"under half your concentration cap - a staged add, not doubling down. "
+                    "Buying into a decline is a bet on recovery; the exact bottom is unknowable.")
+                gate_notes.append("Recovery lane: averaging down, capped at one small staged add")
             else:
                 action = "HOLD"
                 if tech is None and not f:
@@ -861,7 +926,15 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
                         pullback = (chg30p >= 10 and sma20 and price > sma20
                                     and value_votes >= -1
                                     and rpos is not None and 0.40 <= rpos <= 0.85)
-            good_setup = good_setup or pullback
+            # the recovery lane takes precedence over the plain value door
+            # whenever the technicals are flat or negative: a cheap stock that
+            # is ALSO down 20% and oversold deserves the lane's half-sized,
+            # staged framing, not a full-size "attractive valuation" entry
+            dip_ev = None
+            if not pullback and (tech is None or tech <= 0):
+                dip_ev = _dip_setup()
+                dip = bool(dip_ev)
+            good_setup = good_setup or pullback or dip
             if good_setup and cash is not None and cash < min_buy:
                 action = "WATCH"
                 reasons.append(
@@ -874,13 +947,27 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
                     "Sit tight, or free up funds by rotating out of a weaker holding.")
             elif good_setup:
                 action = "BUY"
-                amt = base
-                reasons.append(
-                    f"Suggested size fits your spread setting: a full "
-                    f"{wallet_word} here is ~{int(round(band_mid))} names, so "
-                    f"this opens at about "
-                    f"{base / capital * 100:.0f}% of it." if capital > 0 else
-                    "Starter-sized entry.")
+                amt = base * 0.5 if dip else base
+                if dip:
+                    dip_vote = 2.0
+                    chg30d_ = a.get("chg_30d") if is_crypto else ind.get("chg_30d")
+                    size_txt = (f"~{amt / capital * 100:.0f}% of your {wallet_word}"
+                                if capital > 0 else "a half-sized starter")
+                    reasons.append(
+                        f"Recovery candidate: down {abs(chg30d_):.0f}% over the month and "
+                        f"oversold (RSI {ind.get('rsi'):.0f}), yet {dip_ev} and no bad-news "
+                        f"driver behind the fall. Buying into a decline is a bet on "
+                        f"recovery - the exact bottom is unknowable, so this opens at HALF "
+                        f"the usual starter ({size_txt}) and is meant to be staged: add on "
+                        f"confirmation, not on hope.")
+                    gate_notes.append("Recovery lane: half-sized starter - buying into a decline")
+                else:
+                    reasons.append(
+                        f"Suggested size fits your spread setting: a full "
+                        f"{wallet_word} here is ~{int(round(band_mid))} names, so "
+                        f"this opens at about "
+                        f"{base / capital * 100:.0f}% of it." if capital > 0 else
+                        "Starter-sized entry.")
                 if pullback:
                     reasons.append("In a solid uptrend but resting at its recent average - "
                                    "buying the dip in strength usually beats buying the breakout.")
@@ -901,8 +988,10 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
 
         # ---- entry-timing guard: don't chase extended moves (FRESH buys only;
         # held positions and pullback entries - already timing-checked - exempt)
-        conf_cap = False
-        if action == "BUY" and not pullback and style != "scalper" and price:
+        conf_cap = dip   # a recovery bet never earns High confidence
+        if dip_vote:
+            conviction += dip_vote
+        if action == "BUY" and not pullback and not dip and style != "scalper" and price:
             chg30 = a.get("chg_30d") if is_crypto else ind.get("chg_30d")
             prim_x = sig.get("plan") or {}
             rl_x, rh_x = prim_x.get("range_low"), prim_x.get("range_high")
@@ -981,7 +1070,10 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
             conf_cap = True  # never dampen sell-side decisiveness over event risk
 
         # ---- market weather: in a caution regime, half-size any fresh buys ----
-        if caution and action in ("BUY", "BUY MORE") and amt is not None:
+        # (recovery-lane entries are already half-sized and had to clear a deeper
+        # oversold bar in caution - halving them again just makes dust buys the
+        # size gate then demotes, leaving a card that promises a buy it can't make)
+        if caution and action in ("BUY", "BUY MORE") and amt is not None and not dip:
             amt = amt / 2.0
             gate_notes.append("Market weather: caution regime - buy size halved")
 
@@ -1071,8 +1163,10 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
         else:
             confidence = "Medium"
         if conf_cap and confidence == "High":
-            confidence = "Medium"  # chase-caution / imminent earnings caps certainty
-            gate_notes.append("Confidence capped at Medium - extended run-up or "
+            confidence = "Medium"  # chase-caution / earnings / recovery bet caps certainty
+            gate_notes.append("Confidence capped at Medium - buying into a decline is a "
+                              "bet on recovery, not a confirmed setup" if dip else
+                              "Confidence capped at Medium - extended run-up or "
                               "earnings within a week makes certainty cheap")
 
         # movement flags: awareness of big moves, independent of the trade call
@@ -1125,6 +1219,12 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
                 flags.append({"kind": "rebound",
                               "text": f"Up {tbp:.0f}%+ off its {currency}{_fmt_price(trough)} low "
                                       "- your trailing-buy alert says take a look"})
+        if dip:
+            _c30 = a.get("chg_30d") if is_crypto else ind.get("chg_30d")
+            flags.append({"kind": "dip",
+                          "text": f"Recovery setup: down {abs(_c30 or 0):.0f}% in 30d and oversold "
+                                  f"(RSI {ind.get('rsi') or 0:.0f}), no bad-news driver - "
+                                  "half-sized, staged entry"})
         if basing:
             flags.append({"kind": "base",
                           "text": f"Down {abs(chg30_0):.0f}% over the month but the fall has gone "
@@ -1178,7 +1278,9 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
                          "points": [("+" if x["sentiment"] > 0 else "-" if x["sentiment"] < 0 else "=")
                                     + " " + (x.get("title") or "") for x in articles]},
                 "value": {"score": round(value_votes, 2), "points": list(value_reasons)},
-                "extras": (([{"label": "Basing pattern (fall gone quiet)", "score": base_vote}]
+                "extras": (([{"label": "Recovery setup (oversold + evidence, half-sized)",
+                               "score": dip_vote}] if dip else [])
+                           + ([{"label": "Basing pattern (fall gone quiet)", "score": base_vote}]
                             if base_vote else [])
                            + ([{"label": f"Industry news ({ind_n['sector']})",
                                 "score": ind_score}] if ind_n else [])
@@ -1252,7 +1354,9 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
         movers = sorted([r for r in recs if r["flags"] and r["asset_id"] not in kept_ids],
                         # the user's own plan alerts (stops, targets, rebound
                         # watches) must never lose their slot to a mere mover
-                        key=lambda r: (not any(f["kind"] in ("tp", "sl", "rebound")
+                        # ...and a recovery candidate is a considered suggestion,
+                        # not a mere mover - it never loses its slot to 24h noise
+                        key=lambda r: (not any(f["kind"] in ("tp", "sl", "rebound", "dip")
                                                for f in r["flags"]),
                                        -abs(r.get("chg_24h") or 0)))[:10]
         recs = sorted(held + ideas + movers,

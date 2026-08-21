@@ -1072,7 +1072,7 @@ function recCard(r) {
   </div>`;
 }
 
-const FLAG_ICONS = { hot: "🔺", cold: "🔻", tp: "🎯", sl: "🛑", event: "📅", base: "🌱", quiet: "⚡", rebound: "↗️" };
+const FLAG_ICONS = { hot: "🔺", cold: "🔻", tp: "🎯", sl: "🛑", event: "📅", base: "🌱", quiet: "⚡", rebound: "↗️", dip: "🎣" };
 
 // "Seen it, letting it run" for triggered TP/SL alerts: hidden for the rest of
 // the day on this device (localStorage), back tomorrow while still triggered.

@@ -396,3 +396,11 @@ Web-only items are marked **(web)**.
 - **Today's Plan and the Advisor now say WHY the market is closed and when it reopens** — today, for example: "The market is closed for Ninoy Aquino Day — suggestions resume Monday at 9:30 AM." Weekends say "the weekend"; the resume time skips weekends and holidays (the Christmas cluster correctly resumes the following Monday).
 ### Notes
 - Philippine special non-working days can be proclaimed mid-year and Eid dates move with the lunar calendar — the calendar gets updated when Malacañang proclaims new dates. US calendars are final years ahead.
+
+## [1.31.0] — 2026-08-21 — Buying the dip, with evidence
+### Added
+- **A recovery-candidate lane in the Advisor.** Until now every buy door required the price to already be rising, so a falling asset could never be a BUY — even when you'd want to step in on the way down. The new lane opens *during* a decline, but only with evidence on the table: a real month-long drop (−12% stocks / −20% crypto, but not a collapse beyond −35%/−50%), an oversold reading (RSI ≤ 35 / ≤ 30, deeper in a cautious market), price in the bottom third of its recent range, **no active bad-news or sector headwind**, and a concrete reason to expect a comeback — solid fundamentals or analyst backing for stocks, established large-cap status for crypto. Thin, barely-trading names are excluded.
+- Recovery entries are **half the usual starter**, capped at Medium confidence, and worded as what they are: "Buying into a decline is a bet on recovery — the exact bottom is unknowable, so this is meant to be staged: add on confirmation, not on hope." They carry a 🎣 flag, show in the Hot & Cold strip, and the reasoning ledger records the +2 "Recovery setup" vote.
+- **Averaging down, once.** A position you're 10%+ under water on can get one small staged add (~5% of the wallet) when the same evidence holds — and only while the position is still under half your concentration cap, so it can never become doubling down.
+### Notes
+- Calibrated on live data before shipping: across ~380 tracked names the lane surfaced three global candidates (all oversold, analyst-backed, clean news) and zero crypto — selective by design. (Requested by the admin, from experience buying SPCX and several coins on the way down.)
