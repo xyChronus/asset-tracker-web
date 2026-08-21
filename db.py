@@ -145,6 +145,16 @@ CREATE TABLE IF NOT EXISTS kv (
     key TEXT PRIMARY KEY,
     value TEXT
 );
+-- daily traded amount per asset (crypto: USD volume from CoinGecko; PSE: peso
+-- value traded from phisix/Edge; global: share volume from Yahoo) - the
+-- "relative volume" confirmation read compares today with its 20-day average
+CREATE TABLE IF NOT EXISTS volume_daily (
+    market TEXT NOT NULL,
+    asset_id TEXT NOT NULL,
+    ts BIGINT NOT NULL,
+    volume DOUBLE PRECISION NOT NULL,
+    PRIMARY KEY (market, asset_id, ts)
+);
 """
 
 
@@ -206,6 +216,12 @@ def init():
     conn().execute("ALTER TABLE password_resets ADD COLUMN IF NOT EXISTS last_try BIGINT")
     conn().execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS aggressiveness TEXT DEFAULT 'balanced'")
     conn().execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS diversity TEXT DEFAULT 'balanced'")
+    # the member's own numeric rules (JSON: tp_pct, sl_pct, max_hold_days,
+    # names_lo, names_hi, extend_tp_strong) layered over their style preset
+    conn().execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_params TEXT")
+    # Scalper retired 2026-08-22 (trades by the second - not what a tracker
+    # refreshing every few minutes can honestly serve); Day is the nearest style
+    conn().execute("UPDATE users SET trading_style='day' WHERE trading_style='scalper'")
     conn().execute("ALTER TABLE targets ADD COLUMN IF NOT EXISTS trail_pct DOUBLE PRECISION")
     conn().execute("ALTER TABLE targets ADD COLUMN IF NOT EXISTS peak_price DOUBLE PRECISION")
     conn().execute("ALTER TABLE targets ADD COLUMN IF NOT EXISTS trail_buy_pct DOUBLE PRECISION")
@@ -261,6 +277,7 @@ _KV_HOT = {
     "predict:crypto", "predict:pse", "predict:global",
     "crypto:newsscores", "pse:newsscores", "global:newsscores",
     "pse:analystvotes", "global:analystvotes",
+    "macro:snapshot", "macro:manual",
 }
 _KV_TTL = 900.0
 _kv_cache = {}          # key -> (expires_monotonic, value)

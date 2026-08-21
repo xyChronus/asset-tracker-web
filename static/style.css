@@ -607,3 +607,8 @@ nav#tabs button, .mkt-switch button, .scope-pills button, .hold-chip,
 
 /* a greyed-out range/mode button must read as unavailable, not merely inactive */
 .range-btns button:disabled { opacity: .4; cursor: not-allowed; }
+
+/* Account panel: the member's own numeric rules */
+.rules-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0 12px; }
+.flag-chip.flag-time { background: rgba(250,204,21,.14); color: #fde047; }
+.mover-chip.mover-time { border-left-color: #fde047; }

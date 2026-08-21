@@ -15,6 +15,7 @@ import json
 import re
 import threading
 import time
+import calendar
 from datetime import datetime, timedelta
 
 import requests
@@ -51,6 +52,31 @@ def _edge_request(method, path, **kw):
         except requests.RequestException as e:
             last_error = str(e)
             raise
+
+
+def fetch_chart_values(cmpy_id, security_id, months=3):
+    """Daily peso VALUE traded from the Edge chart: [[day_ts_ms, value], ...]
+    (same endpoint and pacing as fetch_chart, different column)."""
+    end = datetime.now()
+    start = end - timedelta(days=months * 30)
+    body = _edge_request(
+        "POST", "/common/DisclosureCht.ax",
+        json={"cmpy_id": str(cmpy_id), "security_id": str(security_id),
+              "startDate": start.strftime("%m-%d-%Y"),
+              "endDate": end.strftime("%m-%d-%Y")})
+    out = []
+    for row in json.loads(body).get("chartData", []):
+        raw, val = row.get("CHART_DATE"), row.get("VALUE")
+        if not raw or val is None:
+            continue
+        try:
+            d = datetime.strptime(raw.strip()[:12].strip(), "%b %d, %Y")
+        except ValueError:
+            continue
+        # the calendar date as a UTC day bucket (a naive local-midnight
+        # timestamp would land one UTC day early from Manila)
+        out.append([calendar.timegm(d.timetuple()) // 86400 * 86400 * 1000, float(val)])
+    return out
 
 
 def fetch_chart(cmpy_id, security_id, months=6):

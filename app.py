@@ -5,6 +5,7 @@ Production:  gunicorn -w 1 --threads 8 -b 0.0.0.0:$PORT app:app
              (exactly ONE worker: it hosts the shared data-collector thread)
 """
 
+import json
 import math
 import os
 import re
@@ -266,14 +267,26 @@ def logout():
 @app.get("/api/me")
 def api_me():
     row = db.conn().execute(
-        "SELECT trading_style, aggressiveness, diversity FROM users WHERE id=%s",
+        "SELECT trading_style, aggressiveness, diversity, custom_params FROM users WHERE id=%s",
         (uid(),)).fetchone()
     r = row or {}
     return jsonify({"email": session.get("email"), "name": session.get("name"),
                     "admin": bool(session.get("admin")),
-                    "trading_style": r.get("trading_style") or "swing",
+                    "trading_style": adv.STYLE_ALIASES.get(r.get("trading_style"),
+                                                           r.get("trading_style")) or "swing",
                     "aggressiveness": r.get("aggressiveness") or "balanced",
-                    "diversity": r.get("diversity") or "balanced"})
+                    "diversity": r.get("diversity") or "balanced",
+                    "custom_params": _load_custom(r.get("custom_params"))})
+
+
+def _load_custom(raw):
+    """users.custom_params JSON -> validated dict ({} when unset or corrupt)."""
+    if not raw:
+        return {}
+    try:
+        return adv.sanitize_custom(json.loads(raw))
+    except (ValueError, TypeError):
+        return {}
 
 
 @app.post("/api/change_password")
@@ -514,6 +527,15 @@ def api_settings():
         if div not in adv.DIVERSITY:
             return jsonify({"error": "That spread level isn't one of the options."}), 400
         updates["diversity"] = div
+    if "custom_params" in d:
+        cur_style = db.conn().execute(
+            "SELECT trading_style FROM users WHERE id=%s", (uid(),)).fetchone()
+        try:
+            clean = adv.sanitize_custom(d.get("custom_params") or {},
+                                        updates.get("trading_style") or (cur_style or {}).get("trading_style"))
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        updates["custom_params"] = json.dumps(clean) if clean else None
     if not updates:
         return jsonify({"error": "Nothing to save - pick a setting first."}), 400
     sets = ", ".join(f"{k}=%s" for k in updates)   # keys are whitelisted above
@@ -521,7 +543,10 @@ def api_settings():
                       (*updates.values(), uid()))
     for market in config.MARKETS:  # any of these changes every market's advice
         _invalidate_advisor(market, uid())
-    return jsonify({"ok": True, **updates})
+    out = dict(updates)
+    if "custom_params" in out:
+        out["custom_params"] = json.loads(out["custom_params"]) if out["custom_params"] else {}
+    return jsonify({"ok": True, **out})
 
 
 @app.post("/api/invites")
@@ -555,7 +580,8 @@ def api_members():
         "SELECT i.code, i.created, i.used_at, u.email AS used_by_email"
         " FROM invites i LEFT JOIN users u ON u.id = i.used_by"
         " ORDER BY i.created DESC LIMIT 50").fetchall()]
-    return jsonify({"users": users, "invites": invites})
+    return jsonify({"users": users, "invites": invites,
+                   "macro": db.kv_get("macro:manual", {}).get("data") or {}})
 
 
 @app.get("/api/invites")
@@ -634,6 +660,7 @@ def crypto_fetch_markets():
             "price_change_percentage": "1h,24h,7d,30d", "sparkline": "true"})
         db.kv_set("crypto:watch_markets", {"updated": now_ms(), "data": data})
         _crypto_write_history(data)
+        _upsert_volume("crypto", [(m["id"], m.get("total_volume")) for m in data or []])
     except Exception:
         # CoinGecko unavailable: keep prices alive from CoinMarketCap
         fallback = _cmc_markets_fallback(ids)
@@ -824,6 +851,8 @@ def pse_fetch_quotes():
         quotes, as_of = pse_data.fetch_quotes()
         db.kv_set("pse:quotes", {"updated": now_ms(), "data": quotes, "as_of": as_of})
         _pse_write_price_history(quotes)
+        if _pse_open():   # outside the session phisix echoes the last day's totals
+            _upsert_volume("pse", [(s, q.get("value")) for s, q in quotes.items()])
         return
     except Exception as e:
         print(f"[pse] phisix quotes failed: {e}; falling back to Finnhub for held/watched names")
@@ -1234,8 +1263,195 @@ def _daily_closes(ts_price_rows):
     return [by_day[d] for d in sorted(by_day)]
 
 
+# ---------------------------------------------------------------- macro
+# The "key figures to track" a member listed: Fed/BSP policy rates, GDP,
+# inflation, oil. US figures come from Alpha Vantage's free economic
+# endpoints (3 calls a day, spaced for its 5-per-minute limit), oil from
+# Yahoo's keyless futures quotes. The Philippine figures have no free API
+# (the BSP site is script-rendered), so the admin types them in from each
+# BSP/PSA release and they carry their own "as of" date.
+MACRO_MANUAL_FIELDS = ("bsp_rate", "ph_inflation", "ph_gdp")
+
+
+def _av_series(function, interval):
+    key = global_data._setting("ALPHAVANTAGE_API_KEY", "alphavantage_api_key")
+    if not key:
+        return []
+    r = requests.get(global_data.ALPHA, params={"function": function, "interval": interval,
+                                                "apikey": key}, timeout=30)
+    r.raise_for_status()
+    data = r.json().get("data") or []
+    out = []
+    for row in data:
+        try:
+            out.append((row["date"], float(row["value"])))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out   # newest first
+
+
+def macro_tick():
+    """Daily refresh of the macro snapshot (kv macro:snapshot, hot-cached)."""
+    snap = dict(db.kv_get("macro:snapshot", {}).get("data") or {})
+    now = now_ms()
+    try:
+        ff = _av_series("FEDERAL_FUNDS_RATE", "monthly")
+        if ff:
+            snap["fed_rate"] = {"value": ff[0][1], "prev": ff[1][1] if len(ff) > 1 else None,
+                                "as_of": ff[0][0]}
+        time.sleep(15)
+        cpi = _av_series("CPI", "monthly")
+        if len(cpi) > 12:
+            snap["us_inflation"] = {"value": round((cpi[0][1] / cpi[12][1] - 1) * 100, 2),
+                                    "prev": round((cpi[1][1] / cpi[13][1] - 1) * 100, 2) if len(cpi) > 13 else None,
+                                    "as_of": cpi[0][0]}
+        time.sleep(15)
+        gdp = _av_series("REAL_GDP", "quarterly")
+        if len(gdp) > 4:
+            snap["us_gdp"] = {"value": round((gdp[0][1] / gdp[4][1] - 1) * 100, 2),
+                              "prev": round((gdp[1][1] / gdp[5][1] - 1) * 100, 2) if len(gdp) > 5 else None,
+                              "as_of": gdp[0][0]}
+    except Exception as e:
+        print(f"[macro] alpha vantage: {e}")
+    for key_, sym in (("wti", "CL=F"), ("brent", "BZ=F")):
+        try:
+            q = global_data.yahoo_quote(sym)
+            if q.get("price"):
+                snap[key_] = {"value": q["price"], "chg_pct": q.get("chg_pct"),
+                              "as_of": datetime.now().strftime("%Y-%m-%d")}
+        except Exception as e:
+            print(f"[macro] {sym}: {e}")
+    snap["updated"] = now
+    db.kv_set("macro:snapshot", {"updated": now, "data": snap})
+
+
+@app.get("/api/macro")
+def api_macro():
+    """Macro figures: automated US + oil, admin-maintained Philippine."""
+    return jsonify({"auto": db.kv_get("macro:snapshot", {}).get("data") or {},
+                    "manual": db.kv_get("macro:manual", {}).get("data") or {}})
+
+
+@app.post("/api/admin/macro")
+@admin_required
+def api_admin_macro():
+    """The admin types the Philippine figures in from the BSP/PSA releases."""
+    d = request.get_json(force=True)
+    cur = dict(db.kv_get("macro:manual", {}).get("data") or {})
+    as_of = (d.get("as_of") or "").strip()[:10]
+    if as_of:
+        try:
+            datetime.strptime(as_of, "%Y-%m-%d")
+        except ValueError:
+            return jsonify({"error": "Date must look like 2026-08-21."}), 400
+    for f in MACRO_MANUAL_FIELDS:
+        if f not in d:
+            continue
+        raw = d.get(f)
+        if raw in (None, ""):
+            cur.pop(f, None)
+            continue
+        try:
+            v = float(raw)
+        except (TypeError, ValueError):
+            return jsonify({"error": f"{f}: enter a plain number (percent)."}), 400
+        if not math.isfinite(v) or not -50 <= v <= 100:
+            return jsonify({"error": f"{f}: that's not a plausible percentage."}), 400
+        cur[f] = {"value": v, "as_of": as_of or datetime.now().strftime("%Y-%m-%d"),
+                  "by": session.get("email")}
+    db.kv_set("macro:manual", {"updated": now_ms(), "data": cur})
+    return jsonify({"ok": True, "manual": cur})
+
+
+def _upsert_volume(market, pairs, day_ts=None):
+    """Record today's traded amount per asset (last write of the day wins -
+    phisix/CoinGecko report the running daily total)."""
+    day = day_ts if day_ts is not None else now_ms() // 86400000 * 86400000
+    rows = [(market, aid, day, float(v)) for aid, v in pairs if aid and v and v > 0]
+    if rows:
+        db.conn().executemany(
+            "INSERT INTO volume_daily VALUES (%s,%s,%s,%s)"
+            " ON CONFLICT (market, asset_id, ts) DO UPDATE SET volume=EXCLUDED.volume", rows)
+
+
+def volume_backfill_tick(market):
+    """Seed ~3 months of daily traded amounts, one asset per tick, so the
+    relative-volume read has its 20-day baseline from day one instead of
+    warming up for a month. Global refreshes from Yahoo daily (its only
+    source); crypto and PSE are one-time seeds topped up live by the quote
+    collectors. Latched in kv volfill:{market}: {asset_id: last_fetch_ms}."""
+    ids = tracked_ids_all_users(market)
+    if not ids:
+        return
+    latch = dict(db.kv_get(f"volfill:{market}", {}))
+    # global refreshes once per session from Yahoo (its only source) and ONLY
+    # while the US market is closed, so a running session's partial bar can
+    # never be stored as that day's volume; crypto and PSE are seeded once and
+    # then fed live by their quote collectors
+    if market == "global":
+        if market_session("global")[0]:
+            return
+        due = [a for a in ids if now_ms() - latch.get(a, 0) >= 20 * 3600000]
+    else:
+        # re-read each name's history weekly: fills any days the live
+        # collector missed (the site was down, a feed hiccup) and means a
+        # name that once came back empty is not written off forever
+        due = [a for a in ids if now_ms() - latch.get(a, 0) >= 7 * 86400000]
+    if not due:
+        return
+    aid = min(due, key=lambda a: latch.get(a, 0))
+    rows = []
+    try:
+        if market == "crypto":
+            mc = coingecko.get(f"/coins/{aid}/market_chart",
+                               {"vs_currency": "usd", "days": 30, "interval": "daily"})
+            rows = [(int(t) // 86400000 * 86400000, v) for t, v in (mc.get("total_volumes") or [])]
+        elif market == "pse":
+            co = db.conn().execute(
+                "SELECT cmpy_id, security_id FROM pse_companies WHERE symbol=%s", (aid,)).fetchone()
+            if co:
+                rows = pse_data.fetch_chart_values(co["cmpy_id"], co["security_id"], months=3)
+        else:
+            rows = global_data.yahoo_daily_volume(aid, "3mo")
+    except coingecko.RateLimited:
+        return   # quota: try again later, never latch
+    except Exception as e:
+        print(f"[volume] {market} {aid}: {e}")
+        return   # a failed fetch is not "seeded": retry on a later tick
+    if rows:
+        # the running day is still accruing: let the live collector own it
+        today = now_ms() // 86400000 * 86400000
+        for day_ts, v in rows:
+            if day_ts < today or market == "global":
+                _upsert_volume(market, [(aid, v)], day_ts=day_ts)
+    latch[aid] = now_ms()
+    db.kv_set(f"volfill:{market}", latch)
+
+
+def _relative_volumes(market):
+    """{asset_id: rvol} for every tracked asset from one bounded read."""
+    since = now_ms() - 32 * 86400000
+    series = {}
+    # a stock market's running session is only part of a day: compare the last
+    # COMPLETE session instead (crypto's figure is a rolling 24h total - fine)
+    skip_today = market != "crypto" and market_session(market)[0]
+    today = now_ms() // 86400000 * 86400000
+    for r in db.conn().execute(
+            "SELECT asset_id, ts, volume FROM volume_daily"
+            " WHERE market=%s AND ts >= %s ORDER BY asset_id, ts", (market, since)).fetchall():
+        if skip_today and r["ts"] >= today:
+            continue
+        series.setdefault(r["asset_id"], []).append(r["volume"])
+    return {aid: rv for aid, vols in series.items()
+            if (rv := sig.relative_volume(vols)) is not None}
+
+
 def recompute_signals(market):
     pm, _ = price_map(market)
+    rvols = _relative_volumes(market)
+    # while a stock market trades, the stored volume is the PREVIOUS session's
+    # and today's move is still in progress: show the figure, don't score it
+    rvol_votes = market == "crypto" or not market_session(market)[0]
     # Indicators only use the last ~7 days of closes; reading a bounded window
     # instead of full history keeps the DB transfer quota intact.
     since = now_ms() - config.SIGNAL_WINDOW_DAYS[market] * 86400000
@@ -1252,7 +1468,8 @@ def recompute_signals(market):
         # uniform 24/7 hourly series already - no resample needed)
         pc = _daily_closes([(r["ts"], r["price"]) for r in rows]) if market != "crypto" else None
         out[aid] = sig.compute(closes, (pm.get(aid) or {}).get("chg_24h"), bars_per_day=bpd,
-                               plan_closes=pc, plan_bars_per_day=1.0 if pc is not None else None)
+                               plan_closes=pc, plan_bars_per_day=1.0 if pc is not None else None,
+                               rvol=rvols.get(aid), rvol_votes=rvol_votes)
         if market == "pse" and pc and len(pc) >= 30:
             window = pc[-30:]
             # a name that never traded in the window (flat quote echoes) says
@@ -1314,6 +1531,10 @@ def scheduler():
          lambda: recompute_signals("global")],
         [lambda: 43200, 0, earnings_calendar_tick],
         [lambda: 1800, 0, lambda: analyst_votes_tick("pse")],
+        [lambda: 86400, 0, macro_tick],
+        [lambda: 25, 0, lambda: volume_backfill_tick("pse")],
+        [lambda: 40, 0, lambda: volume_backfill_tick("crypto")],
+        [lambda: 20, 0, lambda: volume_backfill_tick("global")],
         [lambda: 1800, 0, lambda: analyst_votes_tick("global")],
         [lambda: 86400, 0, spx_daily_tick],
         [lambda: 21600, 0, lambda: predictions_tick("crypto")],
@@ -1431,8 +1652,9 @@ def portfolio_state(market, user):
     tgts = {r["asset_id"]: r for r in db.conn().execute(
         "SELECT * FROM targets WHERE user_id=%s AND market=%s", (user, market)).fetchall()}
     srow = db.conn().execute(
-        "SELECT trading_style FROM users WHERE id=%s", (user,)).fetchone()
+        "SELECT trading_style, custom_params FROM users WHERE id=%s", (user,)).fetchone()
     style = (srow or {}).get("trading_style") or "swing"
+    custom = _load_custom((srow or {}).get("custom_params"))
     held_ids = [aid for aid, p in pos.items() if p["qty"] > 1e-9]
     wk52 = {}
     if market != "crypto" and held_ids:
@@ -1482,7 +1704,7 @@ def portfolio_state(market, user):
         # data-deduced suggestion: the asset's own volatility + structure,
         # scaled to the user's style horizon (anchored on the current price)
         sugg = adv.suggest_plan(price, style, prim=(sgn or {}).get("plan"),
-                                wk52_high=wk52.get(aid)) if price else None
+                                wk52_high=wk52.get(aid), custom=custom) if price else None
         holdings.append({**p, "symbol": m.get("symbol", ""), "image": m.get("image"),
                          "price": price, "avg_buy": p["cost"] / p["qty"], "value": value,
                          "chg_24h": chg24, "chg_7d": chg7, "chg_30d": chg30,
@@ -1616,7 +1838,7 @@ def portfolio_history(market, user, hours):
 # ----------------------------------------------------------- per-user advisor
 
 BUY_ACTIONS = ("BUY", "BUY MORE")
-SELL_ACTIONS = ("TRIM", "SELL PART", "TAKE PROFIT")
+SELL_ACTIONS = ("SELL", "TRIM", "SELL PART", "TAKE PROFIT")
 DISMISS_HOURS = 24
 
 
@@ -1841,11 +2063,12 @@ def get_advisor(market, user, force=False):
         fund = db.get_fundamentals(market) if market != "crypto" else None
         is_open, next_open, closed_reason = market_session(market)
         srow = db.conn().execute(
-            "SELECT trading_style, aggressiveness, diversity FROM users WHERE id=%s",
+            "SELECT trading_style, aggressiveness, diversity, custom_params FROM users WHERE id=%s",
             (user,)).fetchone()
         style = (srow or {}).get("trading_style") or "swing"
         agg = (srow or {}).get("aggressiveness") or "balanced"
         div = (srow or {}).get("diversity") or "balanced"
+        custom = _load_custom((srow or {}).get("custom_params"))
         tgts = {r["asset_id"]: dict(r) for r in db.conn().execute(
             "SELECT * FROM targets WHERE user_id=%s AND market=%s", (user, market)).fetchall()}
         cal = db.kv_get("earnings:cal", {}).get("data", {})
@@ -1872,7 +2095,8 @@ def get_advisor(market, user, force=False):
                            # the Street's buy/hold/sell tallies (stocks only;
                            # read-only view of the hot kv snapshot)
                            analyst_votes=db.kv_get(
-                               f"{market}:analystvotes", {}).get("data") or {})
+                               f"{market}:analystvotes", {}).get("data") or {},
+                           custom=custom)
         # Attach the precomputed trend projections (display only — the fit is
         # built from the same price history the technicals already vote on, so
         # feeding it into conviction would double-count momentum).

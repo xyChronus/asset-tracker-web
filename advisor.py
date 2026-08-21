@@ -358,7 +358,7 @@ def _value_votes(f, price):
 
 # ----------------------------------------------------------- recommendations
 
-ACTION_RANK = {"SELL PART": 6, "TRIM": 5, "TAKE PROFIT": 4,
+ACTION_RANK = {"SELL": 7, "SELL PART": 6, "TRIM": 5, "TAKE PROFIT": 4,
                "BUY": 3, "BUY MORE": 3, "WATCH": 1, "HOLD": 0}
 
 MAX_ALLOC_PCT = 35
@@ -415,21 +415,84 @@ POSITION_BANDS = {   # (min, max) suggested names: [wallet class][diversity]
 #                 wallet gain a cap-sized position shows at its full target:
 #                 alloc_cap * tp_pct / (100 + tp_pct) - the denominator matters
 #                 because gain is measured against cost, not current value.
+# max_hold_days: the style's own time stop (calendar days) - Day closes the
+# same day, Swing by about a week; Long and Income have none. A held position
+# past it gets a time-stop suggestion unless the member's exception rule
+# (technicals AND fundamentals still strong) lets it run.
 STYLE_PARAMS = {
-    "scalper": {"label": "Scalper", "buy_tech": 2, "sell_hard": -2, "sell_soft": -1,
-                "tp_pct": 2, "tp_tech": 1, "value_buy": 99, "alloc_cap": 40,
-                "port_tp": 0.6},
     "day": {"label": "Day Trader", "buy_tech": 2, "sell_hard": -3, "sell_soft": -2,
             "tp_pct": 4, "tp_tech": 0, "value_buy": 99, "alloc_cap": 38,
-            "port_tp": 1.1},
+            "port_tp": 1.1, "max_hold_days": 1},
     "swing": {"label": "Swing Trader", "buy_tech": 3, "sell_hard": -4, "sell_soft": -2,
               "tp_pct": 10, "tp_tech": -1, "value_buy": 3, "alloc_cap": 35,
-              "port_tp": 2.4},
+              "port_tp": 2.4, "max_hold_days": 7},
     "long": {"label": "Long-Term Investor", "buy_tech": 4, "sell_hard": -5, "sell_soft": -4,
              "tp_pct": 40, "tp_tech": -1, "value_buy": 2, "alloc_cap": 35,
-             "port_tp": 7.5},
+             "port_tp": 7.5, "max_hold_days": None},
+    "income": {"label": "Income Investor", "buy_tech": 3, "sell_hard": -5, "sell_soft": -4,
+               "tp_pct": 25, "tp_tech": -1, "value_buy": 2, "alloc_cap": 35,
+               "port_tp": 5.0, "max_hold_days": None},
 }
 DEFAULT_STYLE = "swing"
+STYLE_ALIASES = {"scalper": "day"}   # retired styles map to their nearest living one
+INCOME_MIN_YIELD = {"₱": 4.0, "$": 3.0}   # "pays properly" bar for the Income style
+
+CUSTOM_LIMITS = {   # member-typed rules: (min, max); None allowed = "use the style's"
+    "tp_pct": (1.0, 100.0), "sl_pct": (0.5, 50.0), "max_hold_days": (1, 365),
+    "names_lo": (1, 30), "names_hi": (1, 30),
+}
+
+
+def sanitize_custom(raw, style=None):
+    """Validate a member's custom rules dict -> cleaned dict or raise ValueError.
+    The stop is checked against the take-profit that will actually apply
+    (the typed one, else the style's)."""
+    if not raw:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError("custom rules must be an object")
+    out = {}
+    for k, (lo, hi) in CUSTOM_LIMITS.items():
+        v = raw.get(k)
+        if v in (None, ""):
+            continue
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            raise ValueError(f"{k}: enter a plain number")
+        if not (lo <= v <= hi):
+            raise ValueError(f"{k}: must be between {lo:g} and {hi:g}")
+        out[k] = int(v) if k in ("max_hold_days", "names_lo", "names_hi") else v
+    if "sl_pct" in out:
+        base = STYLE_PARAMS.get(STYLE_ALIASES.get(style, style)) or STYLE_PARAMS[DEFAULT_STYLE]
+        eff_tp = out.get("tp_pct") or base["tp_pct"]
+        if out["sl_pct"] >= eff_tp:
+            raise ValueError(f"the stop-loss % must be smaller than the take-profit % ({eff_tp:g})")
+    if "names_lo" in out and "names_hi" in out and out["names_lo"] > out["names_hi"]:
+        raise ValueError("the minimum number of names can't exceed the maximum")
+    if "extend_tp_strong" in raw:
+        out["extend_tp_strong"] = bool(raw.get("extend_tp_strong"))
+    return out
+
+
+def effective_style(style, custom=None):
+    """The style preset with the member's own rules layered on top."""
+    style = STYLE_ALIASES.get(style, style)
+    sp = dict(STYLE_PARAMS.get(style) or STYLE_PARAMS[DEFAULT_STYLE])
+    c = custom or {}
+    if c.get("tp_pct"):
+        sp["tp_pct"] = c["tp_pct"]
+        # wallet-level take-profit threshold tracks the per-position target
+        sp["port_tp"] = round(0.75 * sp["alloc_cap"] * sp["tp_pct"] / (100 + sp["tp_pct"]), 2)
+    if c.get("max_hold_days"):
+        sp["max_hold_days"] = c["max_hold_days"]
+    sp["sl_pct_override"] = c.get("sl_pct")
+    # either side of the names band may be typed alone; the other keeps the
+    # spread setting's value (merged in build, where the preset is known)
+    sp["names_override"] = (c.get("names_lo"), c.get("names_hi"))
+    sp["extend_tp_strong"] = c.get("extend_tp_strong", True)
+    sp["custom"] = bool(c)
+    return sp
 
 # "Hot & cold" awareness flags - surfaced as information, NOT trade instructions.
 # Based on raw price movement, so a big drop can't be masked by an oversold RSI.
@@ -440,8 +503,9 @@ DRAWDOWN_PCT = 15     # flag a held position down more than this % from your avg
 # Entry-timing guard (anti-chasing): a fresh BUY on something already up this
 # much over ~30 days AND near its highs is chasing, not a setup. Style-scaled
 # (longer horizons are pickier about entries); scalpers are exempt entirely.
-EXT30_STOCKS = {"long": 20, "swing": 25, "day": 35}
-EXT30_CRYPTO = {"long": 30, "swing": 40, "day": 50}
+EXT30_STOCKS = {"long": 20, "income": 20, "swing": 25, "day": 35}
+EXT30_CRYPTO = {"long": 30, "income": 30, "swing": 40, "day": 50}
+SELL_SIDE = ("SELL", "SELL PART", "TRIM", "TAKE PROFIT")   # every sell-flavored action
 EXTREME_30D = {"stocks": 60, "crypto": 80}   # run-up that trips the gate on its own
 EARNINGS_GATE_DAYS = 3    # no fresh buys this close to an earnings report
 EARNINGS_FLAG_DAYS = 7    # awareness flag inside this window
@@ -498,20 +562,34 @@ def _fmt_price(v):
 # Every suggestion carries a plain-language "why".
 PLAN_STYLE = {
     #        horizon(d)  sl%   min-max     tp% min-max
-    "scalper": {"h": 0.5,  "sl": (0.8, 3.0),  "tp": (1.6, 6.0)},
     "day":     {"h": 1.5,  "sl": (1.5, 6.0),  "tp": (3.0, 12.0)},
     "swing":   {"h": 10.0, "sl": (3.0, 10.0), "tp": (6.0, 20.0)},
     "long":    {"h": 45.0, "sl": (7.5, 25.0), "tp": (15.0, 50.0)},
+    "income":  {"h": 45.0, "sl": (7.5, 25.0), "tp": (12.0, 40.0)},
 }
 _SL_Z = 1.4          # stop sits ~1.4 typical horizon-moves away
 _SNAP_GAP = 0.25     # snapped levels sit this fraction of a daily move beyond the structure
 
 
-def suggest_plan(price, style, prim=None, wk52_high=None, style_label=None):
+def suggest_plan(price, style, prim=None, wk52_high=None, style_label=None, custom=None):
     """Data-deduced TP/SL suggestion. Returns
-    {tp, sl, tp_pct, sl_pct, rr, why} or None (no price)."""
+    {tp, sl, tp_pct, sl_pct, rr, why} or None (no price).
+    A member's own tp_pct/sl_pct rules take precedence over the data-deduced
+    levels - their rule IS the plan, stated as such."""
     if not price or price <= 0:
         return None
+    style = STYLE_ALIASES.get(style, style)
+    c = custom or {}
+    if c.get("tp_pct") or c.get("sl_pct"):
+        sp0 = STYLE_PARAMS.get(style) or STYLE_PARAMS[DEFAULT_STYLE]
+        tp_pct = c.get("tp_pct") or sp0["tp_pct"]
+        sl_pct = c.get("sl_pct") or round(tp_pct / 2.0, 2)
+        why = (f"+{tp_pct:g}% {'your own target' if c.get('tp_pct') else sp0['label'] + ' default'}"
+               f" / -{sl_pct:g}% {'your own stop' if c.get('sl_pct') else 'half the target'}")
+        return {"tp": price * (1 + tp_pct / 100), "sl": price * (1 - sl_pct / 100),
+                "tp_pct": round(tp_pct, 1), "sl_pct": round(sl_pct, 1),
+                "rr": round(tp_pct / sl_pct, 1) if sl_pct else None,
+                "why": why, "custom": True}
     ps = PLAN_STYLE.get(style) or PLAN_STYLE[DEFAULT_STYLE]
     sp = STYLE_PARAMS.get(style) or STYLE_PARAMS[DEFAULT_STYLE]
     label = style_label or sp["label"]
@@ -627,8 +705,9 @@ def analyst_vote(rec):
 def build(assets, signals, portfolio, news_items, market, now_ms,
           currency="$", fundamentals=None, max_ideas=None, style=DEFAULT_STYLE,
           targets=None, earnings=None, aggressiveness="balanced",
-          diversity="balanced", outlook=None, analyst_votes=None):
+          diversity="balanced", outlook=None, analyst_votes=None, custom=None):
     """Main entry. Returns {market_sentiment, briefing, recommendations}."""
+    style = STYLE_ALIASES.get(style, style)
     fundamentals = fundamentals or {}
     targets = targets or {}
     earnings = earnings or {}
@@ -641,7 +720,7 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
     # after-close report (the exact window it exists to protect)
     tz = ZoneInfo("America/New_York" if market.get("name") == "global" else "Asia/Manila")
     today = datetime.datetime.fromtimestamp(now_ms / 1000, tz).date()
-    sp = STYLE_PARAMS.get(style) or STYLE_PARAMS[DEFAULT_STYLE]
+    sp = effective_style(style, custom)
     ag = AGGRESSIVENESS.get(aggressiveness) or AGGRESSIVENESS["balanced"]
     dv = DIVERSITY.get(diversity) or DIVERSITY["balanced"]
     # the buy bar never drops below 1: even "aggressive" requires the
@@ -671,6 +750,13 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
                     else "large")
     div_key = diversity if diversity in DIVERSITY else "balanced"
     band_lo, band_hi = POSITION_BANDS[wallet_class][div_key]
+    o_lo, o_hi = sp["names_override"]
+    band_lo, band_hi = (o_lo or band_lo), (o_hi or band_hi)
+    if band_lo > band_hi:   # the side the member TYPED wins the conflict
+        if o_hi and not o_lo:
+            band_lo = band_hi
+        else:
+            band_hi = band_lo
     # with a budget the base includes tracked cash ("wallet"); without one it
     # is invested positions only - every string below must say which
     wallet_word = "wallet" if cash is not None else "portfolio"
@@ -697,6 +783,28 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
         price = a.get("price") or (h or {}).get("price")
         f = fundamentals.get(aid)
         value_votes, value_reasons = _value_votes(f, price)
+        if style == "income" and not is_crypto:
+            # an income investor buys the dividend stream (crypto pays none -
+            # the style simply behaves like a long-term investor there).
+            # Global names carry an ANNUAL yield; PSE names only carry a
+            # pending declared payout (the Edge feed), so there the vote
+            # rewards a declared dividend and never punishes silence.
+            dy = (f or {}).get("div_yield")
+            if currency == "$":
+                bar = INCOME_MIN_YIELD.get(currency, 3.0)
+                if dy is not None and dy >= bar:
+                    value_votes += 1
+                    value_reasons = list(value_reasons) + [
+                        f"Pays {dy:.1f}% a year - above your {bar:g}% income bar; the dividend is the thesis"]
+                elif not dy:
+                    value_votes -= 1
+                    value_reasons = list(value_reasons) + [
+                        "No dividend on record - little for an income strategy to hold it for"]
+            elif dy:
+                value_votes += 1
+                value_reasons = list(value_reasons) + [
+                    f"A cash dividend worth {dy:.1f}% of the price is declared and still "
+                    "catchable - the income strategy's reason to own it"]
         has_value = h is not None and h.get("value") is not None
         # with a budget set, concentration is judged against the whole wallet
         # (positions + cash); without one, against invested positions only
@@ -743,6 +851,7 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
                       + ind_score + street_score)
 
         reasons = []
+        flags_extra = []   # flags raised mid-decision (time stop), merged below
         gate_notes = []  # interventions recorded for the breakdown ledger
         action, amt = "HOLD", None
         sale_reasons_n = 0  # how many leading reasons argue for a sell action
@@ -753,7 +862,9 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
             """Evidence string when this is a recovery candidate, else None:
             real decline + oversold + bottom of range + no bad-news driver +
             a concrete reason to expect the name to come back."""
-            if style == "scalper" or not price:
+            # a recovery bet needs days to play out: styles that must close
+            # within the week (Day's time stop) don't get this lane
+            if not price or (sp.get("max_hold_days") and sp["max_hold_days"] < 7):
                 return None
             rsi_d = ind.get("rsi")
             chg30d = a.get("chg_30d") if is_crypto else ind.get("chg_30d")
@@ -817,13 +928,17 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
                     reasons.append(
                         f"You're down {abs(plpct):.0f}% on this position - reducing "
                         "now limits further damage if the slide continues.")
-            elif plpct is not None and plpct > 0 and tech is not None and tech <= sp["tp_tech"] \
+            elif plpct is not None and plpct > 0 and tech is not None \
+                    and (tech <= sp["tp_tech"] or not sp["extend_tp_strong"]) \
                     and (plpct >= sp["tp_pct"]
                          or (wallet_gain is not None and wallet_gain >= sp["port_tp"]
                              and alloc <= max_alloc)):
-                # the wallet-level arm requires alloc <= alloc_cap: beyond the
-                # cap TRIM owns the call, and a small portfolio's single big
-                # position must still earn its full per-position target
+                # "let strong ones run" (on by default) means a target is only
+                # banked once momentum cools; switched off, the target itself
+                # is the trigger. The wallet-level arm requires alloc <=
+                # alloc_cap: beyond the cap TRIM owns the call, and a small
+                # portfolio's single big position must still earn its full
+                # per-position target
                 action = "TAKE PROFIT"
                 amt = h["value"] * 0.3
                 if plpct >= sp["tp_pct"]:
@@ -876,6 +991,79 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
                 else:
                     reasons.append("Signals don't line up strongly enough either "
                                    "way - no edge; sit tight.")
+            # past the take-profit target with momentum still running: say why
+            # no exit is suggested yet (the rule that deferred it), whatever the
+            # card otherwise shows - HOLD or BUY MORE
+            if (action in ("HOLD", "BUY MORE") and plpct is not None and plpct >= sp["tp_pct"]
+                    and tech is not None and tech > sp["tp_tech"] and sp["extend_tp_strong"]):
+                reasons.append(
+                    f"Up {plpct:.0f}% - past your {sp['tp_pct']:g}% target, but momentum is "
+                    "still running, so your 'let strong ones run' rule keeps it open; the "
+                    "take-profit suggestion comes once it cools.")
+                gate_notes.append("Take-profit deferred: target reached, momentum still strong "
+                                  "(let-strong-ones-run rule)")
+            # ---- the member's own stop-loss line ----
+            sl_o = sp.get("sl_pct_override")
+            if (sl_o and plpct is not None and plpct <= -sl_o
+                    and ACTION_RANK.get(action, 0) < ACTION_RANK["SELL"]):
+                del reasons[:]
+                dip, dip_vote = False, 0.0
+                gate_notes[:] = [g for g in gate_notes if not g.startswith("Recovery lane")]
+                action, amt = "SELL", h["value"]
+                reasons.append(
+                    f"Your own stop-loss rule: down {abs(plpct):.1f}%, past the -{sl_o:g}% line "
+                    "you set. The rule exists for exactly this moment - consider cutting the loss.")
+                gate_notes.append(f"Custom stop-loss: {plpct:.1f}% vs your -{sl_o:g}% rule -> SELL")
+                flags_extra.append({"kind": "sl",
+                                    "text": f"Past your own -{sl_o:g}% stop-loss rule (down {abs(plpct):.0f}%)"})
+            # ---- time stop: the style's own holding limit ----
+            # holding time in CALENDAR days of the market's own timezone, so
+            # "same day" means the session's date and Day's stop fires at the
+            # next open for anything bought on a prior day
+            held_days = None
+            if h.get("first_ts"):
+                try:
+                    ft = datetime.datetime.strptime(str(h["first_ts"])[:16], "%Y-%m-%d %H:%M")
+                    held_days = (today - ft.date()).days
+                except (ValueError, TypeError):
+                    held_days = None
+            mh = sp.get("max_hold_days")
+            if mh and held_days is not None and held_days >= mh and action not in SELL_SIDE:
+                strong = (tech is not None and tech >= buy_bar and value_votes >= 2)
+                if strong and sp["extend_tp_strong"]:
+                    gate_notes.append(
+                        f"Time stop reached ({held_days}d >= {mh}d) but technicals and "
+                        "fundamentals are both strong - your exception rule lets it run")
+                    reasons.insert(0,
+                        f"Held {held_days} day(s) - past your {sp['label'].lower()} limit of "
+                        f"{mh} day(s) - but technicals and fundamentals are both still strong, "
+                        "so your exception rule lets it run. Re-check it daily.")
+                    flags_extra.append({"kind": "time",
+                                        "text": f"Held {held_days}d, past your {mh}d rule - "
+                                                "running on the strength exception"})
+                else:
+                    # the time stop REPLACES whatever the signals argued: a
+                    # BUY MORE or recovery-lane case must not linger under it
+                    del reasons[:]
+                    dip, dip_vote = False, 0.0
+                    gate_notes[:] = [g for g in gate_notes if not g.startswith("Recovery lane")]
+                    action, amt = "SELL", h["value"]
+                    reasons.append(
+                        f"Time stop: held {held_days} day(s), and your "
+                        f"{sp['label'].lower()} rule closes positions within {mh} day(s)"
+                        + ("" if mh > 1 else " (same day)") + ". "
+                        + ("It's up" if (plpct or 0) >= 0 else "It's down")
+                        + f" {abs(plpct or 0):.1f}% - the rule is about time, not price: "
+                        "your rule says its time is up, so consider closing it and putting "
+                        "the money back to work.")
+                    gate_notes.append(f"Time stop: {held_days}d held >= {mh}d style limit -> SELL")
+                    flags_extra.append({"kind": "time",
+                                        "text": f"Held {held_days}d - past your {mh}d rule"})
+            elif (mh and held_days is not None and mh - held_days == 1
+                  and action in ("HOLD", "BUY MORE")):
+                flags_extra.append({"kind": "time",
+                                    "text": f"Held {held_days}d of your {mh}d limit - the time "
+                                            "stop comes tomorrow"})
             # everything appended so far argues for THIS action; remembered so
             # a later demotion can retract the argument along with the action
             sale_reasons_n = len(reasons)
@@ -901,7 +1089,7 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
             # pullback-in-uptrend: the entry the short-horizon votes wrongly
             # skip - a solid month-long trend resting at its recent average.
             # Buying the dip in strength beats buying the breakout.
-            if (not good_setup and style in ("swing", "long") and price
+            if (not good_setup and style in ("swing", "long", "income") and price
                     and tech is not None and tech >= 0
                     and news_score >= (0.5 if caution else 0)):
                 chg30p = a.get("chg_30d") if is_crypto else ind.get("chg_30d")
@@ -991,7 +1179,7 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
         conf_cap = dip   # a recovery bet never earns High confidence
         if dip_vote:
             conviction += dip_vote
-        if action == "BUY" and not pullback and not dip and style != "scalper" and price:
+        if action == "BUY" and not pullback and not dip and price:
             chg30 = a.get("chg_30d") if is_crypto else ind.get("chg_30d")
             prim_x = sig.get("plan") or {}
             rl_x, rh_x = prim_x.get("range_low"), prim_x.get("range_high")
@@ -1078,9 +1266,11 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
             gate_notes.append("Market weather: caution regime - buy size halved")
 
         if amt is not None:
-            if action in ("TRIM", "SELL PART", "TAKE PROFIT"):
+            if action in SELL_SIDE:
                 amt = min(amt, h["value"])
-                if amt < 5 or h["value"] < 20:
+                if action == "SELL":
+                    pass   # a full exit: the exact position value, no rounding
+                elif amt < 5 or h["value"] < 20:
                     # retract the sale argument along with the action, or the
                     # card would urge a sell right under "not worth selling"
                     gate_notes.append(f"Size gate: {action} signal, but the position "
@@ -1123,7 +1313,7 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
         # what banking this specific sale locks in, as a % of the whole wallet -
         # the number that compounds across many small trades
         wallet_impact = None
-        if action in ("TRIM", "SELL PART", "TAKE PROFIT") and amt and gain_val \
+        if action in SELL_SIDE and amt and gain_val \
                 and gain_val > 0 and h.get("value") and alloc_base > 0:
             wallet_impact = round(gain_val * (amt / h["value"]) / alloc_base * 100, 2)
 
@@ -1219,6 +1409,7 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
                 flags.append({"kind": "rebound",
                               "text": f"Up {tbp:.0f}%+ off its {currency}{_fmt_price(trough)} low "
                                       "- your trailing-buy alert says take a look"})
+        flags.extend(flags_extra)
         if dip:
             _c30 = a.get("chg_30d") if is_crypto else ind.get("chg_30d")
             flags.append({"kind": "dip",
@@ -1253,7 +1444,8 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
         if action in ("BUY", "BUY MORE") and price:
             suggested_plan = suggest_plan(
                 price, style, prim=sig.get("plan"),
-                wk52_high=(f or {}).get("wk52_high"), style_label=sp["label"])
+                wk52_high=(f or {}).get("wk52_high"), style_label=sp["label"],
+                custom=custom)
 
         recs.append({
             "asset_id": aid,
@@ -1269,6 +1461,8 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
             "wallet_word": wallet_word,
             "conviction": round(conviction, 1),
             "confidence": confidence,
+            "sell_qty": (h.get("qty") if (h and action == "SELL") else None),
+            "rvol": ind.get("rvol"),
             "news_score": round(news_score, 2),
             "chg_24h": chg24,
             "flags": flags,
@@ -1371,6 +1565,8 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
         recs = [r if r["action"] in ("HOLD", "WATCH")
                 else {**r, "action": "HOLD", "usd": None, "qty": None,
                       "wallet_impact": None,
+                      "reasons": [f"Market closed - this reads as {r['action']} and is shown "
+                                  "as HOLD until the exchange reopens."] + r["reasons"],
                       "breakdown": {**r["breakdown"],
                                     "gates": r["breakdown"]["gates"]
                                     + [f"Market closed: {r['action']} shown as HOLD "
@@ -1382,7 +1578,7 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
     # back to work and build up - context, not an instruction. Candidates only;
     # the API layer words the hint after filtering out ideas the user already
     # dismissed today (dismissals live outside this cached snapshot).
-    if style in ("scalper", "day"):
+    if style in ("day",):
         buy_ideas = [r for r in recs if r["action"] in ("BUY", "BUY MORE")]
         for r in recs:
             if r["action"] != "TAKE PROFIT":

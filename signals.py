@@ -29,6 +29,21 @@ def ema_series(values, n):
     return out
 
 
+RVOL_HEAVY = 1.8   # today's traded amount vs 20-day average: "heavy"
+RVOL_THIN = 0.5    # ..."thin"
+
+
+def relative_volume(vols):
+    """today / mean of the previous (up to) 20 days, from a ts-ordered list of
+    daily traded amounts. None until at least 10 prior days exist."""
+    vals = [v for v in vols if v is not None and v > 0]
+    if len(vals) < 11:
+        return None
+    today, prior = vals[-1], vals[-21:-1]
+    avg = sum(prior) / len(prior)
+    return (today / avg) if avg > 0 else None
+
+
 def rsi(closes, period=14):
     if len(closes) < period + 1:
         return None
@@ -123,7 +138,10 @@ def plan_primitives(closes, bars_per_day=24.0):
 
 
 def compute(closes, chg_24h=None, bars_per_day=24.0,
-            plan_closes=None, plan_bars_per_day=None):
+            plan_closes=None, plan_bars_per_day=None, rvol=None, rvol_votes=True):
+    """rvol_votes=False: the relative-volume figure is shown but NOT scored -
+    used while a stock market is open, when the stored volume is the previous
+    session's and today's move is still being traded."""
     """closes: hourly closing prices, oldest first.
     plan_closes: optional separate (e.g. daily-resampled) series for the TP/SL
     plan primitives - stock markets mix daily backfill bars with intraday bars
@@ -213,6 +231,34 @@ def compute(closes, chg_24h=None, bars_per_day=24.0,
         elif chg_24h < -2:
             score -= 1
             reasons.append(f"Down {abs(chg_24h):.1f}% in 24h")
+
+    # volume confirmation: a move on heavy volume (vs its own 20-day average)
+    # has conviction behind it; a move on thin volume is easy to fade. One
+    # point at most, and only when there is a move to confirm.
+    if rvol is not None:
+        ind["rvol"] = round(rvol, 2)
+        ind["rvol_scored"] = False
+        if not rvol_votes:
+            ind["rvol_prev_session"] = True
+        elif chg_24h is not None and rvol >= RVOL_HEAVY and abs(chg_24h) >= 1:
+            # self-contained: the move is named here even when it was too
+            # small to earn its own 24h point
+            ind["rvol_scored"] = True
+            if chg_24h > 0:
+                score += 1
+                reasons.append(f"Up {chg_24h:.1f}% in 24h on heavy volume "
+                               f"({rvol:.1f}x its 20-day average) - buyers mean it")
+            else:
+                score -= 1
+                reasons.append(f"Down {abs(chg_24h):.1f}% in 24h on heavy volume "
+                               f"({rvol:.1f}x its 20-day average) - sellers mean it")
+        elif chg_24h is not None and rvol <= RVOL_THIN and abs(chg_24h) > 2:
+            # the 24h move earned a point above |2|; a move nobody traded
+            # into gives that point back (strict > 2 mirrors the 24h rule)
+            ind["rvol_scored"] = True
+            score += -1 if chg_24h > 0 else 1
+            reasons.append(f"Thin volume ({rvol:.1f}x its 20-day average) - the "
+                           f"{'rise' if chg_24h > 0 else 'drop'} has little conviction behind it")
 
     # entry-timing anchors for the advisor's anti-chasing gate. Stock markets
     # use the clean daily series (plan_closes); for crypto the 168-hour SMA is

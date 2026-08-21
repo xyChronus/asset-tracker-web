@@ -267,6 +267,14 @@ def yahoo_history(symbol, interval="1h", rng="60d"):
         raise
 
 
+def yahoo_daily_volume(symbol, rng="3mo"):
+    """[[day_ts_ms, share volume], ...] from Yahoo's daily chart (keyless)."""
+    res = _yahoo_chart(symbol, "1d", rng)
+    ts = res.get("timestamp") or []
+    vols = ((res.get("indicators", {}).get("quote") or [{}])[0]).get("volume") or []
+    return [[int(t // 86400 * 86400) * 1000, float(v)] for t, v in zip(ts, vols) if v]
+
+
 def yahoo_quote(symbol):
     """Quote from Yahoo chart metadata (keyless fallback)."""
     res = _yahoo_chart(symbol, "1d", "5d")

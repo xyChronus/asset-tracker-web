@@ -7,12 +7,12 @@ const CUR = { crypto: "$", pse: "₱", global: "$" };
 const MKT_LABEL = { crypto: "Crypto", pse: "PSE Stocks", global: "Global Stocks" };
 
 const STYLES = [
-  { v: "scalper", label: "Scalper", desc: "Very short holds. Acts on fast signals, takes small profits quickly (~2%, or sooner when one big position has already lifted your overall holdings), and suggests rotating banked wins into the next setup." },
-  { v: "day", label: "Day Trader", desc: "Intraday moves. Quick to act, takes profit around +4% (sooner on positions big enough to move your overall holdings), rotates banked wins, light on fundamentals." },
-  { v: "swing", label: "Swing Trader", desc: "Days to weeks. The balanced default — takes profit around +10% (sooner when one big position has already lifted your overall holdings) and blends technicals, news and fundamentals." },
-  { v: "long", label: "Long-Term Investor", desc: "Months and up. Patient and fundamentals-led; rarely sells on short-term dips and takes profit much later — though a very large position may bank profit earlier once its gain alone has moved your overall holdings." },
+  { v: "day", label: "Day Trader", desc: "Intraday: positions close the same day (a time stop flags anything held overnight). Quick to act, takes profit around +4%, rotates banked wins, light on fundamentals." },
+  { v: "swing", label: "Swing Trader", desc: "Days, closing within about a week — the balanced default. Takes profit around +10% with a starting stop sized to each name's volatility (roughly 3–10% below entry), blends technicals, news and fundamentals, and flags positions held past the week." },
+  { v: "long", label: "Long-Term Investor", desc: "Months and up, no time limit. Patient and fundamentals-led; rarely sells on short-term dips and takes profit much later." },
+  { v: "income", label: "Income Investor", desc: "Dividends are the point: abroad, favors stocks yielding 3%+ a year and counts a missing dividend against a name; on the PSE (where the app only sees declared payouts) it favors names with a cash dividend still catchable. No time limit. On crypto it behaves like a long-term investor." },
 ];
-const styleLabel = (v) => (STYLES.find(s => s.v === v) || STYLES[2]).label;
+const styleLabel = (v) => (STYLES.find(s => s.v === v) || STYLES.find(s => s.v === "swing")).label;
 
 const AGG_LEVELS = [
   { v: "cautious", label: "Cautious", desc: "Half-size buy suggestions and a higher bar before the advisor proposes entering. Fewer, smaller moves." },
@@ -214,6 +214,26 @@ function fngSpan(fng) {
   const v = fng.value;
   const cls = v < 45 ? "neg" : v <= 55 ? "muted" : "pos";
   return `<span class="${cls}"><b>${v}</b> — ${esc(fng.label)}</span>${infoBubble(FNG_HELP)}`;
+}
+
+// relative-volume chip: only when it says something (heavy or thin). Colour
+// follows the move's direction, and "conviction" is only claimed when the
+// signal engine actually scored it.
+function rvolChip(s) {
+  const ind = s && s.indicators;
+  const rv = ind && ind.rvol;
+  if (rv == null || (rv < 1.5 && rv > 0.5)) return "";
+  const chg = ind.chg_24h;
+  const scored = !!ind.rvol_scored;
+  const session = ind.rvol_prev_session ? "The last complete session's" : "The latest complete session's";
+  const heavy = rv >= 1.5;
+  const cls = heavy ? (scored && chg > 0 ? "pos" : scored && chg < 0 ? "neg" : "muted") : "muted";
+  const tail = scored
+    ? (heavy ? (chg > 0 ? "heavy volume behind the rise - buyers mean it" : "heavy volume behind the drop - sellers mean it")
+             : "thin volume - little conviction behind the move")
+    : (heavy ? "notably heavy volume; not enough of a move (or the market is still open) to score it"
+             : "notably thin volume; not scored");
+  return ` <span class="badge sec-chip ${cls}" title="${session} traded amount is ${rv.toFixed(1)}× this asset's 20-day average - ${tail}">Vol ${rv.toFixed(1)}×</span>`;
 }
 
 function sigBadge(sig) {
@@ -799,6 +819,7 @@ async function loadDashboard() {
     upcoming.length ? "" : "none";
 
   loadMarketPanels("dash");
+  loadMacro();
   loadDashNews();
   loadTodayPlan();
   loadPredMovers();
@@ -922,6 +943,43 @@ function glList(list, priceKey, chgKey) {
     || '<div class="empty-note">waiting for market data…</div>';
 }
 
+// Macro figures panel: automated US + oil, admin-typed Philippine numbers
+async function loadMacro() {
+  const el = document.getElementById("macro-stats");
+  if (!el) return;
+  try {
+    const m = await api("/api/macro");
+    const a = m.auto || {}, man = m.manual || {};
+    const pct = (v) => v == null ? "—" : (v >= 0 ? "" : "") + v.toFixed(2) + "%";
+    const delta = (x) => (x && x.prev != null && x.value != null && Math.abs(x.value - x.prev) >= 0.005)
+      ? ` <span class="${x.value > x.prev ? "neg" : "pos"}" title="vs the previous reading">${x.value > x.prev ? "▲" : "▼"}</span>` : "";
+    const asOf = (x) => x && x.as_of ? `<span class="muted"> · ${esc(x.as_of)}</span>` : "";
+    const manualCell = (k, label, why) => {
+      const x = man[k];
+      return { label, why, html: x ? pct(x.value) + asOf(x) : '<span class="muted">not set yet</span>' };
+    };
+    const items = [
+      { label: "Fed funds rate", why: "US policy rate. Higher = tighter money, usually a headwind for stocks and crypto.",
+        html: a.fed_rate ? pct(a.fed_rate.value) + delta(a.fed_rate) + asOf(a.fed_rate) : "—" },
+      { label: "US inflation (CPI, yoy)", why: "Hotter inflation keeps rates higher for longer.",
+        html: a.us_inflation ? pct(a.us_inflation.value) + delta(a.us_inflation) + asOf(a.us_inflation) : "—" },
+      { label: "US GDP (real, yoy)", why: "Growth backdrop for earnings.",
+        html: a.us_gdp ? pct(a.us_gdp.value) + asOf(a.us_gdp) : "—" },
+      { label: "Oil (WTI)", why: "Fuel and import costs for the Philippines; a tailwind for energy names, a headwind for utilities and airlines.",
+        html: a.wti ? `$${fmtNum(a.wti.value, 2)} ${pctSpan(a.wti.chg_pct, 1)}` : "—" },
+      { label: "Oil (Brent)", why: "The international benchmark.",
+        html: a.brent ? `$${fmtNum(a.brent.value, 2)} ${pctSpan(a.brent.chg_pct, 1)}` : "—" },
+      manualCell("bsp_rate", "BSP policy rate", "Philippine overnight rate. Set by the admin from each BSP decision."),
+      manualCell("ph_inflation", "PH inflation (yoy)", "From the PSA's monthly release, typed in by the admin."),
+      manualCell("ph_gdp", "PH GDP growth (yoy)", "From the PSA's quarterly release, typed in by the admin."),
+    ];
+    el.innerHTML = items.map(x =>
+      `<div class="mini-stat" title="${esc(x.why)}"><span>${esc(x.label)}</span><b>${x.html}</b></div>`).join("");
+  } catch (e) {
+    el.innerHTML = '<span class="empty-note">Macro figures unavailable right now.</span>';
+  }
+}
+
 async function loadMarketPanels(prefix) {
   const m = await api(M() + "/market");
   const sumEl = document.getElementById(prefix === "dash" ? "market-summary" : "market-summary-2");
@@ -1014,8 +1072,8 @@ function recCard(r) {
   const sp = r.suggested_plan;
   const planLine = sp
     ? `<div class="sugg-plan muted" title="${esc(sp.why || "")} — set your own in the Plan column of the Dashboard">
-        Starting plan: 🎯 ${fmtMoney(sp.tp)} <span class="pos">(+${sp.tp_pct}%)</span> ·
-        🛑 ${fmtMoney(sp.sl)} <span class="neg">(−${sp.sl_pct}%)</span>${sp.rr ? " · r:r 1:" + sp.rr : ""} — a starting point, not a rule</div>`
+        ${sp.custom ? "Your plan" : "Starting plan"}: 🎯 ${fmtMoney(sp.tp)} <span class="pos">(+${sp.tp_pct}%)</span> ·
+        🛑 ${fmtMoney(sp.sl)} <span class="neg">(−${sp.sl_pct}%)</span>${sp.rr ? " · r:r 1:" + sp.rr : ""} — ${sp.custom ? esc(sp.why || "your own rule") : "a starting point, not a rule"}</div>`
     : "";
   const holdLine = h
     ? `<div class="rec-holding muted">You hold ${fmtMoney(h.value)} (${h.alloc_pct}% of your ${r.wallet_word === "wallet" ? "wallet" : "portfolio"}${h.unrealized_pct != null ? ", " + (h.unrealized_pct >= 0 ? "up " : "down ") + Math.abs(h.unrealized_pct).toFixed(0) + "%" : ""})</div>`
@@ -1034,6 +1092,8 @@ function recCard(r) {
     : "";
   const f = r.fundamentals || {};
   const chips = [];
+  if (r.rvol != null && (r.rvol >= 1.5 || r.rvol <= 0.5))
+    chips.push(`<span title="The latest complete session's traded amount vs this asset's own 20-day average (heavy volume behind a move is conviction; thin volume undercuts it - the card's reasons say whether it counted)">Vol ${r.rvol.toFixed(1)}× avg</span>`);
   if (f.pe != null) chips.push("P/E " + fmtNum(f.pe, 1));
   if (f.eps_growth != null) chips.push("EPS gr " + (f.eps_growth > 0 ? "+" : "") + fmtNum(f.eps_growth, 0) + "%");
   if (f.roe != null) chips.push("ROE " + fmtNum(f.roe, 0) + "%");
@@ -1047,7 +1107,7 @@ function recCard(r) {
   const actionable = !["HOLD", "WATCH"].includes(r.action);
   const acceptBtn = actionable && r.usd
     ? `<button class="accept-btn" data-accept="${esc(r.asset_id)}" data-action="${esc(r.action)}"
-         data-src="advisor" data-usd="${r.usd}" data-name="${esc(r.name)}"
+         data-src="advisor" data-usd="${r.usd}" data-name="${esc(r.name)}"${r.sell_qty ? ` data-qty="${r.sell_qty}" data-price="${r.price}"` : ""}
          title="Log this trade in your portfolio at the current live price">Accept</button>`
     : "";
   const doneBtn = actionable
@@ -1111,7 +1171,7 @@ function recCard(r) {
   </div>`;
 }
 
-const FLAG_ICONS = { hot: "🔺", cold: "🔻", tp: "🎯", sl: "🛑", event: "📅", base: "🌱", quiet: "⚡", rebound: "↗️", dip: "🎣" };
+const FLAG_ICONS = { hot: "🔺", cold: "🔻", tp: "🎯", sl: "🛑", event: "📅", base: "🌱", quiet: "⚡", rebound: "↗️", dip: "🎣", time: "⏱️" };
 
 // "Seen it, letting it run" for triggered TP/SL alerts: hidden for the rest of
 // the day on this device (localStorage), back tomorrow while still triggered.
@@ -1849,7 +1909,7 @@ function renderWatchlist(assets) {
         ${newsCell(a)}
         <td class="muted">${fmtMoney(a.market_cap, true)}</td>
         <td><canvas class="spark" id="spark-${i}"></canvas></td>
-        <td>${sigBadge(a.signal)}${a.signal && a.signal.action !== "WAIT" ? " " + scorePill(a.signal.score) : ""}</td>
+        <td>${sigBadge(a.signal)}${a.signal && a.signal.action !== "WAIT" ? " " + scorePill(a.signal.score) : ""}${rvolChip(a.signal)}</td>
         <td><button class="del-btn" data-rm="${esc(a.asset_id)}">✕</button></td>
       </tr>`).join("") + "</tbody>";
   } else {
@@ -1875,7 +1935,7 @@ function renderWatchlist(assets) {
         <td class="muted">${esc(a.div_ex_date || "—")}</td>
         ${newsCell(a)}
         <td><canvas class="spark" id="spark-${i}"></canvas></td>
-        <td>${sigBadge(a.signal)}${a.signal && a.signal.action !== "WAIT" ? " " + scorePill(a.signal.score) : ""}</td>
+        <td>${sigBadge(a.signal)}${a.signal && a.signal.action !== "WAIT" ? " " + scorePill(a.signal.score) : ""}${rvolChip(a.signal)}</td>
         ${isPse ? "" : `<td><button class="del-btn" data-rm="${esc(a.asset_id)}">✕</button></td>`}
       </tr>`).join("") + "</tbody>";
   }
@@ -2557,6 +2617,7 @@ async function loadUser() {
     state.style = me.trading_style || "swing";
     state.aggressiveness = me.aggressiveness || "balanced";
     state.diversity = me.diversity || "balanced";
+    state.custom = me.custom_params || {};
     const el = document.getElementById("user-menu");
     el.innerHTML =
       `<span class="muted">${esc(me.name || me.email)}</span>` +
@@ -2618,6 +2679,34 @@ async function showAccount() {
     </div>
     <div class="form-msg" id="div-msg"></div>
 
+    <h4 class="acct-h">Your own rules (optional)</h4>
+    <p class="muted small-note">Type the numbers you actually trade by and the advisor enforces
+      them on top of your style — leave any box empty to keep the style's default. Example from
+      a member: swing, +10% / −5%, 3–5 stocks, close within a week, but let a position run past
+      +10% while its technicals <i>and</i> fundamentals stay strong.</p>
+    <div class="rules-grid">
+      <label class="acct-field">Take profit at +%
+        <input type="number" step="any" min="1" max="100" id="cr-tp" value="${state.custom.tp_pct ?? ""}" placeholder="style default"></label>
+      <label class="acct-field">Stop-loss at −%
+        <input type="number" step="any" min="0.5" max="50" id="cr-sl" value="${state.custom.sl_pct ?? ""}" placeholder="half the take-profit"></label>
+      <label class="acct-field">Close within (days)
+        <input type="number" step="1" min="1" max="365" id="cr-hold" value="${state.custom.max_hold_days ?? ""}" placeholder="style default"></label>
+      <label class="acct-field">Names to hold, min
+        <input type="number" step="1" min="1" max="30" id="cr-lo" value="${state.custom.names_lo ?? ""}" placeholder="from spread"></label>
+      <label class="acct-field">Names to hold, max
+        <input type="number" step="1" min="1" max="30" id="cr-hi" value="${state.custom.names_hi ?? ""}" placeholder="from spread"></label>
+    </div>
+    <label class="style-opt" style="margin-top:8px">
+      <input type="checkbox" id="cr-extend" ${state.custom.extend_tp_strong === false ? "" : "checked"}>
+      <span><b>Let strong ones run</b><br><span class="muted">Skip the take-profit and the time stop while a
+      position's technicals <i>and</i> fundamentals are both still strong (re-checked every refresh).</span></span>
+    </label>
+    <div class="input-row" style="margin-top:8px">
+      <button class="primary-btn small" id="cr-save">Save my rules</button>
+      <button class="mini-btn" id="cr-clear">Clear (back to style defaults)</button>
+    </div>
+    <div class="form-msg" id="cr-msg"></div>
+
     <h4 class="acct-h">Change password</h4>
     <label class="acct-field">Current password
       <input type="password" id="pw-current" autocomplete="current-password"></label>
@@ -2652,6 +2741,40 @@ async function showAccount() {
     v => `Saved — ${esc(v)} sizing takes effect on the next advice refresh.`);
   bindSetting("div", "diversity", "div-msg", "diversity",
     v => `Saved — concentration guidance is now ${esc(v === "balanced" ? "the style default" : v)}.`);
+
+  const saveRules = async (bodyIn) => {
+    let body = bodyIn;
+    const msg = document.getElementById("cr-msg");
+    msg.textContent = "";
+    try {
+      const res = await api("/api/settings", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ custom_params: body }),
+      });
+      state.custom = res.custom_params || {};
+      body = state.custom;
+      msg.innerHTML = `<span class="pos">${Object.keys(body).length
+        ? "Saved — your rules now sit on top of your style."
+        : "Cleared — back to your style's defaults."}</span>`;
+      state.watch[state.market] = null;
+      if (state.tab === "advisor" || state.tab === "dashboard") refresh();
+    } catch (e) { msg.innerHTML = `<span class="neg">${esc(e.message)}</span>`; }
+  };
+  document.getElementById("cr-save").onclick = () => {
+    const v = (id) => { const x = document.getElementById(id).value.trim(); return x === "" ? null : +x; };
+    const whole = (x) => x === null ? null : Math.round(x);
+    const body = { tp_pct: v("cr-tp"), sl_pct: v("cr-sl"), max_hold_days: whole(v("cr-hold")),
+                   names_lo: whole(v("cr-lo")), names_hi: whole(v("cr-hi")) };
+    Object.keys(body).forEach(k => { if (body[k] === null) delete body[k]; });
+    // the checkbox is on by default: only an unchecked box is a rule worth storing
+    if (!document.getElementById("cr-extend").checked) body.extend_tp_strong = false;
+    saveRules(body);
+  };
+  document.getElementById("cr-clear").onclick = () => {
+    ["cr-tp", "cr-sl", "cr-hold", "cr-lo", "cr-hi"].forEach(id => document.getElementById(id).value = "");
+    document.getElementById("cr-extend").checked = true;
+    saveRules({});
+  };
 
   document.getElementById("pw-save").onclick = async () => {
     const msg = document.getElementById("pw-msg");
@@ -2705,8 +2828,37 @@ async function showMembers() {
           : '<span class="pos">available</span>'}</td></tr>`).join("")
         || '<tr><td class="empty-note" colspan="3">No invite codes yet.</td></tr>'}</tbody>
     </table></div>
+    <div class="panel-head" style="margin-top:14px"><h3>Macro figures you maintain</h3></div>
+    <p class="muted small-note">The Philippine numbers have no free data feed, so they're typed in here
+      from each BSP decision and PSA release and shown to every member with the date you enter.
+      US figures and oil update themselves daily.</p>
+    <div class="rules-grid" id="macro-form">
+      <label class="acct-field">BSP policy rate (%)
+        <input type="number" step="any" id="mac-bsp" value="${(d.macro || {}).bsp_rate ? d.macro.bsp_rate.value : ""}" placeholder="e.g. 5.25"></label>
+      <label class="acct-field">PH inflation, yoy (%)
+        <input type="number" step="any" id="mac-infl" value="${(d.macro || {}).ph_inflation ? d.macro.ph_inflation.value : ""}" placeholder="e.g. 1.4"></label>
+      <label class="acct-field">PH GDP growth, yoy (%)
+        <input type="number" step="any" id="mac-gdp" value="${(d.macro || {}).ph_gdp ? d.macro.ph_gdp.value : ""}" placeholder="e.g. 5.5"></label>
+      <label class="acct-field">As of (date of the release)
+        <input type="date" id="mac-asof" value="${new Date().toISOString().slice(0, 10)}"></label>
+    </div>
+    <div class="input-row"><button class="primary-btn small" id="mac-save">Save macro figures</button></div>
+    <div class="form-msg" id="mac-msg"></div>
   </div>`;
   document.body.appendChild(overlay);
+  document.getElementById("mac-save").onclick = async () => {
+    const msg = document.getElementById("mac-msg");
+    msg.textContent = "";
+    const v = (id) => document.getElementById(id).value.trim();
+    try {
+      await api("/api/admin/macro", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bsp_rate: v("mac-bsp"), ph_inflation: v("mac-infl"), ph_gdp: v("mac-gdp"), as_of: v("mac-asof") }),
+      });
+      msg.innerHTML = '<span class="pos">Saved — members see these on their Dashboard now.</span>';
+      if (typeof loadMacro === "function") loadMacro();
+    } catch (e) { msg.innerHTML = `<span class="neg">${esc(e.message)}</span>`; }
+  };
   document.getElementById("members-close").onclick = () => overlay.remove();
   overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
   overlay.querySelectorAll("[data-reset]").forEach(b => b.onclick = async () => {
@@ -2761,7 +2913,7 @@ const TOUR_STEPS = [
   { tab: "news", sel: "#news-scope", title: "News that's about YOU",
     text: "All news, or just the stories that touch your holdings — 💼 marks a story naming something you own. On the stock markets, sector-wide news that moves your kind of company is included too." },
   { sel: "#account-btn", title: "Make it yours",
-    text: "Set your trading style (scalper to long-term), aggressiveness, and portfolio spread — the advisor re-tunes every suggestion around them. That's the loop: watch, decide, log. Welcome aboard! 📈" },
+    text: "Set your trading style (day trader to income investor), aggressiveness, portfolio spread — or type your own rules (take-profit, stop, holding time, number of names) and the advisor enforces them. That's the loop: watch, decide, log. Welcome aboard! 📈" },
 ];
 let _tourIdx = -1;
 let _tourGen = 0;        // bumped on every end/step so stale awaits abort
