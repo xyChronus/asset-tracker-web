@@ -2849,7 +2849,10 @@ const _syncHdrHeight = () => document.documentElement.style.setProperty(
 _syncHdrHeight();
 new ResizeObserver(_syncHdrHeight).observe(document.querySelector("header"));
 
-const REFRESH_MS = 300000;
+// 2-minute refresh while a tab is visible: cheap again now that unchanged
+// payloads come back as zero-byte 304s and changed ones are gzipped (it was
+// stretched to 5 min on 2026-08-10 purely to save bandwidth)
+const REFRESH_MS = 120000;
 let lastRefreshAt = Date.now();
 
 function autoRefresh() {
