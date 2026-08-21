@@ -411,3 +411,10 @@ Web-only items are marked **(web)**.
 - Every text and JSON response is now gzip-compressed (a full first load is 128 KB, −77%), and API responses carry validators so a refresh that finds nothing changed returns an empty 304 instead of the whole payload — stock quotes don't move for 18 hours a day, so most refreshes now cost zero bytes. Projected usage is comfortably inside the 5 GB allowance.
 ### Changed
 - The on-screen auto-refresh is back to every **2 minutes** (it had been stretched to 5 in August to save bandwidth) — affordable again because refreshes that find nothing new now cost nothing. Data collection itself was never slowed: it runs at the fastest pace the free price and news providers allow.
+
+## [1.32.0] — 2026-08-22 — Your whole wallet, over time
+### Added
+- **The Dashboard value chart now has three views.** *Holdings* is the original (what your positions are worth, with net invested as a dashed line). *Wallet* shows positions **plus cash** over time — so realized gains, fees and your budget baseline all show up, which is what "how am I doing overall?" actually means. *Both* draws the two together with the gap between them shaded: that shaded band **is your cash on hand** at each moment, and hovering spells it out. Your choice sticks between visits. (Requested by the admin.)
+### Notes
+- Wallet views need a budget (set on the Trades tab) — cash over time is your budget minus what you'd spent by each point. Fix-records adjustments change what you hold but never your cash, and the history respects that.
+- The wallet views use **the budget that applied at each moment**, not today's number — the app now keeps a timeline of every budget change (and "Set actual cash" correction), so raising your budget after a deposit no longer rewrites your past. Hours spent fully in cash are charted too, and if you ever spend past your budget the *Both* band turns red and says so. (From the pre-release review.)

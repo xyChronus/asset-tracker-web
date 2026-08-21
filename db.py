@@ -214,6 +214,21 @@ def init():
     # trailing floor. Non-trailing rows predate the split: their stored stop
     # is manual by definition (idempotent - only fills NULLs)
     conn().execute("ALTER TABLE targets ADD COLUMN IF NOT EXISTS manual_sl_price DOUBLE PRECISION")
+    # budget_history: every budget the user ever set, with when - so the
+    # wallet-over-time chart uses the budget that applied at each hour instead
+    # of rewriting the past whenever the current budget changes. Existing
+    # wallets get one row stamped now (earlier hours fall back to it).
+    conn().execute("""CREATE TABLE IF NOT EXISTS budget_history (
+        id SERIAL PRIMARY KEY, user_id INTEGER NOT NULL, market TEXT NOT NULL,
+        budget DOUBLE PRECISION, ts BIGINT NOT NULL)""")
+    conn().execute("CREATE INDEX IF NOT EXISTS budget_history_umt"
+                   " ON budget_history (user_id, market, ts)")
+    conn().execute("""INSERT INTO budget_history (user_id, market, budget, ts)
+        SELECT w.user_id, w.market, w.budget,
+               (EXTRACT(EPOCH FROM now()) * 1000)::BIGINT
+        FROM wallets w
+        WHERE NOT EXISTS (SELECT 1 FROM budget_history b
+                          WHERE b.user_id = w.user_id AND b.market = w.market)""")
     conn().execute("UPDATE targets SET manual_sl_price=sl_price"
                    " WHERE manual_sl_price IS NULL AND trail_pct IS NULL AND sl_price IS NOT NULL")
     conn().execute("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS source TEXT")

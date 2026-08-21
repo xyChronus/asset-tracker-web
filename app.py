@@ -1535,9 +1535,24 @@ def portfolio_history(market, user, hours):
         (market, user)).fetchall()
     if not txs:
         return []
+    # (ts, asset, qty, signed value, fee, is_adjust): Adjust rows move what you
+    # HOLD but never your cash, so they count for quantity and nothing else
     tx_list = [(db.parse_tx_ts(t["ts"]), t["asset_id"], t["quantity"],
-                t["value"] if t["value"] else t["quantity"] * t["price"]) for t in txs]
+                t["value"] if t["value"] else t["quantity"] * t["price"],
+                t["fee"] or 0.0, t["type"] == "Adjust") for t in txs]
     assets = sorted({t[1] for t in tx_list})
+    # budget timeline: the budget that applied at each hour. Hours before the
+    # first recorded change fall back to the earliest known budget (for
+    # members who predate the timeline, that is whatever they had when it
+    # started); no record at all = no wallet series.
+    bh = db.conn().execute(
+        "SELECT budget, ts FROM budget_history WHERE user_id=%s AND market=%s ORDER BY ts",
+        (user, market)).fetchall()
+    if not bh:
+        w = db.conn().execute("SELECT budget FROM wallets WHERE user_id=%s AND market=%s",
+                              (user, market)).fetchone()
+        bh = [{"budget": w["budget"], "ts": 0}] if w else []
+    budget_at = [(r["ts"], r["budget"]) for r in bh]
     end = now_ms() // 3600000 * 3600000
     start = end - hours * 3600000
     prices = {}
@@ -1549,15 +1564,23 @@ def portfolio_history(market, user, hours):
     points = []
     idx = {aid: 0 for aid in assets}
     last_price = {aid: None for aid in assets}
+    bi = 0
     for hpoint in range(start, end + 1, 3600000):
         qty = {aid: 0.0 for aid in assets}
-        invested = 0.0
-        for ts, aid, q, val in tx_list:
+        last_tx_price = {aid: None for aid in assets}
+        invested = 0.0   # net basis put into positions (Adjust restates basis, so it counts)
+        flow = 0.0       # cash that actually left the wallet: trades + fees, never Adjusts
+        for ts, aid, q, val, fee, adj in tx_list:
             if ts <= hpoint:
                 qty[aid] += q
                 invested += val
+                if not adj:
+                    flow += val + fee
+                    if q:
+                        last_tx_price[aid] = abs(val / q)
         total = 0.0
-        have_any = False
+        held = False
+        unpriced = False
         for aid in assets:
             series = prices[aid]
             i = idx[aid]
@@ -1565,11 +1588,28 @@ def portfolio_history(market, user, hours):
                 last_price[aid] = series[i][1]
                 i += 1
             idx[aid] = i
-            if qty[aid] > 1e-9 and last_price[aid] is not None:
-                total += qty[aid] * last_price[aid]
-                have_any = True
-        if have_any:
-            points.append([hpoint, round(total, 2), round(invested, 2)])
+            if qty[aid] > 1e-9:
+                held = True
+                # a held position with no stored price yet is carried at its
+                # last trade price, so it never reads as vanished cash
+                p = last_price[aid] if last_price[aid] is not None else last_tx_price[aid]
+                if p is None:
+                    unpriced = True
+                else:
+                    total += qty[aid] * p
+        if unpriced:
+            continue   # genuinely unknowable hour
+        # budget that applied at this hour (timeline is ts-ordered)
+        while bi + 1 < len(budget_at) and budget_at[bi + 1][0] <= hpoint:
+            bi += 1
+        budget = budget_at[bi][1] if budget_at else None
+        # 4th element: whole-wallet worth = positions + the cash left at that
+        # hour (that hour's budget minus everything spent by then) - realized
+        # gains land in cash, so they show up here naturally; 5th: that budget
+        wallet = round(total + budget - flow, 2) if budget is not None else None
+        points.append([hpoint, round(total, 2), round(invested, 2), wallet, budget])
+        if not held and not budget_at:
+            points.pop()   # nothing held and no wallet: nothing to chart
     return points
 
 
@@ -2117,6 +2157,7 @@ def api_set_cash(market):
     db.conn().execute("INSERT INTO wallets VALUES (%s,%s,%s)"
                       " ON CONFLICT (user_id, market) DO UPDATE SET budget=EXCLUDED.budget",
                       (uid(), market, budget))
+    _record_budget(uid(), market, budget)
     _invalidate_advisor(market, uid())
     return jsonify({"ok": True, "budget": budget, "cash": cash})
 
@@ -2138,8 +2179,17 @@ def api_wallet(market):
     db.conn().execute("INSERT INTO wallets VALUES (%s,%s,%s)"
                       " ON CONFLICT (user_id, market) DO UPDATE SET budget=EXCLUDED.budget",
                       (uid(), market, budget))
+    _record_budget(uid(), market, budget)
     _invalidate_advisor(market, uid())
     return jsonify({"ok": True})
+
+
+def _record_budget(user, market, budget):
+    """Append to the budget timeline (None = budget cleared) so history
+    charts can use the budget that applied at each moment."""
+    db.conn().execute(
+        "INSERT INTO budget_history (user_id, market, budget, ts) VALUES (%s,%s,%s,%s)",
+        (user, market, budget, now_ms()))
 
 
 @app.post("/api/<market>/targets")

@@ -49,11 +49,18 @@
   <div class="cards" id="dash-cards"></div>
   <div class="grid2">
     <div class="panel">
-      <div class="panel-head"><h3>Holdings Value</h3>
+      <div class="panel-head"><h3 id="pv-title">Holdings Value</h3>
+        <div class="chart-controls">
+        <div class="range-btns" id="pv-mode" title="Holdings = what your positions are worth. Wallet = positions + cash (realized gains included), against the budget that applied at the time. Both = the two together, with the shaded gap being your cash on hand (green), or how far past your budget you've spent (red).">
+          <button data-mode="value" class="active">Holdings</button>
+          <button data-mode="wallet">Wallet</button>
+          <button data-mode="both">Both</button>
+        </div>
         <div class="range-btns" id="pv-range">
           <button data-hours="24">24h</button>
           <button data-hours="168" class="active">7d</button>
           <button data-hours="720">30d</button>
+        </div>
         </div>
       </div>
       <div class="chart-box"><canvas id="pv-chart"></canvas></div>

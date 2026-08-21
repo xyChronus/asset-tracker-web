@@ -604,3 +604,6 @@ nav#tabs button, .mkt-switch button, .scope-pills button, .hold-chip,
 #tour-card p { font-size: 13px; color: var(--text); line-height: 1.5; }
 #tour-card .tour-step { font-size: 11px; }
 #tour-card .tour-btns { display: flex; gap: 8px; align-items: center; margin-top: 12px; }
+
+/* a greyed-out range/mode button must read as unavailable, not merely inactive */
+.range-btns button:disabled { opacity: .4; cursor: not-allowed; }

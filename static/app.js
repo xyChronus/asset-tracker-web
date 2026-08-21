@@ -35,6 +35,7 @@ const state = {
   newsScope: "all",      // News tab: "all" | "holdings"
   editingTx: null,
   pvHours: 168,
+  pvMode: localStorage.getItem("pvmode") || "value",   // dashboard chart: value | wallet | both
   chartHours: 168,
   chartAsset: {},        // per market
   txSide: "buy",
@@ -605,21 +606,59 @@ async function loadDashboard() {
     .map(c => `<div class="card"><div class="label">${c.label}</div><div class="val">${c.val}</div><div class="sub">${c.sub}</div></div>`).join("");
 
   const pts = hist.points || [];
+  // Holdings = positions only; Wallet = positions + cash; Both = the two with
+  // the gap between them shaded (that gap IS the cash on hand). Wallet views
+  // need a budget, because cash is budget minus what has been spent.
+  const noBudget = s.budget == null;
+  const walletOk = !noBudget && (pts.length === 0 || pts.some(x => x[3] != null));
+  document.querySelectorAll('#pv-mode button[data-mode="wallet"], #pv-mode button[data-mode="both"]').forEach(b => {
+    b.disabled = !walletOk;
+    // say the TRUE reason, and let the group's explanatory tooltip show when enabled
+    if (walletOk) b.removeAttribute("title");
+    else b.title = noBudget ? "Set a budget on the Trades tab to track your whole wallet over time"
+                            : "No wallet history in this range yet";
+  });
+  if (state.pvMode !== "value" && !walletOk) state.pvMode = "value";
+  const mode = state.pvMode;
+  document.querySelectorAll("#pv-mode button").forEach(b =>
+    b.classList.toggle("active", b.dataset.mode === mode));
+  document.getElementById("pv-title").textContent =
+    mode === "wallet" ? "Wallet Value" : mode === "both" ? "Wallet vs Holdings" : "Holdings Value";
+  const dsHoldings = { label: "Holdings (positions)", data: pts.map(x => x[1]), borderColor: "#f7931a",
+    backgroundColor: "rgba(247,147,26,.10)", fill: true, pointRadius: 0, borderWidth: 2, tension: .25 };
+  const dsInvested = { label: "Net invested", data: pts.map(x => x[2]), borderColor: "#8b93a7",
+    borderDash: [5, 4], pointRadius: 0, borderWidth: 1.5, tension: 0 };
+  const dsWallet = (fillTo) => ({ label: "Wallet (positions + cash)", data: pts.map(x => x[3]), borderColor: "#22c55e",
+    backgroundColor: "rgba(34,197,94,.14)", fill: fillTo, pointRadius: 0, borderWidth: 2, tension: .25 });
+  // the budget that applied at each hour (steps when it was changed)
+  const dsBudget = { label: "Budget", data: pts.map(x => x[4] != null ? x[4] : s.budget), borderColor: "#8b93a7",
+    borderDash: [5, 4], pointRadius: 0, borderWidth: 1.5, tension: 0 };
+  const datasets = mode === "wallet" ? [dsWallet(true), dsBudget]
+    // wallet fills down to holdings: green band = cash on hand, red = spent past the budget
+    : mode === "both" ? [dsHoldings, dsWallet({ target: "-1", above: "rgba(34,197,94,.14)", below: "rgba(239,68,68,.16)" }), dsBudget]
+    : [dsHoldings, dsInvested];
   makeChart("pv-chart", {
     type: "line",
     data: {
       labels: pts.map(x => new Date(x[0]).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit" })),
-      datasets: [
-        { label: "Value", data: pts.map(x => x[1]), borderColor: "#f7931a",
-          backgroundColor: "rgba(247,147,26,.08)", fill: true, pointRadius: 0, borderWidth: 2, tension: .25 },
-        { label: "Net invested", data: pts.map(x => x[2]), borderColor: "#8b93a7",
-          borderDash: [5, 4], pointRadius: 0, borderWidth: 1.5, tension: 0 },
-      ],
+      datasets,
     },
     options: {
       maintainAspectRatio: false, interaction: { mode: "index", intersect: false },
       plugins: { legend: { labels: { boxWidth: 12 } },
-        tooltip: { callbacks: { label: c => c.dataset.label + ": " + fmtMoney(c.parsed.y) } } },
+        tooltip: { callbacks: {
+          label: c => c.dataset.label + ": " + fmtMoney(c.parsed.y),
+          // in Both view, spell out what the shaded gap is worth at that hour
+          afterBody: (items) => {
+            if (mode !== "both" || !items.length) return;
+            const p = pts[items[0].dataIndex];
+            if (!p || p[3] == null) return;
+            const cash = p[3] - p[1];
+            const shaded = items[0].chart.isDatasetVisible(0) ? " (shaded gap)" : "";
+            return [cash >= 0 ? `Cash on hand${shaded}: ${fmtMoney(cash)}`
+                              : `Spent past your budget${shaded}: ${fmtMoney(Math.abs(cash))}`];
+          },
+        } } },
       scales: { x: { ticks: { maxTicksLimit: 7, maxRotation: 0 } },
                 y: { ticks: { callback: v => fmtMoney(v, true) } } },
     },
@@ -2264,6 +2303,12 @@ document.querySelectorAll("[data-goto]").forEach(b =>
 document.querySelectorAll("#pv-range button").forEach(b => b.onclick = () => {
   state.pvHours = +b.dataset.hours;
   document.querySelectorAll("#pv-range button").forEach(x => x.classList.toggle("active", x === b));
+  loadDashboard();
+});
+document.querySelectorAll("#pv-mode button").forEach(b => b.onclick = () => {
+  if (b.disabled) return;
+  state.pvMode = b.dataset.mode;
+  localStorage.setItem("pvmode", state.pvMode);
   loadDashboard();
 });
 document.querySelectorAll("#val-mode button").forEach(b => {
