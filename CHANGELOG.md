@@ -404,3 +404,8 @@ Web-only items are marked **(web)**.
 - **Averaging down, once.** A position you're 10%+ under water on can get one small staged add (~5% of the wallet) when the same evidence holds — and only while the position is still under half your concentration cap, so it can never become doubling down.
 ### Notes
 - Calibrated on live data before shipping: across ~380 tracked names the lane surfaced three global candidates (all oversold, analyst-backed, clean news) and zero crypto — selective by design. (Requested by the admin, from experience buying SPCX and several coins on the way down.)
+
+## [1.31.1] — 2026-08-21 — Bandwidth diet
+### Fixed
+- **The site was suspended by Render after using its free 5 GB of monthly bandwidth.** Root cause: Render cut the free plan's allowance from 100 GB to 5 GB on August 1, and the app had never compressed anything it sent — a single PSE watchlist refresh was 280 KB, a full page load 561 KB, and a tab left open re-pulled all of it every 5 minutes.
+- Every text and JSON response is now gzip-compressed (a full first load is 128 KB, −77%), and API responses carry validators so a refresh that finds nothing changed returns an empty 304 instead of the whole payload — stock quotes don't move for 18 hours a day, so most refreshes now cost zero bytes. Projected usage is comfortably inside the 5 GB allowance.

@@ -31,6 +31,60 @@ import pse_data
 import signals as sig
 
 app = Flask(__name__, static_folder="static", static_url_path="/static")
+
+# ---------------------------------------------------------------- bandwidth
+# Render's free plan meters OUTBOUND bytes (5 GB/month since 2026-08-01, down
+# from 100 GB - which is why two quiet months ended in a suspension). Two
+# universal savings, measured locally before shipping:
+#   1. gzip every text/JSON body over 1 KB (~75% smaller: 632 KB -> 150 KB
+#      for one load of everything; the 280 KB PSE watchlist -> 49 KB);
+#   2. ETag + conditional 304 on API GETs, so a 5-minute auto-refresh that
+#      finds nothing changed (stock quotes sit still 18 hours a day) costs
+#      zero body bytes instead of re-sending the whole payload.
+import gzip as _gzip
+
+_COMPRESSIBLE = ("application/json", "text/html", "text/css", "application/javascript",
+                 "text/javascript", "text/plain", "image/svg+xml")
+_STATIC_GZ = {}   # (path, etag) -> gzipped bytes; files compress once per version
+
+
+@app.after_request
+def _shrink_response(resp):
+    try:
+        ctype = (resp.mimetype or "")
+        is_api_get = (request.method == "GET" and request.path.startswith("/api/")
+                      and resp.status_code == 200 and ctype == "application/json")
+        if is_api_get and not resp.direct_passthrough:
+            # weak validator over the body; browsers send If-None-Match on
+            # the next fetch and get a bodiless 304 when nothing moved
+            resp.add_etag(weak=True)
+            resp.headers["Cache-Control"] = "no-cache"
+            resp = resp.make_conditional(request)
+        wants_gz = "gzip" in (request.headers.get("Accept-Encoding") or "")
+        if (resp.status_code == 200 and ctype in _COMPRESSIBLE and wants_gz
+                and "Content-Encoding" not in resp.headers):
+            if resp.direct_passthrough:   # a file (static asset or HTML page)
+                key = (request.path, resp.get_etag()[0] or resp.headers.get("Last-Modified"))
+                body = _STATIC_GZ.get(key)
+                if body is None:
+                    resp.direct_passthrough = False   # read the file through
+                    body = _gzip.compress(resp.get_data(), 6)
+                    if len(_STATIC_GZ) > 64:
+                        _STATIC_GZ.clear()
+                    _STATIC_GZ[key] = body
+                else:
+                    resp.direct_passthrough = False
+            elif (resp.content_length or 0) <= 1024:
+                return resp
+            else:
+                body = _gzip.compress(resp.get_data(), 6)
+            resp.set_data(body)
+            resp.headers["Content-Encoding"] = "gzip"
+            resp.headers["Content-Length"] = str(len(body))
+            resp.headers.add("Vary", "Accept-Encoding")
+    except Exception:
+        pass   # never let a compression hiccup break a response
+    return resp
 app.secret_key = os.environ.get("SECRET_KEY", "dev-only-" + secrets.token_hex(8))
 app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax",
                   PERMANENT_SESSION_LIFETIME=60 * 60 * 24 * 30,
