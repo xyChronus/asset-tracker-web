@@ -1517,24 +1517,27 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
                 (g + " [superseded: no size suggested - position-count gate]"
                  if "halved" in g else g)
                 for g in r["breakdown"]["gates"]]
+            # whose limit is binding: the member's own typed maximum, or the
+            # band the spread setting suggests for a wallet this size
             r["breakdown"]["gates"].append(
                 f"Position-count gate: already holding {n_holdings} names on a "
-                f"{wallet_class} {wallet_word}{band_basis} (suggested max "
-                f"{band_hi} when {dv['label'].lower()}) - rotate, don't "
-                f"accumulate names")
+                f"{wallet_class} {wallet_word}{band_basis} (max {band_hi} - "
+                + ("your own rule" if o_hi else f"suggested when {dv['label'].lower()}")
+                + ") - rotate, don't accumulate names")
+            rel = "past" if n_holdings > band_hi else "at"
+            limit_txt = (f"{rel} your own maximum of {band_hi} names" if o_hi
+                         else f"{rel} the useful limit (~{band_hi})")
             if weakest is not None and weakest["conviction"] < r["conviction"]:
                 r["reasons"].insert(0,
                     f"Good setup, but {n_holdings} positions on this {wallet_word} "
-                    f"is already {'past' if n_holdings > band_hi else 'at'} the "
-                    f"useful limit (~{band_hi}) - each new name makes every "
+                    f"is already {limit_txt} - each new name makes every "
                     f"position smaller. If you believe in this one, the natural "
                     f"funding source is {weakest['symbol'] or weakest['name']} "
                     f"(your weakest-rated holding at {weakest['conviction']:+.1f}).")
             else:
                 r["reasons"].insert(0,
                     f"Good setup, but {n_holdings} positions on this {wallet_word} "
-                    f"is already {'past' if n_holdings > band_hi else 'at'} the "
-                    f"useful limit (~{band_hi}) and nothing you hold rates "
+                    f"is already {limit_txt} and nothing you hold rates "
                     f"clearly worse - wait for a better spot or a freed slot.")
 
     recs.sort(key=lambda r: (-ACTION_RANK.get(r["action"], 0), -abs(r["conviction"])))
@@ -1621,17 +1624,37 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
 
     # position-count guidance: a wallet this size works best in a band of
     # names; outside it, say so plainly (guidance, never an instruction)
+    # When the band is the member's OWN rule, say so and say what the advisor
+    # does about it - and leave the choice with them: going outside a rule
+    # you wrote yourself can be deliberate, so it's noted, never nagged.
     if n_holdings > band_hi:
-        briefing += (f" You're spread across {n_holdings} names on this "
-                     f"{wallet_word}{band_basis} - past the ~{band_hi} where "
-                     f"each position still pulls its weight; consolidating into "
-                     f"your strongest picks puts more force behind each winner.")
+        if o_hi:
+            briefing += (f" Your own rule caps this {wallet_word} at {band_hi} names "
+                         f"and you're holding {n_holdings}. If that's on purpose, "
+                         f"fine - the advisor just won't suggest new names until "
+                         f"you're back inside it; if it crept up, your weakest-"
+                         f"rated holdings are the natural place to trim.")
+        else:
+            briefing += (f" You're spread across {n_holdings} names on this "
+                         f"{wallet_word}{band_basis} - past the ~{band_hi} where "
+                         f"each position still pulls its weight. If that's by "
+                         f"design, fine; otherwise consolidating into your "
+                         f"strongest picks puts more force behind each winner.")
     elif 0 < n_holdings < band_lo and cash is not None and cash > 0.15 * capital:
-        briefing += (f" You hold {n_holdings} name{'s' if n_holdings > 1 else ''} "
-                     f"with idle cash - you're below the ~{band_lo} names that "
-                     f"suit this wallet, so there's room for "
-                     f"{band_lo - n_holdings} more before it's even at its "
-                     f"suggested minimum spread.")
+        room = band_lo - n_holdings
+        if o_lo:
+            briefing += (f" Your own rule asks for at least {band_lo} names; you "
+                         f"hold {n_holdings} with idle cash, so there's room for "
+                         f"{room} more when something on the watchlist earns it. "
+                         f"No rush - waiting for a good setup is a fine reason "
+                         f"to be under.")
+        else:
+            briefing += (f" You hold {n_holdings} name{'s' if n_holdings > 1 else ''} "
+                         f"with idle cash - you're below the ~{band_lo} names that "
+                         f"suit this wallet, so there's room for {room} more "
+                         f"before it's even at its suggested minimum spread. No "
+                         f"rush - waiting for a good setup is a fine reason to "
+                         f"be under.")
 
     # rotation thought: the friend-group playbook is sell-strength-into-
     # strength - when a clearly weak holding coexists with a clearly strong

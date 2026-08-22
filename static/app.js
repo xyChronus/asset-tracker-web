@@ -653,6 +653,28 @@ async function loadDashboard() {
   // the budget that applied at each hour (steps when it was changed)
   const dsBudget = { label: "Budget", data: pts.map(x => x[4] != null ? x[4] : s.budget), borderColor: "#8b93a7",
     borderDash: [5, 4], pointRadius: 0, borderWidth: 1.5, tension: 0 };
+  // P/L at a charted hour. Holdings view: positions minus net invested =
+  // realized + unrealized before fees (money you put in, net of what sells
+  // returned). Wallet view: the whole wallet against the budget that applied
+  // then - fees included, because they left the cash. Both: the two.
+  const plLines = (p) => {
+    if (!p) return [];
+    const out = [];
+    if (mode !== "wallet" && p[1] != null && p[2] != null)
+      out.push({ label: mode === "both" ? "Holdings P/L" : "P/L", amt: p[1] - p[2], base: p[2], vs: "vs net invested" });
+    if (mode !== "value" && p[3] != null && p[4] != null)
+      out.push({ label: mode === "both" ? "Wallet P/L" : "P/L", amt: p[3] - p[4], base: p[4], vs: "vs budget" });
+    return out;
+  };
+  const plText = (l, withVs) => moneySpan(l.amt)
+    + (l.base > 0 ? ` (${pctSpan(l.amt / l.base * 100)}${withVs ? " " + l.vs : ""})` : "");
+  const rangeLabel = { 24: "24h", 168: "7d", 720: "30d" }[state.pvHours] || `${state.pvHours}h`;
+  const nowLines = plLines(pts[pts.length - 1]), firstLines = plLines(pts[0]);
+  document.getElementById("pv-pl").innerHTML = nowLines.map((l, i) => {
+    const f = firstLines[i];
+    const delta = f && f.label === l.label ? ` · <span class="muted">${rangeLabel} change:</span> ${moneySpan(l.amt - f.amt)}` : "";
+    return `<b>${l.label}</b> <span class="muted">latest hour</span> ${plText(l, true)}${delta}`;
+  }).join("<br>");
   const datasets = mode === "wallet" ? [dsWallet(true), dsBudget]
     // wallet fills down to holdings: green band = cash on hand, red = spent past the budget
     : mode === "both" ? [dsHoldings, dsWallet({ target: "-1", above: "rgba(34,197,94,.14)", below: "rgba(239,68,68,.16)" }), dsBudget]
@@ -670,13 +692,18 @@ async function loadDashboard() {
           label: c => c.dataset.label + ": " + fmtMoney(c.parsed.y),
           // in Both view, spell out what the shaded gap is worth at that hour
           afterBody: (items) => {
-            if (mode !== "both" || !items.length) return;
+            if (!items.length) return;
             const p = pts[items[0].dataIndex];
-            if (!p || p[3] == null) return;
-            const cash = p[3] - p[1];
-            const shaded = items[0].chart.isDatasetVisible(0) ? " (shaded gap)" : "";
-            return [cash >= 0 ? `Cash on hand${shaded}: ${fmtMoney(cash)}`
-                              : `Spent past your budget${shaded}: ${fmtMoney(Math.abs(cash))}`];
+            if (!p) return;
+            const lines = plLines(p).map(l => `${l.label}: ${l.amt >= 0 ? "+" : "-"}${fmtMoney(Math.abs(l.amt))}`
+              + (l.base > 0 ? ` (${l.amt >= 0 ? "+" : ""}${(l.amt / l.base * 100).toFixed(1)}% ${l.vs})` : ""));
+            if (mode === "both" && p[3] != null) {
+              const cash = p[3] - p[1];
+              const shaded = items[0].chart.isDatasetVisible(0) ? " (shaded gap)" : "";
+              lines.push(cash >= 0 ? `Cash on hand${shaded}: ${fmtMoney(cash)}`
+                                   : `Spent past your budget${shaded}: ${fmtMoney(Math.abs(cash))}`);
+            }
+            return lines;
           },
         } } },
       scales: { x: { ticks: { maxTicksLimit: 7, maxRotation: 0 } },

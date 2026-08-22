@@ -449,3 +449,8 @@ Web-only items are marked **(web)**.
 ### Notes
 - PSE Edge's chart trails a day, so a PSE figure for a session appears once the live feed has recorded that day; the nightly Edge read keeps the 20-day baseline complete behind it. A quiet chip is honest, not broken.
 - Known limits: US early-close days (13:00 ET) are treated as ending at 16:00, so those figures arrive three hours later; a PSE closure that is not on the holiday list (the 2027 list is not published yet) would let the live feed record the previous day's echo under that date.
+## [1.36.0] — 2026-08-22 — P/L on the chart, rules-aware spread guidance
+### Added
+- **P/L on the Dashboard chart.** A line above the chart now reads the profit or loss at the latest hour and how it moved over the selected range (24h / 7d / 30d), and every hover tooltip shows it for that hour. In the Holdings view it is positions minus net invested (realized + unrealized, before fees); in the Wallet view it is the whole wallet against the budget that applied at the time (fees included, because they left the cash); Both shows the two.
+### Changed
+- **Spread guidance knows whose rule it is.** If you typed your own minimum or maximum number of names in "Your own rules", the briefing now says so when you're outside it — "Your own rule caps this wallet at 5 names and you're holding 7" — and leaves the choice with you: if it's on purpose, fine, the advisor simply won't suggest new names until you're back inside it; if not, the weakest-rated holdings are the natural place to trim. Below your minimum with idle cash it notes the room and adds "no rush". Cards held back by the count gate say which limit is binding (your rule or the spread setting). The preset-band wording gained the same "if that's by design, fine".
