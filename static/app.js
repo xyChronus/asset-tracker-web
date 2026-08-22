@@ -668,13 +668,24 @@ async function loadDashboard() {
   };
   const plText = (l, withVs) => moneySpan(l.amt)
     + (l.base > 0 ? ` (${pctSpan(l.amt / l.base * 100)}${withVs ? " " + l.vs : ""})` : "");
-  const rangeLabel = { 24: "24h", 168: "7d", 720: "30d" }[state.pvHours] || `${state.pvHours}h`;
+  const rangeLabel = state.pvHours === "all" ? "since first trade"
+    : ({ 24: "24h", 168: "7d", 720: "30d" }[state.pvHours] || `${state.pvHours}h`);
   const nowLines = plLines(pts[pts.length - 1]), firstLines = plLines(pts[0]);
   document.getElementById("pv-pl").innerHTML = nowLines.map((l, i) => {
     const f = firstLines[i];
-    const delta = f && f.label === l.label ? ` · <span class="muted">${rangeLabel} change:</span> ${moneySpan(l.amt - f.amt)}` : "";
+    const delta = f && f.label === l.label ? ` · <span class="muted">${state.pvHours === "all" ? "change since first trade" : rangeLabel + " change"}:</span> ${moneySpan(l.amt - f.amt)}` : "";
     return `<b>${l.label}</b> <span class="muted">latest hour</span> ${plText(l, true)}${delta}`;
-  }).join("<br>");
+  }).join("<br>")
+    // the price record only goes back so far: before it begins, a position is
+    // carried at the price you paid - say so whenever the range reaches past it
+    + (state.pvHours === "all" && hist.first_ts && hist.price_record_days
+       && Date.now() - hist.first_ts > hist.price_record_days * 86400000
+       ? `<br><span class="muted">Prices are kept ${hist.price_record_days} days back; before that, each position is carried at the price you paid.</span>`
+       : "");
+  // long ranges are thinned server-side (one point every step_h hours)
+  const stepH = hist.step_h || 1;
+  const labelFmt = stepH >= 24 ? { year: "2-digit", month: "short", day: "numeric" }
+                               : { month: "short", day: "numeric", hour: "2-digit" };
   const datasets = mode === "wallet" ? [dsWallet(true), dsBudget]
     // wallet fills down to holdings: green band = cash on hand, red = spent past the budget
     : mode === "both" ? [dsHoldings, dsWallet({ target: "-1", above: "rgba(34,197,94,.14)", below: "rgba(239,68,68,.16)" }), dsBudget]
@@ -682,7 +693,7 @@ async function loadDashboard() {
   makeChart("pv-chart", {
     type: "line",
     data: {
-      labels: pts.map(x => new Date(x[0]).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit" })),
+      labels: pts.map(x => new Date(x[0]).toLocaleString([], labelFmt)),
       datasets,
     },
     options: {
@@ -2388,7 +2399,7 @@ document.querySelectorAll("[data-goto]").forEach(b =>
   b.onclick = () => switchTab(b.dataset.goto));
 
 document.querySelectorAll("#pv-range button").forEach(b => b.onclick = () => {
-  state.pvHours = +b.dataset.hours;
+  state.pvHours = b.dataset.hours === "all" ? "all" : +b.dataset.hours;
   document.querySelectorAll("#pv-range button").forEach(x => x.classList.toggle("active", x === b));
   loadDashboard();
 });

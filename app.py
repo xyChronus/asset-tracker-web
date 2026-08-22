@@ -1841,7 +1841,14 @@ def portfolio_state(market, user):
     }
 
 
-def portfolio_history(market, user, hours):
+def _hour_grid(start, end, step_h):
+    """Hour marks from end back to start, every step_h hours, oldest first -
+    anchored on END so the latest point is always the current hour."""
+    step = step_h * 3600000
+    return list(range(end, start - 1, -step))[::-1]
+
+
+def portfolio_history(market, user, hours, step_h=1):
     txs = db.conn().execute(
         "SELECT * FROM transactions WHERE market=%s AND user_id=%s ORDER BY ts, id",
         (market, user)).fetchall()
@@ -1877,7 +1884,7 @@ def portfolio_history(market, user, hours):
     idx = {aid: 0 for aid in assets}
     last_price = {aid: None for aid in assets}
     bi = 0
-    for hpoint in range(start, end + 1, 3600000):
+    for hpoint in _hour_grid(start, end, step_h):
         qty = {aid: 0.0 for aid in assets}
         last_tx_price = {aid: None for aid in assets}
         invested = 0.0   # net basis put into positions (Adjust restates basis, so it counts)
@@ -2261,8 +2268,23 @@ def api_portfolio(market):
 @app.get("/api/<market>/portfolio_history")
 def api_portfolio_history(market):
     _check(market)
-    hours = _int_arg("hours", 168, 1, 24 * config.HISTORY_KEEP_DAYS)
-    return jsonify({"points": portfolio_history(market, uid(), hours)})
+    raw = (request.args.get("hours") or "").strip().lower()
+    first_ts = None
+    if raw == "all":
+        # since the member's first trade in this market (at least a day)
+        row = db.conn().execute(
+            "SELECT MIN(ts) AS ts FROM transactions WHERE market=%s AND user_id=%s",
+            (market, uid())).fetchone()
+        first_ts = db.parse_tx_ts(row["ts"]) if row and row["ts"] else None
+        hours = max(24, -(-(now_ms() - first_ts) // 3600000) + 2) if first_ts else 168
+    else:
+        hours = _int_arg("hours", 168, 1, 24 * config.HISTORY_KEEP_DAYS)
+    # long ranges are thinned to ~720 points (one every step_h hours) so an
+    # all-time series costs no more bandwidth than a 30-day one
+    step_h = max(1, -(-hours // 720))
+    return jsonify({"points": portfolio_history(market, uid(), hours, step_h),
+                    "hours": hours, "step_h": step_h, "first_ts": first_ts,
+                    "price_record_days": config.HISTORY_KEEP_DAYS})
 
 
 @app.get("/api/<market>/transactions")
