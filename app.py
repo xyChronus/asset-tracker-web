@@ -13,7 +13,8 @@ import secrets
 import threading
 import time
 import traceback
-from datetime import datetime, timedelta
+import calendar
+from datetime import datetime, timedelta, timezone
 from functools import wraps
 
 import requests
@@ -803,6 +804,56 @@ def _pse_open():
             and (9, 0) <= (n.hour, n.minute) <= (15, 30))
 
 
+def _session_state(market):
+    """For a stock market: (bucket_ms, settled). bucket_ms is the UTC-day
+    bucket of the most recent session that has ENDED (today once the close
+    has passed, else the previous trading day - weekends and listed holidays
+    skipped). settled is True when the market is between sessions right now
+    (not trading, not on the PSE lunch break) - the only time a day's move
+    and its recorded volume describe the same session."""
+    if market == "pse":
+        now = datetime.now()                      # Manila clock
+        open_t, end_t = (9, 30), (15, 30)         # incl. the 15:00-15:30 run-off: value still accrues
+    else:
+        try:
+            from zoneinfo import ZoneInfo
+            now = datetime.now(ZoneInfo("America/New_York"))
+        except Exception:
+            off = -4 if 3 <= datetime.now().month <= 10 else -5
+            now = datetime.now(timezone.utc) + timedelta(hours=off)
+        open_t, end_t = (9, 30), (16, 0)
+    d, t = now.date(), (now.hour, now.minute)
+    trading = d.weekday() < 5 and not _holiday(market, d)
+    in_session = trading and open_t <= t < end_t
+    if not (trading and t >= end_t):
+        d -= timedelta(days=1)
+        while d.weekday() >= 5 or _holiday(market, d):
+            d -= timedelta(days=1)
+    return calendar.timegm(d.timetuple()) * 1000, not in_session
+
+
+def _session_close_ms(market, bucket_ms):
+    """The moment (ms) the session on that UTC-day bucket ended."""
+    if market == "pse":
+        return bucket_ms + 7 * 3600000 + 30 * 60000     # 15:30 Manila = 07:30 UTC
+    d = datetime.fromtimestamp(bucket_ms / 1000, timezone.utc).date()
+    try:
+        from zoneinfo import ZoneInfo
+        return int(datetime(d.year, d.month, d.day, 16, 0,
+                            tzinfo=ZoneInfo("America/New_York")).timestamp() * 1000)
+    except Exception:
+        off = 4 if 3 <= d.month <= 10 else 5
+        return bucket_ms + (16 + off) * 3600000
+
+
+def _pse_volume_window():
+    """9:30-15:30 Manila: live trading plus the run-off, when phisix's daily
+    value is the running total of THIS session (in the 9:00 pre-open it still
+    echoes the previous day's)."""
+    n = datetime.now()
+    return _pse_open() and (n.hour, n.minute) >= (9, 30)
+
+
 def pse_sync_directory_if_needed():
     n = db.conn().execute("SELECT COUNT(*) n FROM pse_companies").fetchone()["n"]
     last = db.kv_get("pse:directory_synced", 0)
@@ -851,7 +902,7 @@ def pse_fetch_quotes():
         quotes, as_of = pse_data.fetch_quotes()
         db.kv_set("pse:quotes", {"updated": now_ms(), "data": quotes, "as_of": as_of})
         _pse_write_price_history(quotes)
-        if _pse_open():   # outside the session phisix echoes the last day's totals
+        if _pse_volume_window():   # outside it phisix echoes the last day's totals
             _upsert_volume("pse", [(s, q.get("value")) for s, q in quotes.items()])
         return
     except Exception as e:
@@ -1367,6 +1418,10 @@ def _upsert_volume(market, pairs, day_ts=None):
     """Record today's traded amount per asset (last write of the day wins -
     phisix/CoinGecko report the running daily total)."""
     day = day_ts if day_ts is not None else now_ms() // 86400000 * 86400000
+    if market != "crypto":
+        dd = datetime.fromtimestamp(day / 1000, timezone.utc).date()
+        if dd.weekday() >= 5 or _holiday(market, dd):
+            return   # no stock session on that date: whatever a feed says, skip it
     rows = [(market, aid, day, float(v)) for aid, v in pairs if aid and v and v > 0]
     if rows:
         db.conn().executemany(
@@ -1377,29 +1432,43 @@ def _upsert_volume(market, pairs, day_ts=None):
 def volume_backfill_tick(market):
     """Seed ~3 months of daily traded amounts, one asset per tick, so the
     relative-volume read has its 20-day baseline from day one instead of
-    warming up for a month. Global refreshes from Yahoo daily (its only
-    source); crypto and PSE are one-time seeds topped up live by the quote
-    collectors. Latched in kv volfill:{market}: {asset_id: last_fetch_ms}."""
+    warming up for a month. Stock markets re-read once per session (after the
+    close); crypto weekly. Latched in kv volfill:{market}: {asset_id: ms}."""
     ids = tracked_ids_all_users(market)
     if not ids:
         return
     latch = dict(db.kv_get(f"volfill:{market}", {}))
-    # global refreshes once per session from Yahoo (its only source) and ONLY
-    # while the US market is closed, so a running session's partial bar can
-    # never be stored as that day's volume; crypto and PSE are seeded once and
-    # then fed live by their quote collectors
-    if market == "global":
-        if market_session("global")[0]:
+    now = now_ms()
+
+    def retry_due(a):   # a negative latch is a failed fetch: "retry not before |value|"
+        L = latch.get(a, 0)
+        return L < 0 and now >= -L
+
+    if market != "crypto":
+        # stock markets re-read ONCE PER SESSION: a name is due when its last
+        # read predates the latest close (never an elapsed-time rule - that
+        # drifts over weekends and misses Monday's close), only while the
+        # market is closed, and not in the 45 minutes after the close while
+        # the closing auction and late prints are still being consolidated.
+        # Edge's chart trails a day, so the PSE read also fills the day the
+        # live feed missed and any gap from downtime
+        if market_session(market)[0]:
             return
-        due = [a for a in ids if now_ms() - latch.get(a, 0) >= 20 * 3600000]
+        bucket, _ = _session_state(market)
+        close = _session_close_ms(market, bucket)
+        if now < close + 45 * 60000:
+            return
+        due = [a for a in ids if retry_due(a) or 0 <= latch.get(a, 0) < close]
     else:
-        # re-read each name's history weekly: fills any days the live
-        # collector missed (the site was down, a feed hiccup) and means a
-        # name that once came back empty is not written off forever
-        due = [a for a in ids if now_ms() - latch.get(a, 0) >= 7 * 86400000]
+        # crypto: CoinGecko's live figure is already a complete 24h total; a
+        # weekly re-read only heals gaps (and spares the quota), and a name
+        # that once came back empty is not written off forever
+        due = [a for a in ids if retry_due(a)
+               or (latch.get(a, 0) >= 0 and now - latch.get(a, 0) >= 7 * 86400000)]
     if not due:
         return
-    aid = min(due, key=lambda a: latch.get(a, 0))
+    # never-read names first, then the oldest reads; retries after everyone
+    aid = min(due, key=lambda a: (latch.get(a, 0) < 0, abs(latch.get(a, 0))))
     rows = []
     try:
         if market == "crypto":
@@ -1417,41 +1486,62 @@ def volume_backfill_tick(market):
         return   # quota: try again later, never latch
     except Exception as e:
         print(f"[volume] {market} {aid}: {e}")
-        return   # a failed fetch is not "seeded": retry on a later tick
+        # not "seeded": retry in half an hour, behind every other due name, so
+        # one permanently broken symbol can never hog the tick
+        latch[aid] = -(now + 30 * 60000)
+        db.kv_set(f"volfill:{market}", latch)
+        return
     if rows:
-        # the running day is still accruing: let the live collector own it
-        today = now_ms() // 86400000 * 86400000
-        for day_ts, v in rows:
-            if day_ts < today or market == "global":
-                _upsert_volume(market, [(aid, v)], day_ts=day_ts)
-    latch[aid] = now_ms()
+        # a bar still accruing belongs to the live collector: crypto's running
+        # UTC day, a stock market's running (or not yet consolidated) session
+        if market == "crypto":
+            limit = now // 86400000 * 86400000
+            keep = [(t, v) for t, v in rows if t < limit]
+        else:
+            keep = [(t, v) for t, v in rows if t <= bucket]
+        for day_ts, v in keep:
+            _upsert_volume(market, [(aid, v)], day_ts=day_ts)
+    latch[aid] = now
     db.kv_set(f"volfill:{market}", latch)
 
 
-def _relative_volumes(market):
-    """{asset_id: rvol} for every tracked asset from one bounded read."""
-    since = now_ms() - 32 * 86400000
+def _relative_volumes(market, state=None):
+    """{asset_id: rvol} for every tracked asset from one bounded read.
+    For a stock market the figure is the last COMPLETED session's bar against
+    the 20 sessions before it; a running session's partial bar is ignored, and
+    a name whose latest stored bar is older than that session gets no figure
+    at all - stale volume must never be paired with a newer move."""
+    # 40 calendar days comfortably hold 20 prior sessions even across a
+    # holiday cluster, so "20-day average" stays literally true
+    since = now_ms() - 40 * 86400000
+    expect = None if market == "crypto" else (state or _session_state(market))[0]
     series = {}
-    # a stock market's running session is only part of a day: compare the last
-    # COMPLETE session instead (crypto's figure is a rolling 24h total - fine)
-    skip_today = market != "crypto" and market_session(market)[0]
-    today = now_ms() // 86400000 * 86400000
     for r in db.conn().execute(
             "SELECT asset_id, ts, volume FROM volume_daily"
             " WHERE market=%s AND ts >= %s ORDER BY asset_id, ts", (market, since)).fetchall():
-        if skip_today and r["ts"] >= today:
+        if expect is not None and r["ts"] > expect:
             continue
-        series.setdefault(r["asset_id"], []).append(r["volume"])
-    return {aid: rv for aid, vols in series.items()
-            if (rv := sig.relative_volume(vols)) is not None}
+        series.setdefault(r["asset_id"], []).append((r["ts"], r["volume"]))
+    out = {}
+    for aid, pts in series.items():
+        if expect is not None and pts[-1][0] != expect:
+            continue
+        rv = sig.relative_volume([v for _, v in pts])
+        if rv is not None:
+            out[aid] = rv
+    return out
 
 
 def recompute_signals(market):
     pm, _ = price_map(market)
-    rvols = _relative_volumes(market)
-    # while a stock market trades, the stored volume is the PREVIOUS session's
-    # and today's move is still in progress: show the figure, don't score it
-    rvol_votes = market == "crypto" or not market_session(market)[0]
+    # one reading of the session clock for both the figure and the vote, so
+    # a close landing between the two can't pair the old bar with a new move
+    state = None if market == "crypto" else _session_state(market)
+    rvols = _relative_volumes(market, state)
+    # while a stock market trades (or sits on its lunch break) the stored
+    # volume is the previous session's and today's move is still in progress:
+    # show the figure, don't score it
+    rvol_votes = state is None or state[1]
     # Indicators only use the last ~7 days of closes; reading a bounded window
     # instead of full history keeps the DB transfer quota intact.
     since = now_ms() - config.SIGNAL_WINDOW_DAYS[market] * 86400000

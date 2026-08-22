@@ -231,7 +231,7 @@ function rvolChip(s) {
   const tail = scored
     ? (heavy ? (chg > 0 ? "heavy volume behind the rise - buyers mean it" : "heavy volume behind the drop - sellers mean it")
              : "thin volume - little conviction behind the move")
-    : (heavy ? "notably heavy volume; not enough of a move (or the market is still open) to score it"
+    : (heavy ? "notably heavy volume; not enough of a move (or the session isn't over yet) to score it"
              : "notably thin volume; not scored");
   return ` <span class="badge sec-chip ${cls}" title="${session} traded amount is ${rv.toFixed(1)}× this asset's 20-day average - ${tail}">Vol ${rv.toFixed(1)}×</span>`;
 }
@@ -1093,7 +1093,7 @@ function recCard(r) {
   const f = r.fundamentals || {};
   const chips = [];
   if (r.rvol != null && (r.rvol >= 1.5 || r.rvol <= 0.5))
-    chips.push(`<span title="The latest complete session's traded amount vs this asset's own 20-day average (heavy volume behind a move is conviction; thin volume undercuts it - the card's reasons say whether it counted)">Vol ${r.rvol.toFixed(1)}× avg</span>`);
+    chips.push(`<span title="The latest complete session's traded amount vs this asset's own 20-day average (heavy volume behind a move is conviction; thin volume undercuts it; if it counted, the card's reasons say so)">Vol ${r.rvol.toFixed(1)}× avg</span>`);
   if (f.pe != null) chips.push("P/E " + fmtNum(f.pe, 1));
   if (f.eps_growth != null) chips.push("EPS gr " + (f.eps_growth > 0 ? "+" : "") + fmtNum(f.eps_growth, 0) + "%");
   if (f.roe != null) chips.push("ROE " + fmtNum(f.roe, 0) + "%");

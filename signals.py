@@ -246,11 +246,11 @@ def compute(closes, chg_24h=None, bars_per_day=24.0,
             ind["rvol_scored"] = True
             if chg_24h > 0:
                 score += 1
-                reasons.append(f"Up {chg_24h:.1f}% in 24h on heavy volume "
+                reasons.append(f"Up {chg_24h:.1f}% on heavy volume "
                                f"({rvol:.1f}x its 20-day average) - buyers mean it")
             else:
                 score -= 1
-                reasons.append(f"Down {abs(chg_24h):.1f}% in 24h on heavy volume "
+                reasons.append(f"Down {abs(chg_24h):.1f}% on heavy volume "
                                f"({rvol:.1f}x its 20-day average) - sellers mean it")
         elif chg_24h is not None and rvol <= RVOL_THIN and abs(chg_24h) > 2:
             # the 24h move earned a point above |2|; a move nobody traded
