@@ -10,6 +10,7 @@ import math
 import os
 import re
 import secrets
+import queue
 import threading
 import time
 import traceback
@@ -631,8 +632,7 @@ def price_map(market):
         return out, snap.get("updated")
     if market == "pse":
         snap = db.kv_get("pse:quotes", {})
-        names = {r["symbol"]: r["name"] for r in db.conn().execute(
-            "SELECT symbol, name FROM pse_companies").fetchall()}
+        names = _pse_names()
         for symb, q in snap.get("data", {}).items():
             out[symb] = {"price": q.get("price"), "chg_24h": q.get("chg_pct"),
                          "name": names.get(symb) or q.get("name") or symb,
@@ -796,6 +796,20 @@ def fetch_fx():
 def _holiday(market, d):
     """Holiday name if `d` (a date) is a trading holiday for this market."""
     return config.MARKET_HOLIDAYS.get(market, {}).get(d.strftime("%Y-%m-%d"))
+
+
+_pse_names_cache = None
+
+
+def _pse_names():
+    """symbol -> company name, refreshed hourly (the directory syncs daily)."""
+    global _pse_names_cache
+    if _pse_names_cache and _pse_names_cache[0] > time.monotonic():
+        return _pse_names_cache[1]
+    names = {r["symbol"]: r["name"] for r in db.conn().execute(
+        "SELECT symbol, name FROM pse_companies").fetchall()}
+    _pse_names_cache = (time.monotonic() + 3600, names)
+    return names
 
 
 def _pse_open():
@@ -1622,6 +1636,7 @@ def scheduler():
         [lambda: 43200, 0, earnings_calendar_tick],
         [lambda: 1800, 0, lambda: analyst_votes_tick("pse")],
         [lambda: 86400, 0, macro_tick],
+        [lambda: 120, 0, advisor_warm_tick],
         [lambda: 25, 0, lambda: volume_backfill_tick("pse")],
         [lambda: 40, 0, lambda: volume_backfill_tick("crypto")],
         [lambda: 20, 0, lambda: volume_backfill_tick("global")],
@@ -1874,12 +1889,12 @@ def portfolio_history(market, user, hours, step_h=1):
     budget_at = [(r["ts"], r["budget"]) for r in bh]
     end = now_ms() // 3600000 * 3600000
     start = end - hours * 3600000
-    prices = {}
-    for aid in assets:
-        rows = db.conn().execute(
-            "SELECT ts, price FROM price_history WHERE market=%s AND asset_id=%s"
-            " AND ts>=%s ORDER BY ts", (market, aid, start - 96 * 3600000)).fetchall()
-        prices[aid] = [(r["ts"], r["price"]) for r in rows]
+    prices = {aid: [] for aid in assets}
+    for r in db.conn().execute(
+            "SELECT asset_id, ts, price FROM price_history WHERE market=%s"
+            " AND asset_id = ANY(%s) AND ts>=%s ORDER BY asset_id, ts",
+            (market, list(assets), start - 96 * 3600000)).fetchall():
+        prices[r["asset_id"]].append((r["ts"], r["price"]))
     points = []
     idx = {aid: 0 for aid in assets}
     last_price = {aid: None for aid in assets}
@@ -2116,13 +2131,84 @@ def _advisor_news(market):
     return rows
 
 
+_advisor_seen = {}        # (market, user) -> last request ms: whose snapshots to keep warm
+_advisor_building = set()
+_advisor_epoch = {}       # (market, user) -> bumped by every invalidation
+
+
+def _advisor_fresh(cached):
+    return bool(cached) and now_ms() - cached.get("updated", 0) < ADVISOR_CACHE_SECONDS * 1000
+
+
 def get_advisor(market, user, force=False):
-    """Per-user advisor, cached a few minutes."""
+    """Per-user advisor snapshot. Fresh: returned as is. Stale: returned at
+    once while a rebuild runs behind it, so the member never waits on the
+    build. Only a missing snapshot (first visit, or right after a trade
+    invalidated it) is built inside the request."""
     key = f"advisor:{market}:{user}"
     cached = db.kv_get(key)
-    if cached and not force and now_ms() - cached.get("updated", 0) < ADVISOR_CACHE_SECONDS * 1000:
+    if cached and not force:
+        if not _advisor_fresh(cached):
+            _advisor_refresh_async(market, user)
         return cached
+    return _build_advisor(market, user)
+
+
+_advisor_queue = queue.Queue()
+
+
+def _advisor_worker():
+    while True:
+        market, user = _advisor_queue.get()
+        try:
+            _build_advisor(market, user)
+        except Exception as e:
+            print(f"[advisor] background rebuild {market}/{user}: {e}")
+        finally:
+            _advisor_building.discard((market, user))
+            _advisor_queue.task_done()
+
+
+_advisor_worker_started = False
+
+
+def _advisor_refresh_async(market, user):
+    global _advisor_worker_started
+    tag = (market, user)
+    if tag in _advisor_building:
+        return
+    _advisor_building.add(tag)
+    if not _advisor_worker_started:
+        threading.Thread(target=_advisor_worker, daemon=True).start()
+        _advisor_worker_started = True
+    _advisor_queue.put(tag)
+
+
+def advisor_warm_tick():
+    """Keep recently active members' snapshots fresh so a market switch never
+    pays for a build: the stalest one is rebuilt each tick."""
+    cutoff = now_ms() - 24 * 3600000
+    stale = []
+    for (market, user), seen in list(_advisor_seen.items()):
+        if seen < cutoff:
+            _advisor_seen.pop((market, user), None)
+            continue
+        cached = db.kv_get(f"advisor:{market}:{user}")
+        if not _advisor_fresh(cached):
+            stale.append(((cached or {}).get("updated", 0), market, user))
+    if stale:
+        _, market, user = min(stale)
+        _build_advisor(market, user)
+
+
+def _build_advisor(market, user):
+    key = f"advisor:{market}:{user}"
     with _advisor_lock:
+        # another thread may have built it while this one waited for the lock
+        cached = db.kv_get(key)
+        if _advisor_fresh(cached):
+            return cached
+        epoch = _advisor_epoch.get((market, user), 0)
         pm, _ = price_map(market)
         assets = []
         seen = set()
@@ -2178,6 +2264,7 @@ def get_advisor(market, user, force=False):
             earn = {}
         result = adv.build(assets, signals_data, port, news_rows,
                            {"line": _market_line(market), "open": is_open,
+                            "holidays": set(config.MARKET_HOLIDAYS.get(market, {})),
                             "next_open": next_open, "closed_reason": closed_reason,
                             "name": market,
                             "regime": _regime(market)}, now_ms(),
@@ -2207,12 +2294,17 @@ def get_advisor(market, user, force=False):
         result["market_open"] = is_open
         result["next_open"] = next_open
         result["closed_reason"] = closed_reason
-        db.kv_set(key, result)
+        if _advisor_epoch.get((market, user), 0) == epoch:
+            db.kv_set(key, result)
+        # else: a trade landed mid-build - this snapshot describes the old
+        # portfolio, so serve it once but let the next request rebuild
         return result
 
 
 def _invalidate_advisor(market, user):
-    db.conn().execute("DELETE FROM kv WHERE key=%s", (f"advisor:{market}:{user}",))
+    tag = (market, user)
+    _advisor_epoch[tag] = _advisor_epoch.get(tag, 0) + 1
+    db.kv_forget(f"advisor:{market}:{user}")
 
 
 # --------------------------------------------------------------------- routes
@@ -2654,6 +2746,26 @@ def api_targets_list(market):
     return jsonify({"targets": [dict(r) for r in rows]})
 
 
+_sparks_cache = {}      # market -> (expires_monotonic, {asset_id: [closes]})
+
+
+def _daily_sparks(market):
+    """30 days of daily closes per asset for the watchlist sparklines - one
+    close per day from the daily store, cached an hour (it changes once a day)."""
+    hit = _sparks_cache.get(market)
+    if hit and hit[0] > time.monotonic():
+        return hit[1]
+    sparks = {}
+    since = now_ms() - 30 * 86400000
+    for r in db.conn().execute(
+            "SELECT asset_id, price FROM price_history_daily"
+            " WHERE market=%s AND ts>=%s ORDER BY asset_id, ts",
+            (market, since)).fetchall():
+        sparks.setdefault(r["asset_id"], []).append(r["price"])
+    _sparks_cache[market] = (time.monotonic() + 3600, sparks)
+    return sparks
+
+
 @app.get("/api/<market>/watchlist")
 def api_watchlist(market):
     _check(market)
@@ -2661,16 +2773,7 @@ def api_watchlist(market):
     signals_data = db.kv_get(f"{market}:signals", {}).get("data", {})
     fund = db.get_fundamentals(market) if market != "crypto" else {}
     newsscores = db.kv_get(f"{market}:newsscores", {}).get("data") or {}
-    sparks = {}
-    if market != "crypto":
-        # one close per day from the daily store instead of every raw tick of
-        # the last week: same shape of line, a fraction of the rows moved
-        since = now_ms() - 30 * 86400000
-        for r in db.conn().execute(
-                "SELECT asset_id, price FROM price_history_daily"
-                " WHERE market=%s AND ts>=%s ORDER BY asset_id, ts",
-                (market, since)).fetchall():
-            sparks.setdefault(r["asset_id"], []).append(r["price"])
+    sparks = _daily_sparks(market) if market != "crypto" else {}
     owner = 0 if market == "pse" else uid()
     out = []
     for r in db.conn().execute(
@@ -2846,6 +2949,7 @@ def api_changelog():
 @app.get("/api/<market>/advisor")
 def api_advisor(market):
     _check(market)
+    _advisor_seen[(market, uid())] = now_ms()
     snap = dict(get_advisor(market, uid()))
     dis = dismissals(uid(), market)
     recs = []
@@ -2921,6 +3025,61 @@ def _fit_projection(closes):
     return mu, vol
 
 
+def _px_near(px, aid, ts):
+    """The stored daily close at ts, or the nearest one up to 4 days earlier
+    (weekends and holidays leave gaps in a stock market's daily record)."""
+    for k in range(5):
+        v = px.get((aid, ts - k * 86400000))
+        if v:
+            return v
+    return None
+
+
+def _prediction_scorecard(market, entries):
+    """How the 30-day calls the movers panel actually listed worked out, once
+    their 30 days are up: direction hit rate and the typical miss."""
+    day = now_ms() // 86400000 * 86400000
+    due = [(ts, calls) for ts, calls in entries if day - ts >= 30 * 86400000][-60:]
+    if not due:
+        return {"n": 0, "since": entries[0][0] if entries else day}
+    # (n counts the last 60 gradable days with prices on record - the client
+    # wording says "gradable", so the figure stays literally true)
+    aids = sorted({a for _, calls in due for a in calls})
+    days = sorted({t - k * 86400000 for ts, _ in due
+                   for t in (ts, ts + 30 * 86400000) for k in range(5)})
+    px = {(r["asset_id"], r["ts"]): r["price"] for r in db.conn().execute(
+        "SELECT asset_id, ts, price FROM price_history_daily"
+        " WHERE market=%s AND asset_id = ANY(%s) AND ts = ANY(%s)",
+        (market, aids, days)).fetchall()}
+    hits = n = 0
+    err = 0.0
+    for ts, calls in due:
+        for aid, pct in calls.items():
+            p0, p1 = _px_near(px, aid, ts), _px_near(px, aid, ts + 30 * 86400000)
+            if not p0 or not p1:
+                continue
+            realized = (p1 / p0 - 1) * 100
+            n += 1
+            hits += 1 if (realized >= 0) == (pct >= 0) else 0
+            err += abs(realized - pct)
+    if not n:
+        return {"n": 0, "since": entries[0][0]}
+    return {"n": n, "hit_pct": round(hits / n * 100), "mae": round(err / n, 1),
+            "since": entries[0][0], "as_of": now_ms()}
+
+
+def _horizon(mu, vol, days, market):
+    """Where the fitted trend lands `days` out, with its ~68% band - the same
+    calendar-days -> trading-bars mapping as the Predictions tab, so the
+    dashboard figure equals the tab's zero-tilt endpoint at the same days."""
+    b = days if market == "crypto" else max(2, round(days * 5 / 7))
+    band = vol * math.sqrt(b)
+    return {"pct": round((math.exp(mu * b) - 1) * 100, 1),
+            "lo": round((math.exp(mu * b - band) - 1) * 100, 1),
+            "hi": round((math.exp(mu * b + band) - 1) * 100, 1),
+            "bars": b}
+
+
 def _daily_series(market, asset_id, since):
     """Daily closes resampled in SQL (one row per day, last price of the day;
     stocks keep weekdays only). Cheap enough to sweep a whole market."""
@@ -2965,8 +3124,23 @@ def predictions_tick(market):
                        for k, b in horizons.items()},
                     **hist,
                     "lo_pct": round((math.exp(mu * bars30 - band) - 1) * 100, 1),
-                    "hi_pct": round((math.exp(mu * bars30 + band) - 1) * 100, 1)}
-    db.kv_set(f"predict:{market}", {"updated": now_ms(), "data": out})
+                    "hi_pct": round((math.exp(mu * bars30 + band) - 1) * 100, 1),
+                    # the fit itself, so any horizon can be read off at request time
+                    "mu": mu, "vol": vol, "fit_bars": len(closes)}
+    # a daily log of the 20 movers the panel would list, and the score of
+    # the calls whose 30 days are up - kept inside the same hot snapshot so
+    # reading the track record costs nothing extra
+    day = now_ms() // 86400000 * 86400000
+    stored = db.kv_get(f"predictlog:{market}", {})
+    log = stored.get("entries") or []
+    first = stored.get("first") or (log[0][0] if log else day)
+    if out and (not log or log[-1][0] != day):
+        shown = sorted(out.items(), key=lambda kv: kv[1]["pct30"])
+        log.append([day, {aid: v["pct30"] for aid, v in shown[:10] + shown[-10:]}])
+        log = log[-130:]
+        db.kv_set(f"predictlog:{market}", {"entries": log, "first": first})
+    db.kv_set(f"predict:{market}", {"updated": now_ms(), "data": out,
+                                    "scorecard": _prediction_scorecard(market, log)})
 
 
 # ------------------------------------------------- long-term daily history
@@ -3201,6 +3375,14 @@ def api_predict_summary(market):
     data = snap.get("data") or {}
     ranked = sorted(({"asset_id": k, **v} for k, v in data.items()),
                     key=lambda x: x["pct30"])
+    # the same 20 names at every horizon (the ranking is the sign and size of
+    # one drift), so ship each horizon's figure for those rows and let the
+    # dashboard toggle without another request
+    for x in ranked[:10] + ranked[-10:]:
+        if x.get("mu") is not None and x.get("vol") is not None:
+            x["h"] = {str(d): _horizon(x["mu"], x["vol"], d, market) for d in (14, 30, 60, 90)}
+    for x in ranked:   # the raw fit stays server-side; the client reads only h
+        x.pop("mu", None), x.pop("vol", None)
     # 30d trend direction for the caller's transacted assets - the ▲/▼ on the
     # Predictions tab's holdings chips. Opt-in via ?mine=1 so the dashboard's
     # movers panel (which polls this endpoint) pays neither the extra query
@@ -3213,7 +3395,7 @@ def api_predict_summary(market):
             p = data.get(t["asset_id"])
             if p and p.get("pct30") is not None:
                 mine[t["asset_id"]] = round(p["pct30"], 1)
-    return jsonify({"updated": snap.get("updated"),
+    return jsonify({"updated": snap.get("updated"), "scorecard": snap.get("scorecard"),
                     "down": ranked[:10], "up": ranked[::-1][:10], "mine": mine})
 
 
@@ -3307,11 +3489,172 @@ def api_predict(market, asset_id):
     })
 
 
+def _member_news_context(market, user):
+    """What this member holds and watches, and the sectors they own - three
+    cheap reads, for tagging and ranking news per member."""
+    held = {r["asset_id"] for r in db.conn().execute(
+        "SELECT asset_id FROM transactions WHERE market=%s AND user_id=%s"
+        " GROUP BY asset_id HAVING SUM(quantity) > 1e-9", (market, user)).fetchall()}
+    watched = set(watch_ids(market, user)) if market != "pse" else set()
+    sectors = set()
+    if market != "crypto" and held:
+        fund = db.get_fundamentals(market)
+        for aid in held:
+            k = adv._sector_key((fund.get(aid) or {}).get("sector"))
+            if k:
+                sectors.add(k)
+    return held, watched, sectors
+
+
+def _news_impact(r, held, watched, held_sectors, now):
+    """0..100: how likely a story is to move this market or what the member
+    holds - who it names (held / watched / tracked), a sector they own,
+    market-wide drivers, how strong its wording is, and how fresh it is.
+    Returns (impact, why) - the why is shown to the member as the reason."""
+    why, rel = [], 0
+    assets = r.get("assets") or []
+    syms_held = [a["symbol"] for a in assets if a["aid"] in held]
+    syms_w = [a["symbol"] for a in assets if a["aid"] in watched and a["aid"] not in held]
+    if syms_held:
+        rel += 40
+        why.append("names " + ", ".join(syms_held[:3]) + " (you hold it)")
+    elif syms_w:
+        rel += 25
+        why.append("names " + ", ".join(syms_w[:3]) + " (on your watchlist)")
+    elif assets:
+        rel += 15
+        why.append("names " + assets[0]["symbol"])
+    secs = [s for s in (r.get("sectors") or []) if s in held_sectors]
+    if secs and not syms_held:
+        rel += 20
+        why.append(f"{secs[0]} - a sector you own")
+    wide = r.get("wide") or []
+    if wide:
+        rel += min(25, 5 * r.get("_wide_score", 0))
+        why.append("market-wide: " + ", ".join(wide[:3]))
+    tone = r.get("tone") or 0
+    strength = min(20, 3 * abs(tone))
+    if abs(tone) >= 3:
+        why.append(("strongly positive" if tone > 0 else "strongly negative") + " wording")
+    age_h = max(0.0, (now - (r.get("published") or now)) / 3600000)
+    impact = round((rel + strength) * (0.35 + 0.65 * math.exp(-age_h / 24)))
+    return impact, why
+
+
+def _annotate_news(rows, market, user):
+    """Tag stories with the tracked assets they name, their tone, the sectors
+    and market-wide drivers they touch, whether they name what this member
+    holds or watches, and an impact rank."""
+    by_link = db.kv_get(f"{market}:newsscores", {}).get("by_link") or {}
+    pm, _ = price_map(market)
+    held, watched, sectors = _member_news_context(market, user)
+    now = now_ms()
+    for r in rows:
+        aids = by_link.get(r.get("link")) if by_link else None
+        if aids:
+            r["assets"] = [{"aid": a, "symbol": ((pm.get(a) or {}).get("symbol") or a).upper()}
+                           for a in aids[:8]]
+            r["held"] = [x["symbol"] for x in r["assets"] if x["aid"] in held]
+            r["watched"] = [x["symbol"] for x in r["assets"] if x["aid"] in watched and x["aid"] not in held]
+        r["tone"] = adv.article_sentiment(r.get("title"), r.get("summary"))
+        if market != "crypto":
+            text = ((r.get("title") or "") + " " + (r.get("summary") or "")).lower()
+            hit = adv.sector_tags(text)[:3]
+            if hit:
+                r["sectors"] = hit
+                r["sector_sent"] = r["tone"]
+        ws, labels = adv.market_wide(r.get("title"), r.get("summary"), market)
+        if ws:
+            r["wide"], r["_wide_score"] = labels, ws
+        r["impact"], r["impact_why"] = _news_impact(r, held, watched, sectors, now)
+        r.pop("_wide_score", None)
+    return rows
+
+
+def _dedupe_news(rows):
+    """Collapse syndicated copies (same normalized title): keep the earliest,
+    list the other outlets under `also`."""
+    seen, out = {}, []
+    for r in sorted(rows, key=lambda x: x.get("published") or 0):
+        key = re.sub(r"[^a-z0-9]+", " ", (r.get("title") or "").lower()).strip()[:90]
+        if key in seen:
+            first = seen[key]
+            if r.get("source") and r["source"] != first.get("source"):
+                first.setdefault("also", [])
+                if r["source"] not in first["also"]:
+                    first["also"].append(r["source"])
+            continue
+        seen[key] = r
+        out.append(r)
+    return out
+
+
+_digest_cache = {}      # (market, user) -> (expires_monotonic, payload)
+
+
+@app.get("/api/<market>/news/digest")
+def api_news_digest(market):
+    """Between stock sessions: the stories published since the last close,
+    ranked by how likely they are to matter at the open. During a session -
+    including the PSE lunch break and the 15:00-15:30 run-off - it stays out
+    of the way and the dashboard shows plain latest news."""
+    _check(market)
+    if market == "crypto":
+        return jsonify({"open": True})
+    is_open, next_open, closed_reason = market_session(market)
+    bucket, settled = _session_state(market)
+    if is_open or not settled:
+        return jsonify({"open": True})
+    hit = _digest_cache.get((market, uid()))
+    if hit and hit[0] > time.monotonic():
+        return jsonify(hit[1])
+    since = _session_close_ms(market, bucket)
+    rows = [dict(r) for r in db.conn().execute(
+        "SELECT * FROM news WHERE market=%s AND published > %s ORDER BY published DESC LIMIT 200",
+        (market, since)).fetchall()]
+    items = _dedupe_news(_annotate_news(rows, market, uid()))
+    about = [it for it in items if it.get("held")]
+    wide = [it for it in items if it.get("wide")]
+    rank = lambda it: (-it["impact"], -(it.get("published") or 0))
+    held_first = sorted([it for it in items if it.get("held")], key=rank)
+    picks = (held_first + sorted([it for it in items
+                                  if not it.get("held") and it["impact"] >= 25], key=rank))[:8]
+    day = datetime.fromtimestamp(bucket / 1000, timezone.utc).strftime("%A")
+    held_syms = []
+    for it in about:
+        for s in it["held"]:
+            if s not in held_syms:
+                held_syms.append(s)
+    wide_labels = []
+    for it in wide:
+        for s in it["wide"]:
+            if s not in wide_labels:
+                wide_labels.append(s)
+    net = sum((it.get("tone") or 0) for it in about)
+    parts = [f"Since {day}'s close: {len(items)} stor{'y' if len(items) == 1 else 'ies'}"]
+    if about:
+        parts.append(f"{len(about)} about what you hold ({', '.join(held_syms[:4])})")
+    if wide:
+        parts.append(f"{len(wide)} market-wide ({', '.join(wide_labels[:3])})")
+    summary = ", ".join(parts) + "."
+    if about:
+        summary += (" Tone of the stories about your holdings leans "
+                    + ("positive" if net > 0 else "negative" if net < 0 else "neutral") + ".")
+    if next_open:
+        summary += f" Reopens {next_open}."
+    payload = {"open": False, "since": since, "day": day, "next_open": next_open,
+               "closed_reason": closed_reason, "n_total": len(items), "n_about_you": len(about),
+               "n_wide": len(wide), "summary": summary, "items": picks}
+    _digest_cache[(market, uid())] = (time.monotonic() + 300, payload)
+    return jsonify(payload)
+
+
 @app.get("/api/<market>/news")
 def api_news(market):
     _check(market)
     limit = _int_arg("limit", 120, 1, 400)
     source = request.args.get("source")
+    order = request.args.get("order") or "latest"
     if source:
         rows = db.conn().execute(
             "SELECT * FROM news WHERE market=%s AND source=%s ORDER BY published DESC LIMIT %s",
@@ -3322,31 +3665,14 @@ def api_news(market):
             (market, limit)).fetchall()
     sources = [r["source"] for r in db.conn().execute(
         "SELECT DISTINCT source FROM news WHERE market=%s ORDER BY source", (market,)).fetchall()]
-    rows = [dict(r) for r in rows]
-    # tag each story with the tracked assets it mentions - the same per-cycle
-    # match behind the watchlist News column, so the tab can filter to
-    # "your holdings" without re-scanning anything per request
-    by_link = db.kv_get(f"{market}:newsscores", {}).get("by_link") or {}
-    if by_link:
-        pm, _ = price_map(market)
-        for r in rows:
-            aids = by_link.get(r.get("link"))
-            if aids:
-                r["assets"] = [{"aid": a,
-                                "symbol": ((pm.get(a) or {}).get("symbol") or a).upper()}
-                               for a in aids[:8]]
-                r["tone"] = adv.article_sentiment(r.get("title"), r.get("summary"))
-    # tag each story with the industries it moves (and which way) so the News
-    # tab can show "banks ▲" style chips - same lexicon the advisor uses
-    if market != "crypto":
-        for r in rows:
-            text = ((r.get("title") or "") + " " + (r.get("summary") or "")).lower()
-            hit = adv.sector_tags(text)[:3]
-            if hit:
-                r["sectors"] = hit
-                r["sector_sent"] = adv.article_sentiment(r.get("title"), r.get("summary"))
+    rows = _annotate_news([dict(r) for r in rows], market, uid())
+    if order == "impact":
+        # most likely to move this market or what you hold first; syndicated
+        # copies collapsed so one story doesn't fill the top of the list
+        rows = sorted(_dedupe_news(rows),
+                      key=lambda r: (-r["impact"], -(r.get("published") or 0)))
     return jsonify({"updated": db.kv_get(f"{market}:news_updated"),
-                    "sources": sources, "items": rows})
+                    "sources": sources, "order": order, "items": rows})
 
 
 @app.get("/api/<market>/status")
@@ -3362,13 +3688,10 @@ def api_status(market):
     else:
         quotes_updated = db.kv_get("crypto:watch_markets", {}).get("updated")
         err = coingecko.last_error
-    counts = {"transactions": c.execute(
-        "SELECT COUNT(*) n FROM transactions WHERE market=%s AND user_id=%s",
-        (market, uid())).fetchone()["n"]}
     return jsonify({"quotes_updated": quotes_updated,
                     "signals_updated": db.kv_get(f"{market}:signals", {}).get("updated"),
                     "news_updated": db.kv_get(f"{market}:news_updated"),
-                    "counts": counts, "source_error": err})
+                    "source_error": err})
 
 
 # ----------------------------------------------------------------------- boot

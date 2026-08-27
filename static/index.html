@@ -23,6 +23,7 @@
     <option value="PHP">PHP ₱</option>
   </select>
   <div class="header-stats" id="header-stats"></div>
+  <span class="mkt-clock" id="mkt-clock"></span>
   <div class="status-wrap"><span class="status-dot" id="status-dot"></span><span class="status-text" id="status-text">connecting…</span></div>
   <div class="user-menu" id="user-menu"></div>
 </header>
@@ -83,11 +84,21 @@
     <div class="table-wrap"><table id="holdings-table"></table></div>
   </div>
   <div class="panel" id="pred-movers-panel" style="display:none">
-    <div class="panel-head"><h3>Predicted Movers — 30 days</h3>
-      <button class="link-btn" data-goto="predict">full predictions →</button>
+    <div class="panel-head"><h3>Predicted Movers — <span id="pred-hz-label">30 days</span></h3>
+      <span class="chart-controls">
+        <div class="range-btns" id="pred-hz" title="How far out to read the same trend fit">
+          <button data-days="14">2w</button>
+          <button data-days="30" class="active">30d</button>
+          <button data-days="60">60d</button>
+          <button data-days="90">90d</button>
+        </div>
+        <button class="link-btn" data-goto="predict">full predictions →</button>
+      </span>
     </div>
-    <p class="muted small-note">Trend projections from each asset's own price history — where things
-      likely land <b>if recent behavior persists</b>. Ranges, not promises; click any row for the full picture.</p>
+    <p class="muted small-note">Where each asset's recent trend would land <b><span id="pred-hz-days">30</span> days out
+      if it simply continued</b> — a straight-line fit over its last ~90 days of closes, read nearer or further.
+      Same names at every horizon; only the distance and the width of the likely range change.<span id="pred-hz-note"></span>
+      Ranges, not promises; click any row for the full picture.</p>
     <div class="gl-grid">
       <div><h4 class="pos-h">Projected Up</h4><div id="pred-up" class="gl-list"></div></div>
       <div><h4 class="neg-h">Projected Down</h4><div id="pred-down" class="gl-list"></div></div>
@@ -116,9 +127,10 @@
       </div>
     </div>
     <div class="panel">
-      <div class="panel-head"><h3>Latest News</h3><span>
+      <div class="panel-head"><h3 id="dash-news-title">Latest News</h3><span>
         <button class="link-btn" id="dash-hnews">your holdings →</button>
         <button class="link-btn" data-goto="news">all news →</button></span></div>
+      <p class="muted small-note" id="dash-news-note" style="display:none"></p>
       <div id="dash-news" class="news-list compact"></div>
     </div>
   </div>
@@ -164,6 +176,7 @@
     <div class="panel-head">
       <h3>🔮 Price Projection</h3>
       <div class="chart-controls">
+        <button class="link-btn" id="pred-to-chart" title="The same asset's price history">← price history 📈</button>
         <div class="combo" id="pred-coin-combo">
           <input type="text" class="combo-input" id="pred-coin-input" placeholder="Type a name or ticker…" autocomplete="off" spellcheck="false">
           <input type="hidden" id="pred-coin">
@@ -171,7 +184,9 @@
         </div>
         <div class="range-btns" id="pred-range">
           <button data-days="7">7d</button>
+          <button data-days="14">2w</button>
           <button data-days="30" class="active">30d</button>
+          <button data-days="60">60d</button>
           <button data-days="90">90d</button>
         </div>
       </div>
@@ -320,6 +335,7 @@
     <div class="panel-head">
       <h3>Price History</h3>
       <div class="chart-controls">
+        <button class="link-btn" id="chart-to-pred" title="The same asset on the Predictions tab">projection 🔮 →</button>
         <div class="combo" id="chart-coin-combo">
           <input type="text" class="combo-input" id="chart-coin-input" placeholder="Type a name or ticker…" autocomplete="off" spellcheck="false">
           <input type="hidden" id="chart-coin">
@@ -350,12 +366,21 @@
           <button data-nscope="all" class="active">All news</button>
           <button data-nscope="holdings">Your holdings</button>
         </span>
+        <select id="news-order" title="How to order the stories">
+          <option value="latest">Latest first</option>
+          <option value="impact">Most likely to matter</option>
+        </select>
         <select id="news-source"><option value="">All sources</option></select>
       </span>
     </div>
     <p class="muted small-note" id="news-scope-note" style="display:none">Stories that
       mention what you own — plus sector-wide news that moves your kind of company —
       scored on the advisor's −3..+3 news scale. Awareness, not instructions.</p>
+    <p class="muted small-note" id="news-order-note" style="display:none">Ranked by how
+      likely each story is to move this market or what you hold: who it names (held, watched
+      or tracked), a sector you own, market-wide drivers (rates, tariffs, oil, the central
+      bank…), how strong the wording is, and how fresh it is. Syndicated copies are folded
+      together. A ranking of attention, not a trade signal.</p>
     <div id="news-holdings-summary" style="display:none"></div>
     <div id="news-list" class="news-list"></div>
   </div>

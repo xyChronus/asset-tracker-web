@@ -228,6 +228,55 @@ def sector_tags(text):
             if any(rx.search(text) for rx in rxs)]
 
 
+# Market-wide drivers: the stories that move a whole market rather than one
+# name. weight = how directly they move prices; label = what the member sees
+# as the reason. Word-boundary matches, like the sector lexicon.
+MARKET_WIDE = {
+    "crypto": {"sec": (3, "SEC / regulation"), "regulation": (2, "regulation"), "regulator": (2, "regulation"),
+               "etf": (2, "ETFs"), "fed": (2, "the Fed"), "federal reserve": (2, "the Fed"),
+               "rate cut": (2, "interest rates"), "rate hike": (2, "interest rates"),
+               "interest rate": (2, "interest rates"), "inflation": (1, "inflation"),
+               "stablecoin": (1, "stablecoins"), "tether": (1, "stablecoins"),
+               "binance": (1, "a major exchange"), "coinbase": (1, "a major exchange"),
+               "liquidation": (2, "liquidations"), "liquidations": (2, "liquidations"),
+               "halving": (2, "the halving"), "tariff": (1, "tariffs"), "tariffs": (1, "tariffs")},
+    "pse": {"bsp": (3, "BSP policy"), "bangko sentral": (3, "BSP policy"), "rate cut": (3, "interest rates"),
+            "rate hike": (3, "interest rates"), "interest rate": (2, "interest rates"), "inflation": (2, "inflation"),
+            "peso": (2, "the peso"), "gdp": (1, "GDP"), "psei": (2, "the index"), "pse index": (2, "the index"),
+            "fed": (1, "the Fed"), "tariff": (2, "tariffs"), "tariffs": (2, "tariffs"), "oil price": (2, "oil"),
+            "oil prices": (2, "oil"), "crude": (1, "oil"), "opec": (1, "oil"), "recession": (2, "recession risk"),
+            "remittance": (1, "remittances"), "remittances": (1, "remittances"), "typhoon": (1, "weather disruption")},
+    "global": {"fed": (3, "the Fed"), "federal reserve": (3, "the Fed"), "fomc": (3, "the Fed"),
+               "rate cut": (3, "interest rates"), "rate hike": (3, "interest rates"), "interest rate": (2, "interest rates"),
+               "treasury yield": (2, "bond yields"), "bond yield": (2, "bond yields"), "bond yields": (2, "bond yields"),
+               "tariff": (3, "tariffs"), "tariffs": (3, "tariffs"), "trade war": (3, "trade war"),
+               "inflation": (2, "inflation"), "cpi": (2, "inflation"), "jobs report": (2, "jobs data"),
+               "payrolls": (2, "jobs data"), "gdp": (1, "GDP"), "recession": (3, "recession risk"),
+               "oil price": (2, "oil"), "oil prices": (2, "oil"), "opec": (2, "oil"), "crude": (1, "oil"),
+               "s&p 500": (1, "the index"), "nasdaq": (1, "the index"), "dow": (1, "the index"),
+               "sanction": (1, "sanctions"), "sanctions": (1, "sanctions")},
+}
+_WIDE_RX = {m: [(re.compile(r"\b" + re.escape(k) + r"\b"), w, label) for k, (w, label) in d.items()]
+            for m, d in MARKET_WIDE.items()}
+
+
+def market_wide(title, summary, market):
+    """(score 0..6, [labels]): how much a story is about the drivers that move
+    the whole market. A title hit counts double; labels are unique, in order."""
+    t, s = (title or "").lower(), (summary or "").lower()
+    score, labels = 0, []
+    for rx, w, label in _WIDE_RX.get(market, []):
+        if rx.search(t):
+            score += 2 * w
+        elif rx.search(s):
+            score += w
+        else:
+            continue
+        if label not in labels:
+            labels.append(label)
+    return min(6, score), labels
+
+
 def _industry_news(assets, fundamentals, news_items, now_ms, per_asset_news):
     """Per-asset sector-news nudge: {aid: {score, sector, headline, link}}.
     Articles already credited to the asset directly are skipped, so a story
@@ -425,7 +474,9 @@ STYLE_PARAMS = {
             "port_tp": 1.1, "max_hold_days": 1},
     "swing": {"label": "Swing Trader", "buy_tech": 3, "sell_hard": -4, "sell_soft": -2,
               "tp_pct": 10, "tp_tech": -1, "value_buy": 3, "alloc_cap": 35,
-              "port_tp": 2.4, "max_hold_days": 7},
+              # flat by the END OF THE WEEK a position was opened (Friday) -
+              # classic swing - rather than a rolling day count
+              "port_tp": 2.4, "max_hold_days": None, "hold_week_end": True},
     "long": {"label": "Long-Term Investor", "buy_tech": 4, "sell_hard": -5, "sell_soft": -4,
              "tp_pct": 40, "tp_tech": -1, "value_buy": 2, "alloc_cap": 35,
              "port_tp": 7.5, "max_hold_days": None},
@@ -439,7 +490,7 @@ INCOME_MIN_YIELD = {"₱": 4.0, "$": 3.0}   # "pays properly" bar for the Income
 
 CUSTOM_LIMITS = {   # member-typed rules: (min, max); None allowed = "use the style's"
     "tp_pct": (1.0, 100.0), "sl_pct": (0.5, 50.0), "max_hold_days": (1, 365),
-    "names_lo": (1, 30), "names_hi": (1, 30),
+    "names_lo": (1, 30), "names_hi": (1, 30), "tp_sell_pct": (10, 100),
 }
 
 
@@ -462,7 +513,7 @@ def sanitize_custom(raw, style=None):
             raise ValueError(f"{k}: enter a plain number")
         if not (lo <= v <= hi):
             raise ValueError(f"{k}: must be between {lo:g} and {hi:g}")
-        out[k] = int(v) if k in ("max_hold_days", "names_lo", "names_hi") else v
+        out[k] = int(v) if k in ("max_hold_days", "names_lo", "names_hi", "tp_sell_pct") else v
     if "sl_pct" in out:
         base = STYLE_PARAMS.get(STYLE_ALIASES.get(style, style)) or STYLE_PARAMS[DEFAULT_STYLE]
         eff_tp = out.get("tp_pct") or base["tp_pct"]
@@ -486,6 +537,11 @@ def effective_style(style, custom=None):
         sp["port_tp"] = round(0.75 * sp["alloc_cap"] * sp["tp_pct"] / (100 + sp["tp_pct"]), 2)
     if c.get("max_hold_days"):
         sp["max_hold_days"] = c["max_hold_days"]
+        sp["hold_week_end"] = False   # a typed day count replaces the week-end rule
+    if c.get("tp_sell_pct"):
+        sp["tp_sell_pct"] = c["tp_sell_pct"]
+        sp["tp_sell_custom"] = True
+    sp.setdefault("tp_sell_pct", 30)
     sp["sl_pct_override"] = c.get("sl_pct")
     # either side of the names band may be typed alone; the other keeps the
     # spread setting's value (merged in build, where the preset is known)
@@ -864,7 +920,8 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
             a concrete reason to expect the name to come back."""
             # a recovery bet needs days to play out: styles that must close
             # within the week (Day's time stop) don't get this lane
-            if not price or (sp.get("max_hold_days") and sp["max_hold_days"] < 7):
+            if not price or (sp.get("max_hold_days") and sp["max_hold_days"] < 7) \
+                    or (sp.get("hold_week_end") and ((3 - today.weekday()) % 7) + 1 < 3):
                 return None
             rsi_d = ind.get("rsi")
             chg30d = a.get("chg_30d") if is_crypto else ind.get("chg_30d")
@@ -940,16 +997,26 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
                 # portfolio's single big position must still earn its full
                 # per-position target
                 action = "TAKE PROFIT"
-                amt = h["value"] * 0.3
+                # how much of the position to bank: the style's ~30% unless
+                # the member typed their own take-profit size
+                tp_frac = (sp.get("tp_sell_pct") or 30) / 100.0
+                amt = h["value"] * tp_frac
+                sell_txt = "the whole position" if tp_frac >= 1 else f"~{tp_frac * 100:.0f}%"
+                sell_why = ("frees the entire stake, profit included, for the next idea"
+                            if tp_frac >= 1 else
+                            "banks half or more of the position while keeping the rest riding" if tp_frac >= 0.5 else
+                            "locks in profit while keeping most of the upside")
+                own = " (your own take-profit size)" if sp.get("tp_sell_custom") else ""
                 if plpct >= sp["tp_pct"]:
                     reasons.append(
-                        f"You're up {plpct:.0f}% and momentum is cooling - selling ~30% "
-                        "locks in profit while keeping most of the upside.")
+                        f"You're up {plpct:.0f}% and momentum is cooling - selling {sell_txt}{own} "
+                        f"{sell_why}.")
                 else:
                     reasons.append(
                         f"Up {plpct:.1f}% on the position, but it's large enough that "
                         f"this gain alone has added ~{wallet_gain:.1f}% to your whole "
-                        f"{wallet_word} - with momentum cooling, banking part of that "
+                        f"{wallet_word} - with momentum cooling, banking "
+                        f"{'part of' if tp_frac < 1 else 'all of'} that "
                         "counts as much as a full target on a smaller position.")
                     gate_notes.append(
                         f"{wallet_word.capitalize()}-level profit target: this gain = "
@@ -1021,26 +1088,53 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
             # "same day" means the session's date and Day's stop fires at the
             # next open for anything bought on a prior day
             held_days = None
+            ft_date = None
             if h.get("first_ts"):
                 try:
+                    # stamps carry the Manila server clock; a US-market trade
+                    # logged after Manila midnight belongs to the prior ET day
                     ft = datetime.datetime.strptime(str(h["first_ts"])[:16], "%Y-%m-%d %H:%M")
-                    held_days = (today - ft.date()).days
+                    ft_date = ft.replace(tzinfo=ZoneInfo("Asia/Manila")).astimezone(tz).date()
+                    held_days = (today - ft_date).days
                 except (ValueError, TypeError):
                     held_days = None
             mh = sp.get("max_hold_days")
-            if mh and held_days is not None and held_days >= mh and action not in SELL_SIDE:
+            week_end = bool(sp.get("hold_week_end")) and not mh
+            bought_txt = ""
+            if week_end and ft_date is not None:
+                # the deadline is the trading week's FINAL session: the coming
+                # Friday, pulled back over Friday holidays - and a Friday or
+                # weekend entry runs to the NEXT week's close (a same-session
+                # buy-then-force-sell helps nobody)
+                deadline = ft_date + datetime.timedelta(days=((3 - ft_date.weekday()) % 7) + 1)
+                hol = market.get("holidays") or set()
+                while (deadline.weekday() >= 5 or deadline.isoformat() in hol) and deadline > ft_date:
+                    deadline -= datetime.timedelta(days=1)
+                mh = max(1, (deadline - ft_date).days)
+                bought_txt = " (opened " + ft_date.strftime("%A, %b %d") + ")"
+            elif week_end:
+                week_end = False
+            has_stop = bool(mh) or week_end
+            rule_txt = ("your swing rule closes positions by their trading week's final session"
+                        if week_end else
+                        f"your {sp['label'].lower()} rule closes positions within {mh} day(s)"
+                        + ("" if (mh or 0) > 1 else " (same day)"))
+            if has_stop and held_days is not None and held_days >= (mh or 0) \
+                    and action not in SELL_SIDE:
                 strong = (tech is not None and tech >= buy_bar and value_votes >= 2)
                 if strong and sp["extend_tp_strong"]:
                     gate_notes.append(
-                        f"Time stop reached ({held_days}d >= {mh}d) but technicals and "
-                        "fundamentals are both strong - your exception rule lets it run")
+                        ("Week-end stop reached" if week_end else f"Time stop reached ({held_days}d >= {mh}d)")
+                        + " but technicals and fundamentals are both strong - your exception rule lets it run")
                     reasons.insert(0,
-                        f"Held {held_days} day(s) - past your {sp['label'].lower()} limit of "
-                        f"{mh} day(s) - but technicals and fundamentals are both still strong, "
+                        f"Held {held_days} day(s){bought_txt} - past your {sp['label'].lower()} time rule - "
+                        "but technicals and fundamentals are both still strong, "
                         "so your exception rule lets it run. Re-check it daily.")
                     flags_extra.append({"kind": "time",
-                                        "text": f"Held {held_days}d, past your {mh}d rule - "
-                                                "running on the strength exception"})
+                                        "text": ("Past its trading week - running on the strength exception"
+                                                 if week_end else
+                                                 f"Held {held_days}d, past your {mh}d rule - "
+                                                 "running on the strength exception")})
                 else:
                     # the time stop REPLACES whatever the signals argued: a
                     # BUY MORE or recovery-lane case must not linger under it
@@ -1049,21 +1143,48 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
                     gate_notes[:] = [g for g in gate_notes if not g.startswith("Recovery lane")]
                     action, amt = "SELL", h["value"]
                     reasons.append(
-                        f"Time stop: held {held_days} day(s), and your "
-                        f"{sp['label'].lower()} rule closes positions within {mh} day(s)"
-                        + ("" if mh > 1 else " (same day)") + ". "
+                        f"Time stop: held {held_days} day(s){bought_txt}, and {rule_txt}. "
                         + ("It's up" if (plpct or 0) >= 0 else "It's down")
                         + f" {abs(plpct or 0):.1f}% - the rule is about time, not price: "
                         "your rule says its time is up, so consider closing it and putting "
                         "the money back to work.")
-                    gate_notes.append(f"Time stop: {held_days}d held >= {mh}d style limit -> SELL")
+                    gate_notes.append("Time stop: " + ("past its trading week (week-end rule) -> SELL"
+                                                       if week_end else
+                                                       f"{held_days}d held >= {mh}d style limit -> SELL"))
                     flags_extra.append({"kind": "time",
-                                        "text": f"Held {held_days}d - past your {mh}d rule"})
-            elif (mh and held_days is not None and mh - held_days == 1
+                                        "text": ("Past its trading week - swing closes by its final session"
+                                                 if week_end else
+                                                 f"Held {held_days}d - past your {mh}d rule")})
+            elif (has_stop and held_days is not None and (mh or 0) - held_days == 1
                   and action in ("HOLD", "BUY MORE")):
                 flags_extra.append({"kind": "time",
-                                    "text": f"Held {held_days}d of your {mh}d limit - the time "
-                                            "stop comes tomorrow"})
+                                    "text": ("Swing closes this by the week's final session - that's tomorrow"
+                                             if week_end else
+                                             f"Held {held_days}d of your {mh}d limit - the time "
+                                             "stop comes tomorrow")})
+            # Averaging note: a held name well below its average buy, with no
+            # broken thesis on record and no same-day clock on it, is where
+            # averaging down cuts the break-even - said as arithmetic with the
+            # risk named, never as an instruction
+            if (action not in SELL_SIDE and plpct is not None and plpct <= -8
+                    and (tech is None or tech >= -1) and news_score > -1
+                    and (mh or 0) != 1 and h.get("qty") and price and h.get("avg_buy")):
+                avg_amt = max(25.0, min_buy, h["value"] * 0.25)
+                if cash is not None and min_buy <= cash < avg_amt:
+                    avg_amt = cash   # the example scales to the cash actually there
+                wk_note = " (Mind your week-end close rule.)" if week_end else ""
+                if cash is not None and cash >= avg_amt:
+                    new_avg = (h.get("cost", h["qty"] * h["avg_buy"]) + avg_amt) / (h["qty"] + avg_amt / price)
+                    reasons.append(
+                        f"Averaging note: you're down {abs(plpct):.0f}%. Adding ~{currency}{_round_amt(avg_amt):,.0f} "
+                        f"at the last price would move your average buy from {_fmt_price(h['avg_buy'])} to "
+                        f"about {_fmt_price(new_avg)}, so a recovery pays off sooner. Only if you still "
+                        f"believe the thesis - averaging into a story that keeps falling deepens the loss.{wk_note}")
+                elif cash is not None:
+                    reasons.append(
+                        f"Averaging note: adding on this dip would lower your {_fmt_price(h['avg_buy'])} "
+                        f"average buy, but there isn't enough spare cash for a meaningful add "
+                        f"(~{currency}{_round_amt(avg_amt):,.0f}).")
             # everything appended so far argues for THIS action; remembered so
             # a later demotion can retract the argument along with the action
             sale_reasons_n = len(reasons)
@@ -1268,7 +1389,7 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
         if amt is not None:
             if action in SELL_SIDE:
                 amt = min(amt, h["value"])
-                if action == "SELL":
+                if action == "SELL" or (action == "TAKE PROFIT" and amt >= h["value"] - 1e-9):
                     pass   # a full exit: the exact position value, no rounding
                 elif amt < 5 or h["value"] < 20:
                     # retract the sale argument along with the action, or the
@@ -1461,7 +1582,9 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
             "wallet_word": wallet_word,
             "conviction": round(conviction, 1),
             "confidence": confidence,
-            "sell_qty": (h.get("qty") if (h and action == "SELL") else None),
+            "sell_qty": (h.get("qty") if (h and (action == "SELL"
+                         or (action == "TAKE PROFIT" and amt is not None
+                             and amt >= h["value"] - 0.01))) else None),
             "rvol": ind.get("rvol"),
             "news_score": round(news_score, 2),
             "chg_24h": chg24,

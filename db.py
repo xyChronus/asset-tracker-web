@@ -265,8 +265,8 @@ import time  # noqa: E402
 # from Postgres on every API call and collector tick. The TTL is a
 # belt-and-braces bound; in steady state each collector's kv_set refreshes
 # its key before the TTL lapses, so hot reads never touch the DB at all.
-# Do NOT add advisor:* keys - _invalidate_advisor deletes rows directly,
-# which this cache would not see.
+# advisor:* keys are hot too (see _hot); anything that deletes one must go
+# through kv_forget so the in-process copy goes with the row.
 _KV_HOT = {
     "crypto:watch_markets", "crypto:top100", "crypto:global", "crypto:fng",
     "crypto:signals", "crypto:history_fetched",
@@ -281,6 +281,17 @@ _KV_HOT = {
 }
 _KV_TTL = 900.0
 _kv_cache = {}          # key -> (expires_monotonic, value)
+
+
+def _hot(key):
+    return key in _KV_HOT or key.startswith("advisor:")
+
+
+def kv_forget(key):
+    """Drop a key everywhere - the DB row and the in-process copy."""
+    with _kv_lock:
+        _kv_cache.pop(key, None)
+    conn().execute("DELETE FROM kv WHERE key=%s", (key,))
 _kv_lock = threading.Lock()
 
 
@@ -289,14 +300,14 @@ def kv_set(key, obj):
         "INSERT INTO kv (key, value) VALUES (%s,%s)"
         " ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value",
         (key, json.dumps(obj)))
-    if key in _KV_HOT:
+    if _hot(key):
         with _kv_lock:
             _kv_cache[key] = (time.monotonic() + _KV_TTL, obj)
 
 
 def kv_get(key, default=None):
     hit = None
-    if key in _KV_HOT:
+    if _hot(key):
         with _kv_lock:
             hit = _kv_cache.get(key)
         if hit and hit[0] > time.monotonic():
@@ -308,7 +319,7 @@ def kv_get(key, default=None):
         val = json.loads(row["value"])
     except (json.JSONDecodeError, TypeError):
         return default
-    if key in _KV_HOT:
+    if _hot(key):
         with _kv_lock:
             # Only store if no concurrent kv_set/kv_get refreshed the entry while
             # our SELECT was in flight - a slow read must never clobber a newer
@@ -328,6 +339,7 @@ def parse_tx_ts(ts):
 
 
 def set_fundamentals(market, asset_id, **fields):
+    _fund_cache.pop(market, None)
     allowed = ("eps", "pe", "sector_pe", "book_value", "div_ps", "div_yield",
                "div_rate", "div_ex_date", "div_record_date", "div_pay_date",
                "wk52_high", "wk52_low", "sector", "updated",
@@ -343,6 +355,18 @@ def set_fundamentals(market, asset_id, **fields):
               (*fields.values(), market, asset_id))
 
 
+_fund_cache = {}        # market -> (expires_monotonic, {asset_id: row})
+_FUND_TTL = 300.0
+
+
 def get_fundamentals(market):
-    return {r["asset_id"]: dict(r) for r in conn().execute(
+    """The market's fundamentals table, held in memory for a few minutes: the
+    portfolio, watchlist and advisor all read it on every request and the
+    collectors rewrite it a few times a day at most."""
+    hit = _fund_cache.get(market)
+    if hit and hit[0] > time.monotonic():
+        return hit[1]
+    data = {r["asset_id"]: dict(r) for r in conn().execute(
         "SELECT * FROM fundamentals WHERE market=%s", (market,)).fetchall()}
+    _fund_cache[market] = (time.monotonic() + _FUND_TTL, data)
+    return data

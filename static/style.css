@@ -127,6 +127,9 @@ main { padding: 18px 22px 30px; max-width: 1400px; margin: 0 auto; }
 .grid2 > *, .gl-grid > *, .cards > *, .rec-grid > *, .signal-grid > * { min-width: 0; }
 @media (max-width: 950px) { .grid2, .grid2.uneven { grid-template-columns: 1fr; } }
 
+.mkt-clock { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.nm-link { cursor: pointer; }
+.nm-link:hover { text-decoration: underline; }
 .pv-pl { font-size: .84rem; color: var(--muted); margin: -4px 0 8px; line-height: 1.5; }
 .pv-pl b { font-weight: 600; color: inherit; }
 .chart-box { position: relative; height: 260px; }
@@ -242,6 +245,7 @@ tbody tr:hover { background: var(--panel-2); }
 .mover-chip.mover-sl { border-left-color: var(--red); }
 .mover-chip.mover-rebound { border-left-color: var(--accent); }
 .sec-chip { font-size: 10.5px; }
+.impact-chip { font-weight: 600; }
 .mine-chip { border-color: var(--green); }
 
 /* News tab scope switch (All news | Your holdings) */

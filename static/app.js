@@ -8,7 +8,7 @@ const MKT_LABEL = { crypto: "Crypto", pse: "PSE Stocks", global: "Global Stocks"
 
 const STYLES = [
   { v: "day", label: "Day Trader", desc: "Intraday: positions close the same day (a time stop flags anything held overnight). Quick to act, takes profit around +4%, rotates banked wins, light on fundamentals." },
-  { v: "swing", label: "Swing Trader", desc: "Days, closing within about a week — the balanced default. Takes profit around +10% with a starting stop sized to each name's volatility (roughly 3–10% below entry), blends technicals, news and fundamentals, and flags positions held past the week." },
+  { v: "swing", label: "Swing Trader", desc: "Days, closing by the end of the opening week (Friday) — the balanced default. Takes profit around +10% with a starting stop sized to each name's volatility (roughly 3–10% below entry), blends technicals, news and fundamentals, and flags positions still open past their week." },
   { v: "long", label: "Long-Term Investor", desc: "Months and up, no time limit. Patient and fundamentals-led; rarely sells on short-term dips and takes profit much later." },
   { v: "income", label: "Income Investor", desc: "Dividends are the point: abroad, favors stocks yielding 3%+ a year and counts a missing dividend against a name; on the PSE (where the app only sees declared payouts) it favors names with a cash dividend still catchable. No time limit. On crypto it behaves like a long-term investor." },
 ];
@@ -36,6 +36,8 @@ const state = {
   editingTx: null,
   pvHours: 168,
   pvMode: localStorage.getItem("pvmode") || "value",   // dashboard chart: value | wallet | both
+  newsOrder: localStorage.getItem("newsorder") || "latest",   // news tab: latest | impact
+  predHz: +localStorage.getItem("predhz") || 30,               // dashboard movers horizon (days)
   chartHours: 168,
   chartAsset: {},        // per market
   txSide: "buy",
@@ -104,19 +106,65 @@ function bindSort(tableEl, tableKey, reload) {
 
 /* ---------------------------------------------------------- helpers */
 
+// GET responses are remembered per full path - the market is part of the
+// path, so this is a per-market memory. A market switch paints the last-seen
+// view from it instantly and then refreshes; calls repeated within a few
+// seconds (the header and the dashboard both asking for /portfolio) share one
+// request; anything that changes data clears that market's entries. A reply
+// that lands after the member has already switched market is never handed
+// back: its promise simply never settles, so no stale panel is ever painted.
+const _resp = new Map();       // path -> {t, data}
+const _inflight = new Map();   // path -> promise
+let _gen = 0;                  // bumped on every market switch
+let _swrGen = -1;              // _gen value whose remembered-first pass is running
+const FRESH_MS = 15000;
+const _marketPath = (p) => /^\/api\/(crypto|pse|global)\//.test(p);
+
 async function api(path, opts) {
-  const r = await fetch(path, opts);
-  if (r.status === 401) {
-    location.href = "/login";
-    throw new Error("signed out");
+  const isGet = !opts || !opts.method || opts.method === "GET";
+  const g = _gen;
+  if (isGet) {
+    const hit = _resp.get(path);
+    if (hit && (_swrGen === _gen || Date.now() - hit.t < FRESH_MS)) return hit.data;
+    if (_inflight.has(path)) {
+      let d;
+      try { d = await _inflight.get(path); }
+      catch (e) {
+        if (g !== _gen && _marketPath(path)) return new Promise(() => {});
+        throw e;
+      }
+      if (g !== _gen && _marketPath(path)) return new Promise(() => {});
+      return d;
+    }
   }
-  // a 200 with an unparseable body must fail loudly, not silently become {}
-  // (e.g. a stray Infinity/NaN in the payload) - downstream code relies on shape
-  const data = await r.json().catch(() => {
-    if (r.ok) throw new Error("The server sent an unreadable response - try a refresh.");
-    return {};
-  });
-  if (!r.ok) throw new Error(data.error || r.status + " " + r.statusText);
+  const run = (async () => {
+    const r = await fetch(path, opts);
+    if (r.status === 401) {
+      location.href = "/login";
+      throw new Error("signed out");
+    }
+    // a 200 with an unparseable body must fail loudly, not silently become {}
+    // (e.g. a stray Infinity/NaN in the payload) - downstream code relies on shape
+    const data = await r.json().catch(() => {
+      if (r.ok) throw new Error("The server sent an unreadable response - try a refresh.");
+      return {};
+    });
+    if (!r.ok) throw new Error(data.error || r.status + " " + r.statusText);
+    if (isGet) _resp.set(path, { t: Date.now(), data });
+    else for (const k of [..._resp.keys()]) if (_marketPath(k)) _resp.delete(k);
+    return data;
+  })();
+  if (isGet) {
+    _inflight.set(path, run);
+    run.then(() => _inflight.delete(path), () => _inflight.delete(path));
+  }
+  let data;
+  try { data = await run; }
+  catch (e) {
+    if (isGet && g !== _gen && _marketPath(path)) return new Promise(() => {});
+    throw e;
+  }
+  if (isGet && g !== _gen && _marketPath(path)) return new Promise(() => {});
   return data;
 }
 
@@ -400,8 +448,10 @@ if (window.Chart) {
 /* ---------------------------------------------------------- header/status */
 
 async function loadHeader() {
+  const pP = api(M() + "/portfolio"), sP = api(M() + "/status");
+  sP.catch(() => { });   // handled below; never an unhandled rejection
   try {
-    const p = await api(M() + "/portfolio");
+    const p = await pP;
     const s = p.summary;
     document.getElementById("header-stats").innerHTML = s.total_worth != null
       ? `<span class="hv">${fmtMoney(s.total_worth)}</span>` +
@@ -412,7 +462,7 @@ async function loadHeader() {
         `<span class="muted">P/L ${moneySpan(s.unrealized + s.realized)}</span>`;
   } catch (e) { /* cosmetic */ }
   try {
-    const st = await api(M() + "/status");
+    const st = await sP;
     const dot = document.getElementById("status-dot");
     const txt = document.getElementById("status-text");
     const age = st.quotes_updated ? Date.now() - st.quotes_updated : null;
@@ -863,7 +913,10 @@ async function loadDashboard() {
   loadPredMovers();
 }
 
+let planLoadSeq = 0;   // drops a stale run's late writes
+
 async function loadTodayPlan() {
+  const planSeq = ++planLoadSeq;
   const a = await api(M() + "/advisor").catch(() => null);
   const el = document.getElementById("today-plan");
   if (!a || !a.recommendations) {
@@ -905,10 +958,24 @@ async function loadTodayPlan() {
     }).join("");
   if (a.market_open === false) {
     // your plan's stop/target hits stay visible even while the market sleeps
-    el.innerHTML = tpslHtml + `<div class="plan-item"><span class="badge wait">MARKET CLOSED</span>
+    el.innerHTML = tpslHtml
+      + (tpslHtml ? `<div class="plan-item"><span class="badge wait">AT THE OPEN</span>
+      <span>The market is closed, so the target/stop hit above is against the <b>last traded price</b> —
+      an actual sell can only happen when trading resumes ${esc(a.next_open || "")}. Prices can gap
+      between close and open, so re-check the price then before logging anything.</span></div>` : "")
+      + `<div class="plan-item"><span class="badge wait">MARKET CLOSED</span>
       <span>${a.closed_reason ? `The market is closed for <b>${esc(a.closed_reason)}</b>` : "Buy/sell suggestions pause while the market is closed"}
       — ${a.closed_reason ? "suggestions" : "they"} resume ${esc(a.next_open || "when it reopens")}.</span></div>`;
     bindDoneButtons("today-plan", loadTodayPlan); bindPlanDone();
+    // what arrived while it was shut, if any of it names what you hold
+    if (state.market !== "crypto") {
+      const dg = await api(M() + "/news/digest").catch(() => null);
+      if (dg && dg.open === false && dg.n_about_you > 0 && planSeq === planLoadSeq) {
+        el.insertAdjacentHTML("beforeend", `<div class="plan-item"><span class="badge cold-badge">WHILE CLOSED</span>
+          <span>${dg.n_about_you} stor${dg.n_about_you === 1 ? "y" : "ies"} since ${esc(dg.day)}'s close mention${dg.n_about_you === 1 ? "s" : ""} what you hold
+          — the top ones are ranked under <b>Since ${esc(dg.day)}'s close</b> below. Awareness for the open, not instructions.</span></div>`);
+      }
+    }
     return;
   }
   if (!actions.length) {
@@ -947,12 +1014,42 @@ async function loadPredMovers() {
   catch (e) { panel.style.display = "none"; return; }
   if (!(d.up || []).length && !(d.down || []).length) { panel.style.display = "none"; return; }
   panel.style.display = "";
-  const row = (x) => `<div class="gl-item pred-item" data-pred="${esc(x.asset_id)}"
-      data-preds="${esc(x.symbol || "")}" data-predn="${esc(x.name || "")}"
-      title="Likely range ${x.lo_pct >= 0 ? "+" : ""}${x.lo_pct}% to ${x.hi_pct >= 0 ? "+" : ""}${x.hi_pct}% — click for the full projection">
+  state.predMovers = d;
+  renderPredMovers();
+}
+
+// the horizon is a read-out distance on one trend fit: same names, same
+// order at 2w / 30d / 60d / 90d - only the figure and the range width change
+const PRED_HZ_LABEL = { 14: "2 weeks", 30: "30 days", 60: "60 days", 90: "90 days" };
+function renderPredMovers() {
+  const d = state.predMovers;
+  const panel = document.getElementById("pred-movers-panel");
+  if (!d || !panel) return;
+  const rowsAll = [...(d.up || []), ...(d.down || [])];
+  const haveH = rowsAll.length > 0 && rowsAll.every(x => x.h);
+  // a snapshot from before this release carries no per-horizon figures: show
+  // (and SAY) 30 days until the next trend pass delivers them
+  const hz = haveH ? (state.predHz || 30) : 30;
+  document.querySelectorAll("#pred-hz button").forEach(b => b.classList.toggle("active", +b.dataset.days === hz));
+  document.getElementById("pred-hz-label").textContent = PRED_HZ_LABEL[hz] || `${hz} days`;
+  document.getElementById("pred-hz-days").textContent = hz;
+  document.getElementById("pred-hz-note").textContent = !haveH && (state.predHz || 30) !== 30
+    ? " Figures for other distances arrive with the next trend snapshot (within a few hours) — showing 30 days until then."
+    : hz >= 60 ? " At this distance the likely range is wide and often spans both up and down." : "";
+  // a snapshot written before this release carries no per-horizon figures:
+  // fall back to its 30-day numbers (and say so) until the next 6-hourly pass
+  const at = (x) => (x.h && x.h[hz]) || { pct: x.pct30, lo: x.lo_pct, hi: x.hi_pct, bars: null, fallback: hz !== 30 };
+  const row = (x) => {
+    const p = at(x);
+    const tip = p.fallback
+      ? `Horizon figures arrive with the next trend snapshot (within 6 hours) — showing the 30-day read: about ${p.pct >= 0 ? "+" : ""}${p.pct}%, likely range ${p.lo >= 0 ? "+" : ""}${p.lo}% to ${p.hi >= 0 ? "+" : ""}${p.hi}%`
+      : `If the trend of ${x.fit_bars ? `its last ${x.fit_bars} closes` : "its recent closes"} continued for ${hz} days: about ${p.pct >= 0 ? "+" : ""}${p.pct}% — roughly 2 in 3 ordinary outcomes between ${p.lo >= 0 ? "+" : ""}${p.lo}% and ${p.hi >= 0 ? "+" : ""}${p.hi}%. Before any news tilt; shocks aren't predictable by anyone. Click for the chart.`;
+    return `<div class="gl-item pred-item" data-pred="${esc(x.asset_id)}"
+      data-preds="${esc(x.symbol || "")}" data-predn="${esc(x.name || "")}" title="${esc(tip)}">
     <div class="gl-coin"><b>${esc(x.symbol)}</b><span class="muted">${fmtMoney(x.price)}</span></div>
-    <span class="${x.pct30 >= 0 ? "pos" : "neg"}">${x.pct30 >= 0 ? "▲ +" : "▼ "}${x.pct30}%</span>
+    <span class="${p.pct >= 0 ? "pos" : "neg"}">${p.pct >= 0 ? "▲ +" : "▼ "}${p.pct}%</span>
   </div>`;
+  };
   document.getElementById("pred-up").innerHTML =
     (d.up || []).filter(x => x.pct30 > 0).map(row).join("") ||
     '<div class="empty-note">Nothing projecting up right now.</div>';
@@ -961,9 +1058,16 @@ async function loadPredMovers() {
     '<div class="empty-note">Nothing projecting down right now.</div>';
   panel.querySelectorAll("[data-pred]").forEach(el => el.onclick = () => {
     setPredAsset(el.dataset.pred, el.dataset.preds, el.dataset.predn);
+    state.predDays = hz;   // open the full chart at the same distance
+    document.querySelectorAll("#pred-range button").forEach(b => b.classList.toggle("active", +b.dataset.days === hz));
     switchTab("predict");
   });
 }
+document.querySelectorAll("#pred-hz button").forEach(b => b.onclick = () => {
+  state.predHz = +b.dataset.days;
+  localStorage.setItem("predhz", state.predHz);
+  renderPredMovers();
+});
 
 // remember which asset the Predictions tab should chart, plus its label so the
 // picker can name it even when it isn't on the user's watchlist
@@ -1064,6 +1168,21 @@ async function loadMarketPanels(prefix) {
 }
 
 async function loadDashNews() {
+  const title = document.getElementById("dash-news-title");
+  const note = document.getElementById("dash-news-note");
+  // a closed stock market: the stories that arrived since its last close,
+  // ranked by how likely they are to matter at the open
+  const dg = state.market !== "crypto" ? await api(M() + "/news/digest").catch(() => null) : null;
+  if (dg && dg.open === false && (dg.items || []).length) {
+    title.textContent = `Since ${dg.day}'s close`;
+    note.textContent = dg.summary || "";
+    note.style.display = "";
+    document.getElementById("dash-news").innerHTML = dg.items.map(it => newsItemHtml({ ...it, _digest: true })).join("");
+    return;
+  }
+  title.textContent = "Latest News";
+  note.textContent = "";
+  note.style.display = "none";
   const n = await api(M() + "/news?limit=6");
   document.getElementById("dash-news").innerHTML = n.items.length
     ? n.items.map(newsItemHtml).join("")
@@ -1940,7 +2059,7 @@ function renderWatchlist(assets) {
       th("News", "news.score", sortKey) + th("Market Cap", "market_cap", sortKey) +
       `<th>7d Trend</th>` + th("Signal", "signal.score", sortKey) + `<th></th></tr></thead><tbody>` +
       rows.map((a, i) => `<tr>
-        <td><div class="coin-cell">${a.image ? `<img src="${esc(a.image)}">` : ""}<span class="nm">${esc(a.name)}</span><span class="sym">${esc(a.symbol)}</span></div></td>
+        <td><div class="coin-cell">${a.image ? `<img src="${esc(a.image)}">` : ""}<span class="nm nm-link" data-chart-open="${esc(a.asset_id)}" title="Open this asset's chart">${esc(a.name)}</span><span class="sym">${esc(a.symbol)}</span></div></td>
         <td><b>${fmtMoney(a.price)}</b></td>
         <td>${pctSpan(a.chg_1h, 1)}</td><td>${pctSpan(a.chg_24h, 1)}</td>
         <td>${pctSpan(a.chg_7d, 1)}</td><td>${pctSpan(a.chg_30d, 1)}</td>
@@ -1962,7 +2081,7 @@ function renderWatchlist(assets) {
       th("News", "news.score", sortKey) +
       `<th>30d Trend</th>` + th("Signal", "signal.score", sortKey) + rm + `</tr></thead><tbody>` +
       rows.map((a, i) => `<tr>
-        <td><div class="coin-cell">${a.image ? `<img src="${esc(a.image)}">` : ""}<span class="nm">${esc(a.name)}</span><span class="sym">${esc(a.symbol)}</span></div></td>
+        <td><div class="coin-cell">${a.image ? `<img src="${esc(a.image)}">` : ""}<span class="nm nm-link" data-chart-open="${esc(a.asset_id)}" title="Open this asset's chart">${esc(a.name)}</span><span class="sym">${esc(a.symbol)}</span></div></td>
         <td><b>${fmtMoney(a.price)}</b></td>
         <td>${pctSpan(a.chg_24h, 2)}</td>
         ${isPse ? `<td class="muted">${a.value_traded ? fmtMoney(a.value_traded, true) : "—"}</td>` : ""}
@@ -2153,7 +2272,12 @@ function newsItemHtml(it) {
     return `<span class="badge sec-chip" title="Mentions the ${esc(s)} sector — the headline's overall tone reads ${it.sector_sent > 0 ? "positive" : it.sector_sent < 0 ? "negative" : "neutral"}">🏭 ${esc(s)} <span class="${cls}">${dir}</span></span>`;
   }).join(" ");
   // asset chips: tracked names this story mentions (💼 = one you hold)
-  const mine = new Set(it._mine || []);
+  const mine = new Set([...(it._mine || []), ...(it.held || [])]);
+  const impactChip = it.impact != null && (state.newsOrder === "impact" || it._digest)
+    ? `<span class="badge sec-chip impact-chip" title="How likely this is to move the market or what you hold (0-100): ${esc((it.impact_why || []).join("; ") || "general news")}">Impact ${it.impact}</span>` : "";
+  const wideChip = (it.wide || []).length
+    ? `<span class="badge sec-chip" title="Touches a driver that moves the whole market">🌐 ${esc(it.wide.slice(0, 2).join(", "))}</span>` : "";
+  const alsoTxt = (it.also || []).length ? `<span class="muted">· also ${esc(it.also.slice(0, 2).join(", "))}</span>` : "";
   const achips = (it.assets || []).slice(0, 4).map(a => {
     const dir = it.tone > 0 ? "▲" : it.tone < 0 ? "▼" : "•";
     const cls = it.tone > 0 ? "pos" : it.tone < 0 ? "neg" : "muted";
@@ -2165,8 +2289,8 @@ function newsItemHtml(it) {
   const secWhy = (it._mySectors || []).map(x =>
     `<span class="muted">· touches your ${esc(x.s)} holding${x.syms.length > 1 ? "s" : ""} (${x.syms.map(esc).join(", ")})</span>`).join(" ");
   return `<div class="news-item">
-    <div class="news-meta"><span class="badge src">${esc(it.source)}</span>
-      <span>${timeAgo(it.published)}</span>${achips ? " " + achips : ""}${secs ? " " + secs : ""}${secWhy ? " " + secWhy : ""}</div>
+    <div class="news-meta">${impactChip ? impactChip + " " : ""}<span class="badge src">${esc(it.source)}</span>
+      <span>${timeAgo(it.published)}</span>${alsoTxt ? " " + alsoTxt : ""}${achips ? " " + achips : ""}${wideChip ? " " + wideChip : ""}${secs ? " " + secs : ""}${secWhy ? " " + secWhy : ""}</div>
     <div class="news-title">${linkHtml(it.link, it.title)}</div>
     <div class="news-summary">${esc(it.summary)}</div>
   </div>`;
@@ -2197,6 +2321,9 @@ async function loadNews() {
     b.classList.toggle("active", b.dataset.nscope === (scoped ? "holdings" : "all")));
   const note = document.getElementById("news-scope-note");
   note.style.display = scoped ? "" : "none";
+  const byImpact = state.newsOrder === "impact";
+  document.getElementById("news-order").value = state.newsOrder;
+  document.getElementById("news-order-note").style.display = byImpact ? "" : "none";
   if (scoped) {
     note.textContent = state.market === "crypto"
       ? "Stories that mention coins you hold, marked 💼. The strip above them is the advisor's −3..+3 news read per holding. Awareness, not instructions."
@@ -2204,7 +2331,7 @@ async function loadNews() {
   }
   const sum = document.getElementById("news-holdings-summary");
   const [n, p] = await Promise.all([
-    api(M() + "/news?limit=120" + (src ? "&source=" + encodeURIComponent(src) : "")),
+    api(M() + "/news?limit=120" + (src ? "&source=" + encodeURIComponent(src) : "") + (byImpact ? "&order=impact" : "")),
     scoped ? api(M() + "/portfolio") : Promise.resolve(null),
   ]);
   if (seq !== newsLoadSeq) return;  // a newer load already owns the list
@@ -2230,7 +2357,8 @@ async function loadNews() {
     anyHeld = held.size > 0;
     items = items.filter(it =>
       (it.assets || []).some(a => held.has(a.aid)) ||
-      (it.sectors || []).some(s => heldSectors.has(s)));
+      (it.sectors || []).some(s => heldSectors.has(s)))
+      .map(it => ({ ...it }));   // copies: the memo shares the originals with every view
     items.forEach(it => {
       const direct = (it.assets || []).filter(a => held.has(a.aid));
       it._mine = direct.map(a => a.symbol);
@@ -2317,6 +2445,26 @@ async function showChangelog() {
   }
 }
 
+const CLOCK_TZ = { pse: ["Asia/Manila", "Manila"], global: ["America/New_York", "New York"] };
+function tickClock() {
+  const el = document.getElementById("mkt-clock");
+  if (!el) return;
+  let tz, label;
+  if (state.market === "crypto") {
+    const pref = localStorage.getItem("cryptoclock") || "local";
+    tz = pref === "local" ? undefined : pref;
+    label = pref === "local" ? "your time" : pref === "Asia/Manila" ? "Manila"
+      : pref === "America/New_York" ? "New York" : "UTC";
+  } else {
+    [tz, label] = CLOCK_TZ[state.market];
+  }
+  try {
+    el.textContent = label + " " + new Date().toLocaleTimeString([], {
+      hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone: tz });
+  } catch (e) { el.textContent = ""; }
+}
+setInterval(tickClock, 1000);
+
 const loaders = {
   dashboard: loadDashboard,
   advisor: loadAdvisor,
@@ -2334,20 +2482,35 @@ const loaders = {
 const _skelBar = (h, w) => `<div class="skel" style="height:${h}px${w ? `;width:${w}` : ""}"></div>`;
 const SKELETONS = {
   dashboard: { "dash-cards": Array(5).fill(`<div class="card">${_skelBar(13, "60%")}${_skelBar(24, "80%")}</div>`).join(""),
-               "holdings-table": `<tbody><tr><td style="border:none">${_skelBar(34) + _skelBar(34) + _skelBar(34)}</td></tr></tbody>` },
+               "holdings-table": `<tbody><tr><td style="border:none">${_skelBar(34) + _skelBar(34) + _skelBar(34)}</td></tr></tbody>`,
+               "today-plan": Array(2).fill(`<div class="plan-item">${_skelBar(18, "90px")}${_skelBar(14, "55%")}</div>`).join(""),
+               "dash-news": Array(3).fill(`<div class="news-item">${_skelBar(12, "30%")}${_skelBar(16, "85%")}</div>`).join("") },
   advisor: { "advisor-stats": Array(4).fill(`<div class="mini-stat">${_skelBar(12, "70px")}${_skelBar(14, "50px")}</div>`).join(""),
-             "advisor-actions": Array(2).fill(`<div class="rec-card">${_skelBar(20, "55%")}${_skelBar(14)}${_skelBar(14, "85%")}${_skelBar(6)}${_skelBar(14, "70%")}</div>`).join("") },
+             "advisor-actions": Array(2).fill(`<div class="rec-card">${_skelBar(20, "55%")}${_skelBar(14)}${_skelBar(14, "85%")}${_skelBar(6)}${_skelBar(14, "70%")}</div>`).join(""),
+             "advisor-holds": `<div class="rec-card">${_skelBar(20, "55%")}${_skelBar(14, "85%")}</div>` },
+  charts: { "chart-indicators": _skelBar(14, "60%") },
+  predict: { "pred-method": _skelBar(14, "70%") },
   portfolio: { "tx-table": `<tbody><tr><td style="border:none">${_skelBar(30) + _skelBar(30) + _skelBar(30)}</td></tr></tbody>` },
   market: { "market-table": `<tbody><tr><td style="border:none">${_skelBar(30) + _skelBar(30) + _skelBar(30) + _skelBar(30)}</td></tr></tbody>` },
   watchlist: { "watch-table": `<tbody><tr><td style="border:none">${_skelBar(30) + _skelBar(30) + _skelBar(30) + _skelBar(30) + _skelBar(30)}</td></tr></tbody>` },
   news: { "news-list": Array(4).fill(`<div class="news-item">${_skelBar(12, "30%")}${_skelBar(16, "85%")}${_skelBar(12, "65%")}</div>`).join("") },
 };
-function showSkeletons(tab) {
+function showSkeletons(tab, force) {
   for (const [id, html] of Object.entries(SKELETONS[tab] || {})) {
     const el = document.getElementById(id);
-    if (el && !el.childElementCount && !el.textContent.trim()) el.innerHTML = html;
+    if (el && (force || (!el.childElementCount && !el.textContent.trim()))) el.innerHTML = html;
   }
 }
+
+// containers with no skeleton of their own: emptied on a market switch so the
+// old market never lingers under the new market's label
+const BLANK_ON_SWITCH = ["header-stats", "pv-pl", "coming-up", "macro-stats", "market-summary",
+  "market-summary-2", "global-stats", "dash-gainers", "dash-losers", "advisor-briefing",
+  "advisor-movers", "advisor-updated", "wallet-live", "market-cards", "watch-holdings",
+  "signal-grid", "chart-holdings", "pred-holdings", "pred-analyst", "news-holdings-summary",
+  "pred-up", "pred-down", "dash-news-note", "pred-score"];
+
+const _tabMkt = {};   // tab -> the market it last rendered
 
 function switchTab(name) {
   state.tab = name;
@@ -2356,12 +2519,15 @@ function switchTab(name) {
     b.classList.toggle("active", b.dataset.tab === name));
   document.querySelectorAll(".tab").forEach(s =>
     s.classList.toggle("active", s.id === "tab-" + name));
-  showSkeletons(name);
+  // a tab still showing another market's rows sheds them before it loads
+  showSkeletons(name, _tabMkt[name] !== undefined && _tabMkt[name] !== state.market);
   refresh();
 }
 
 function switchMarket(mkt) {
+  if (mkt === state.market) return;
   if (state.editingTx) endEditTx();
+  _gen++;   // replies still in flight for the old market are dropped
   state.market = mkt;
   localStorage.setItem("mkt", mkt);
   state.watch[mkt] = null;
@@ -2372,12 +2538,33 @@ function switchMarket(mkt) {
   sel.innerHTML = '<option value="">All sources</option>';
   document.querySelectorAll("#mkt-switch button").forEach(b =>
     b.classList.toggle("active", b.dataset.market === mkt));
-  refresh();
+  state.predMovers = null;   // never repaint the old market's movers
+  tickClock();
+  // the old market disappears on the tap: shimmer the active tab, blank the
+  // rest, drop its charts
+  showSkeletons(state.tab, true);
+  for (const id of BLANK_ON_SWITCH) { const el = document.getElementById(id); if (el) el.innerHTML = ""; }
+  for (const id of Object.keys(charts)) { try { charts[id].destroy(); } catch (e) { } delete charts[id]; }
+  refreshSwitch();
+}
+
+// a switch paints this market's last-seen data first (instant when we have
+// been here before), then a fresh pass replaces it
+async function refreshSwitch() {
+  if ([..._resp.keys()].some(k => k.startsWith(M() + "/"))) {
+    const g = _gen;
+    _swrGen = g;
+    try { await refresh(); } finally { if (_swrGen === g) _swrGen = -1; }
+    if (g !== _gen) return;   // another switch owns the screen now
+  }
+  await refresh();
 }
 
 async function refresh() {
-  try { const fx = await api("/api/fx"); fxRate = fx.rate || null; } catch (e) { }
-  try { await loaders[state.tab](); }
+  const fxP = api("/api/fx").then(fx => { fxRate = fx.rate || null; }).catch(() => { });
+  loadHeader();                // alongside the tab's own requests, not after them
+  await fxP;                   // instant after the first load (remembered)
+  try { await loaders[state.tab](); _tabMkt[state.tab] = state.market; }
   catch (e) {
     console.error(e);
     toast("Couldn't refresh: " + e.message, "error");
@@ -2388,7 +2575,6 @@ async function refresh() {
         el.innerHTML = '<div class="empty-note">Couldn\'t load this just now — it retries on the next refresh.</div>';
     }
   }
-  loadHeader();
 }
 
 document.querySelectorAll("nav#tabs button").forEach(b =>
@@ -2437,6 +2623,31 @@ document.querySelectorAll("#news-scope button").forEach(b => b.onclick = () => {
 document.getElementById("dash-hnews").onclick = () => {
   state.newsScope = "holdings";
   switchTab("news");
+};
+document.getElementById("chart-to-pred").onclick = async () => {
+  const aid = state.chartAsset[state.market];
+  if (aid) {
+    const a = (await ensureWatch()).find(x => x.asset_id === aid) || {};
+    setPredAsset(aid, a.symbol || "", a.name || aid);
+  }
+  switchTab("predict");
+};
+document.getElementById("pred-to-chart").onclick = () => {
+  const aid = (state.predAsset || {})[state.market];
+  if (aid) state.chartAsset[state.market] = aid;
+  switchTab("charts");
+};
+document.getElementById("watch-table").addEventListener("click", (e) => {
+  const el = e.target.closest("[data-chart-open]");
+  if (el) {
+    state.chartAsset[state.market] = el.dataset.chartOpen;
+    switchTab("charts");
+  }
+});
+document.getElementById("news-order").onchange = (e) => {
+  state.newsOrder = e.target.value;
+  localStorage.setItem("newsorder", state.newsOrder);
+  loadNews();
 };
 document.querySelectorAll("#adv-filter button").forEach(b => b.onclick = () => {
   state.advFilter = b.dataset.af;
@@ -2508,6 +2719,24 @@ async function renderHoldingChips(elId, isActive, onPick, verb) {
   } catch (e) { el.innerHTML = ""; }
 }
 
+// the movers panel's own track record, plus what the fit window trades off
+function renderPredScore(sc) {
+  let el = document.getElementById("pred-score");
+  if (!el) {
+    const m = document.getElementById("pred-method");
+    if (!m) return;
+    el = document.createElement("p");
+    el.id = "pred-score";
+    el.className = "muted small-note";
+    m.parentNode.insertBefore(el, m);
+  }
+  const windowNote = " Fit window: ~90 days of closes — a shorter window reacts faster but rests on fewer points; a longer one is steadier but slower to turn.";
+  if (!sc) { el.textContent = ""; return; }
+  el.textContent = sc.n
+    ? `Track record: of the last ${sc.n} gradable thirty-day mover calls (old enough to grade, with prices on record), ${sc.hit_pct}% moved in the called direction; the typical miss was ${sc.mae} points. Trend fits describe the past — read every figure as a range, not a promise.` + windowNote
+    : `Track record: logging this panel's 30-day calls daily since ${new Date(sc.since).toLocaleDateString()} — the first ones can be scored once their 30 days are up.` + windowNote;
+}
+
 async function loadPredHoldings() {
   const el = document.getElementById("pred-holdings");
   if (!el) return;
@@ -2516,6 +2745,7 @@ async function loadPredHoldings() {
       api(M() + "/portfolio"),
       api(M() + "/predict_summary?mine=1").catch(() => ({})),
     ]);
+    renderPredScore(ps.scorecard);
     const hs = (p.holdings || []).filter(h => h.price);
     if (!hs.length) { el.innerHTML = ""; return; }
     const mine = ps.mine || {};
@@ -2729,6 +2959,8 @@ async function showAccount() {
         <input type="number" step="any" min="0.5" max="50" id="cr-sl" value="${state.custom.sl_pct ?? ""}" placeholder="half the take-profit"></label>
       <label class="acct-field">Close within (days)
         <input type="number" step="1" min="1" max="365" id="cr-hold" value="${state.custom.max_hold_days ?? ""}" placeholder="style default"></label>
+      <label class="acct-field">Sell how much at take-profit (%)
+        <input type="number" step="1" min="10" max="100" id="cr-tpsell" value="${state.custom.tp_sell_pct ?? ""}" placeholder="30"></label>
       <label class="acct-field">Names to hold, min
         <input type="number" step="1" min="1" max="30" id="cr-lo" value="${state.custom.names_lo ?? ""}" placeholder="from spread"></label>
       <label class="acct-field">Names to hold, max
@@ -2745,6 +2977,16 @@ async function showAccount() {
     </div>
     <div class="form-msg" id="cr-msg"></div>
 
+    <h4 class="acct-h">Clock</h4>
+    <p class="muted small-note">The header clock follows each market's home exchange (PSE — Manila,
+      Global — New York). Crypto trades everywhere at once, so pick what its clock shows:</p>
+    <select id="acct-cryptoclock">
+      <option value="local">My device's time</option>
+      <option value="UTC">UTC</option>
+      <option value="Asia/Manila">Manila</option>
+      <option value="America/New_York">New York</option>
+    </select>
+
     <h4 class="acct-h">Change password</h4>
     <label class="acct-field">Current password
       <input type="password" id="pw-current" autocomplete="current-password"></label>
@@ -2756,6 +2998,9 @@ async function showAccount() {
   document.body.appendChild(overlay);
   document.getElementById("account-close").onclick = () => overlay.remove();
   overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+  const ck = document.getElementById("acct-cryptoclock");
+  ck.value = localStorage.getItem("cryptoclock") || "local";
+  ck.onchange = () => { localStorage.setItem("cryptoclock", ck.value); tickClock(); };
 
   const bindSetting = (radioName, field, msgId, stateKey, savedText) => {
     overlay.querySelectorAll(`input[name="${radioName}"]`).forEach(radio => radio.onchange = async () => {
@@ -2802,6 +3047,7 @@ async function showAccount() {
     const v = (id) => { const x = document.getElementById(id).value.trim(); return x === "" ? null : +x; };
     const whole = (x) => x === null ? null : Math.round(x);
     const body = { tp_pct: v("cr-tp"), sl_pct: v("cr-sl"), max_hold_days: whole(v("cr-hold")),
+                   tp_sell_pct: whole(v("cr-tpsell")),
                    names_lo: whole(v("cr-lo")), names_hi: whole(v("cr-hi")) };
     Object.keys(body).forEach(k => { if (body[k] === null) delete body[k]; });
     // the checkbox is on by default: only an unchecked box is a rule worth storing
@@ -2809,7 +3055,7 @@ async function showAccount() {
     saveRules(body);
   };
   document.getElementById("cr-clear").onclick = () => {
-    ["cr-tp", "cr-sl", "cr-hold", "cr-lo", "cr-hi"].forEach(id => document.getElementById(id).value = "");
+    ["cr-tp", "cr-sl", "cr-hold", "cr-tpsell", "cr-lo", "cr-hi"].forEach(id => document.getElementById(id).value = "");
     document.getElementById("cr-extend").checked = true;
     saveRules({});
   };
