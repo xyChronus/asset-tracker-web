@@ -22,7 +22,31 @@ a:hover { text-decoration: underline; }
 header {
   display: flex; align-items: center; gap: 12px 16px; flex-wrap: wrap;
   padding: 12px 22px; border-bottom: 1px solid var(--border);
-  position: sticky; top: 0; background: rgba(13,16,23,.92); backdrop-filter: blur(6px); z-index: 20;
+  position: sticky; top: 0; background: var(--bg); z-index: 20;
+}
+@media (prefers-reduced-motion: no-preference) { header { transition: padding .15s ease; } }
+@media (min-width: 761px) {
+  header.compact { padding: 5px 22px; }
+  header.compact .mkt-switch, header.compact .cur-select, header.compact .corner-link,
+  header.compact .mkt-clock { display: none; }
+  header.compact .header-stats .muted { display: none; }
+}
+.user-dd { position: relative; }
+.user-dd-menu {
+  position: absolute; right: 0; top: calc(100% + 6px); min-width: 190px; z-index: 40;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  padding: 5px; box-shadow: 0 8px 24px rgba(0,0,0,.45);
+}
+.dd-item {
+  display: block; width: 100%; text-align: left; background: none; border: none;
+  color: var(--text); font: inherit; font-size: 13px; padding: 8px 11px;
+  border-radius: 7px; cursor: pointer; text-decoration: none;
+}
+.dd-item:hover { background: var(--panel-2); }
+.tx-tools { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 10px; }
+.tx-tools select, .tx-tools input {
+  background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+  border-radius: 8px; padding: 6px 9px; font: inherit; font-size: 12.5px;
 }
 .brand { font-size: 18px; font-weight: 700; letter-spacing: .3px; }
 .mkt-switch { display: flex; gap: 2px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 9px; padding: 3px; }
@@ -50,6 +74,7 @@ header {
 .status-dot.ok { background: var(--green); box-shadow: 0 0 6px var(--green); }
 .status-dot.warn { background: var(--accent); }
 .status-dot.err { background: var(--red); }
+.status-dot.idle { background: #8b93a7; }
 
 nav#tabs {
   display: flex; gap: 4px; padding: 8px 18px 0; border-bottom: 1px solid var(--border);
@@ -99,6 +124,21 @@ nav#tabs button.active { color: var(--accent); border-bottom-color: var(--accent
 }
 
 main { padding: 18px 22px 30px; max-width: 1400px; margin: 0 auto; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.score-pill.neg { color: #ff9d9d; }
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+.skip-link {
+  position: absolute; left: 8px; top: -60px; z-index: 100; background: var(--accent);
+  color: #14100a; font-weight: 700; padding: 9px 14px; border-radius: 8px;
+  text-decoration: none; transition: top .1s;
+}
+.skip-link:focus { top: 8px; }
+.overlay-box > .panel-head, .members-box > .panel-head {
+  position: sticky; top: -1px; background: var(--panel); z-index: 3; padding-top: 4px;
+}
 .tab { display: none; }
 .tab.active { display: block; }
 
@@ -120,7 +160,7 @@ main { padding: 18px 22px 30px; max-width: 1400px; margin: 0 auto; }
 .panel h4 { font-size: 13px; margin-bottom: 8px; }
 .pos-h { color: var(--green); } .neg-h { color: var(--red); }
 
-.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
 .grid2.uneven { grid-template-columns: 360px 1fr; }
 /* grid items refuse to shrink below their content by default - without this
    a wide table stretches its column instead of scrolling inside it */
@@ -189,7 +229,7 @@ tbody tr:hover { background: var(--panel-2); }
 .badge.strong-buy { background: #14532d; color: #4ade80; }
 .badge.buy { background: rgba(34,197,94,.15); color: var(--green); }
 .badge.hold { background: rgba(139,147,167,.15); color: var(--muted); }
-.badge.sell { background: rgba(239,68,68,.15); color: var(--red); }
+.badge.sell { background: rgba(239,68,68,.15); color: #ff9d9d; }
 .badge.strong-sell { background: #7f1d1d; color: #fca5a5; }
 .badge.wait, .badge.watch { background: rgba(96,165,250,.12); color: var(--blue); }
 .badge.src { background: var(--panel-2); color: var(--muted); font-weight: 600; }
@@ -198,7 +238,7 @@ tbody tr:hover { background: var(--panel-2); }
 .badge.trim { background: rgba(247,147,26,.15); color: var(--accent); }
 .badge.take-profit { background: rgba(52,211,153,.15); color: #34d399; }
 .badge.all-clear { background: rgba(139,147,167,.15); color: var(--muted); }
-.badge.cold-badge { background: rgba(239,68,68,.15); color: var(--red); }
+.badge.cold-badge { background: rgba(239,68,68,.15); color: #ff9d9d; }
 
 /* ---- Hot & Cold movers ---- */
 .movers-row { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 6px; }
@@ -316,6 +356,11 @@ tbody tr:hover { background: var(--panel-2); }
 .news-item .news-title { font-weight: 600; font-size: 14px; }
 .news-item .news-summary { color: var(--muted); font-size: 12.5px; margin-top: 3px; }
 .news-list.compact .news-summary { display: none; }
+@media (min-width: 1100px) {
+  #news-list { column-count: 2; column-gap: 26px; }
+  #news-list .news-item { break-inside: avoid; }
+}
+.col-hidden { display: none; }
 
 .signal-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr)); gap: 14px; }
 .signal-card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 13px 15px; }
@@ -569,11 +614,26 @@ nav#tabs button, .mkt-switch button, .scope-pills button, .hold-chip,
 
 /* Touch screens (any size): finger-sized targets for the small buttons */
 @media (pointer: coarse) {
-  .mini-btn, .link-btn, .del-btn { padding: 7px 12px; font-size: 12.5px; }
-  .accept-btn, .done-btn, .pdone-btn { padding: 6px 13px; }
-  .scope-pills button, .hold-chip { padding: 6px 13px; }
-  .info-i { width: 18px; height: 18px; font-size: 10px; }
-  .range-btns button { padding: 6px 13px; }
+  .mini-btn, .link-btn, .del-btn { padding: 12px 14px; font-size: 13px; }
+  .accept-btn, .done-btn, .pdone-btn { padding: 11px 15px; }
+  .scope-pills button, .hold-chip { padding: 11px 15px; }
+  .info-i { width: 26px; height: 26px; font-size: 12px; position: relative; }
+  .info-i::after { content: ""; position: absolute; inset: -9px; }
+  .range-btns button { padding: 11px 15px; }
+}
+/* P3-1/P3-2: on a phone the first column stays pinned while a wide table
+   scrolls, and the tab strip fades at its edge to say "more this way" */
+@media (max-width: 760px) {
+  .table-wrap thead th:first-child, .table-wrap td:first-child {
+    position: sticky; left: 0; background: var(--panel); z-index: 2;
+    border-right: 1px solid var(--border);
+  }
+  .table-wrap thead th:first-child { z-index: 3; }
+  .table-wrap tbody tr:hover td:first-child { background: var(--panel-2); }
+  nav#tabs.can-scroll {
+    -webkit-mask-image: linear-gradient(90deg, #000 90%, transparent);
+    mask-image: linear-gradient(90deg, #000 90%, transparent);
+  }
 }
 
 /* ---- v1.29.0: skeletons, tour, advisor controls, held-since ---- */

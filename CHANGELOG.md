@@ -480,3 +480,22 @@ Web-only items are marked **(web)**.
 ## [1.39.1] — 2026-08-26 — Add to the wallet without retyping it
 ### Added
 - **Add / Withdraw on the Wallet.** Deposited or pulled out money? Type just the amount and press *+ Add* or *− Withdraw* — the budget updates itself and the confirmation shows the new total. Setting the full figure still works, and both land on the budget timeline the Dashboard chart uses. Withdrawing more than the budget holds is refused with the current figure shown.
+## [1.40.0] — 2026-08-28 — The quality-of-life release
+An outside audit walked every tab of the live site and wrote up 35 findings. This release works through them.
+### Added
+- **Every tab has an address** (#/dashboard … #/predictions): bookmark a view, share a link straight to it, open one in a new window — and the browser's Back button walks your actual trail, returning to the spot you'd scrolled to. Reloading without a hash still restores your last tab.
+- **Download CSV** on Transaction History and Realized Profit/Loss — plain numbers in numeric columns, ready for a spreadsheet (and tax season). The transaction export respects whatever filter is active.
+- **Transaction History grew filters**: asset, Buy/Sell/Adjust, a date range — and it pages at 50 rows instead of growing forever.
+- **Your trades are on the price chart now**: every recorded buy (▲) and sell (▼) at its date and price, plus a dashed line at your average buy. Hover a marker for the trade's details.
+- **News tab**: loads 25 stories at a time with a Load more button, a headline search box, and the Impact chip on every story (it used to show only in the "Most likely to matter" order).
+- Smaller conveniences: charts and predictions now **open on your largest holding** when you haven't picked anything, the password form gained a **confirm field and a show/hide toggle**, and invite codes have a **Copy** button that says so honestly when the clipboard refuses.
+### Changed
+- **The header got out of the way.** It's fully opaque (no more content ghosting through while you scroll), the four account buttons collapsed into one 👤 menu (the quick tour lives there too), and past 200px of scroll it condenses to one line: brand, wallet value, 24h change, your menu.
+- **Switching tabs starts at the top** of the new view instead of keeping the old scroll offset.
+- **The two scores explain themselves**: the Watchlist pill says it's the pure-technical read (price action only, ±4 and beyond reading as strong), the Advisor pill says it blends news, fundamentals, analyst reads and your position — two lenses, not a contradiction, and both tabs say so in a line of copy.
+- The Watchlist **filter now narrows the signal cards** as well as the table; **columns that are empty in every row** (like a bare EX-DATE) aren't rendered at all.
+- The "live" dot is honest on closed markets: a neutral dot with "updated Xm ago · market closed" instead of a green "live" beside an old timestamp. Chart tooltips leave when your pointer does. Panels stopped stretching to match their neighbours' height, and the News tab uses two columns on wide screens.
+- When several advisor cards were blocked by the same thing (not enough spare cash), the sentence now reads **once at the top** instead of on every card; each card's breakdown still carries the full record.
+### Accessibility & mobile
+- A consistent, clearly visible **keyboard focus outline**, a skip-to-content link that leaves the page address alone, a proper page heading per view, alt text handling on all the logos, accessible names for the inputs that lacked them, screen-reader announcements for the portfolio value (only when it changes) and confirmations, a meta description for link previews, and three marginal red-on-dark contrast failures lightened past the 4.5:1 bar.
+- On phones: the **first column of wide tables stays pinned** while you scroll sideways, the tab strip fades at its edge so it's obvious it scrolls, and touch targets grew to ~44px.

@@ -291,11 +291,30 @@ function sigBadge(sig) {
 }
 
 // Numbered buy/sell score: positive = buy-leaning, negative = sell-leaning.
-function scorePill(v, dp) {
+function scorePill(v, dp, kind) {
   if (v == null || isNaN(v)) return "";
   const n = dp ? (+v).toFixed(dp) : Math.round(v);
   const cls = v > 0 ? "pos" : v < 0 ? "neg" : "muted";
-  return `<span class="score-pill ${cls}" title="Buy/sell score — higher is more bullish, lower more bearish">${v > 0 ? "+" : ""}${n}</span>`;
+  const tip = kind === "advisor"
+    ? "Advisor score — technicals blended with news, fundamentals, analyst reads and your own position. A wider lens than the watchlist's pure-technical number, so the two can disagree."
+    : "Technical score — price action only: trend, RSI, momentum, the 24h move, volume. ±4 or more reads as strong. The Advisor blends more inputs, so its read can differ.";
+  return `<span class="score-pill ${cls}" title="${tip}">${v > 0 ? "+" : ""}${n}</span>`;
+}
+
+function downloadCsv(name, header, rows) {
+  const cell = (v) => {
+    const s = String(v == null ? "" : v);
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  };
+  const blob = new Blob(["\ufeff" + [header, ...rows].map(r => r.map(cell).join(",")).join("\r\n")],
+    { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name + "-" + new Date().toISOString().slice(0, 10) + ".csv";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 }
 
 let toastTimer;
@@ -334,8 +353,30 @@ function drawSpark(canvas, points) {
 
 function makeChart(id, cfg) {
   if (charts[id]) charts[id].destroy();
-  charts[id] = new Chart(document.getElementById(id), cfg);
+  const chart = new Chart(document.getElementById(id), cfg);
+  charts[id] = chart;
+  // the hover tooltip must leave with the pointer, not stick around
+  chart.canvas.onmouseleave = () => {
+    try {
+      chart.setActiveElements([]);
+      chart.tooltip.setActiveElements([], { x: 0, y: 0 });
+      chart.update("none");
+    } catch (e) { }
+  };
+  return chart;
 }
+addEventListener("scroll", () => {
+  for (const id in charts) {
+    const ch = charts[id];
+    try {
+      if (ch.tooltip && ch.tooltip.getActiveElements().length) {
+        ch.setActiveElements([]);
+        ch.tooltip.setActiveElements([], { x: 0, y: 0 });
+        ch.update("none");
+      }
+    } catch (e) { }
+  }
+}, { passive: true });
 
 /* ------------------------------------------- searchable asset picker */
 
@@ -453,13 +494,16 @@ async function loadHeader() {
   try {
     const p = await pP;
     const s = p.summary;
-    document.getElementById("header-stats").innerHTML = s.total_worth != null
+    const hsHtml = s.total_worth != null
       ? `<span class="hv">${fmtMoney(s.total_worth)}</span>` +
         `<span class="muted">= ${fmtMoney(s.value)} invested + ${fmtMoney(s.cash)} cash</span>` +
         `<span>${pctSpan(s.change_24h_pct)} 24h</span>`
       : `<span class="hv">${fmtMoney(s.value)}</span>` +
         `<span>${pctSpan(s.change_24h_pct)} 24h</span>` +
         `<span class="muted">P/L ${moneySpan(s.unrealized + s.realized)}</span>`;
+    const hsEl = document.getElementById("header-stats");
+    // unchanged totals aren't rewritten, so screen readers aren't re-told
+    if (hsEl.innerHTML !== hsHtml) hsEl.innerHTML = hsHtml;
   } catch (e) { /* cosmetic */ }
   try {
     const st = await sP;
@@ -469,7 +513,12 @@ async function loadHeader() {
     // ~2x each market's collection interval: amber must mean genuinely
     // stale, or everyone learns to ignore the one warning that matters
     const staleMs = state.market === "crypto" ? 15 * 60000 : 45 * 60000;
-    if (age != null && age < staleMs) {
+    if (age != null && st.open === false) {
+      // a closed market's data is as fresh as it can be - a green "live"
+      // beside a closed market would read as a contradiction
+      dot.className = "status-dot idle";
+      txt.textContent = "updated " + timeAgo(st.quotes_updated) + " · market closed";
+    } else if (age != null && age < staleMs) {
       dot.className = "status-dot ok";
       txt.textContent = "live · " + timeAgo(st.quotes_updated);
     } else if (age != null) {
@@ -834,7 +883,7 @@ async function loadDashboard() {
       th("Signal", "signal.score", "holdings") + th("Plan", "plan_sort", "holdings") +
       `<th></th></tr></thead><tbody>` +
       applySort(p.holdings, "holdings").map(h => `<tr>
-        ${chartTd(h, `<div class="coin-cell">${h.image ? `<img src="${esc(h.image)}">` : ""}<span class="nm">${esc(h.name)}</span><span class="sym">${esc(h.symbol)}${h.first_ts ? ` <span class="held-since" title="This position has been in your records since ${esc(h.first_ts)} (a full sell-out restarts the clock)">since ${fmtSince(h.first_ts)}</span>` : ""}</span></div>`)}
+        ${chartTd(h, `<div class="coin-cell">${h.image ? `<img src="${esc(h.image)}" alt="">` : ""}<span class="nm">${esc(h.name)}</span><span class="sym">${esc(h.symbol)}${h.first_ts ? ` <span class="held-since" title="This position has been in your records since ${esc(h.first_ts)} (a full sell-out restarts the clock)">since ${fmtSince(h.first_ts)}</span>` : ""}</span></div>`)}
         <td>${fmtQty(h.qty)}</td>
         <td>${fmtMoney(h.avg_buy)}</td>
         <td>${fmtMoney(h.price)}</td>
@@ -912,6 +961,8 @@ async function loadDashboard() {
   loadTodayPlan();
   loadPredMovers();
 }
+
+let _advisorCashDup = false;   // "no spare cash" hoisted to one panel note
 
 let planLoadSeq = 0;   // drops a stale run's late writes
 
@@ -1080,7 +1131,7 @@ function setPredAsset(aid, symbol, name) {
 
 function glList(list, priceKey, chgKey) {
   return (list || []).map(x => `<div class="gl-item">
-      <div class="gl-coin">${x.image ? `<img src="${esc(x.image)}">` : ""}<b>${esc((x.symbol || "").toUpperCase())}</b>
+      <div class="gl-coin">${x.image ? `<img src="${esc(x.image)}" alt="">` : ""}<b>${esc((x.symbol || "").toUpperCase())}</b>
       <span class="muted">${fmtMoney(x[priceKey])}</span></div>${pctSpan(x[chgKey])}</div>`).join("")
     || '<div class="empty-note">waiting for market data…</div>';
 }
@@ -1161,7 +1212,7 @@ async function loadMarketPanels(prefix) {
     } else {
       const idx = m.indices || {};
       gs.innerHTML = Object.keys(idx).map(k =>
-        `<div class="mini-stat"><span>${esc(k)}</span><b>${fmtNum(idx[k].price)} ${pctSpan(idx[k].chg_pct, 1)}</b></div>`).join("");
+        `<div class="mini-stat"><span>${esc(k)}</span><b>${fmtNum(idx[k].price)} ${pctSpan(idx[k].chg_pct, 2)}</b></div>`).join("");
     }
   }
   return m;
@@ -1298,9 +1349,9 @@ function recCard(r) {
     : "";
   return `<div class="rec-card">
     <div class="sig-head">
-      <div class="sig-coin">${r.image ? `<img src="${esc(r.image)}">` : ""}${esc(r.name)}
+      <div class="sig-coin">${r.image ? `<img src="${esc(r.image)}" alt="">` : ""}${esc(r.name)}
         <span class="muted">${fmtMoney(r.price)}</span></div>
-      <div class="head-right">${sigBadge(r)}${scorePill(r.conviction, 1)}${acceptBtn}${doneBtn}${trailBtn}${shareBtn}${pinBtn}</div>
+      <div class="head-right">${sigBadge(r)}${scorePill(r.conviction, 1, "advisor")}${acceptBtn}${doneBtn}${trailBtn}${shareBtn}${pinBtn}</div>
     </div>
     ${flagRow}${amount}${planLine}${fcLine}${holdLine}
     <div class="conv-bar" title="Conviction: ${conv}">
@@ -1312,7 +1363,7 @@ function recCard(r) {
       // compact: two reasons visible, the rest folded - but a rotation hint
       // (where to move the freed money) is the actionable half of a sell
       // suggestion and must never hide behind a fold
-      const all = r.reasons || [];
+      const all = (r.reasons || []).filter(x => !(_advisorCashDup && /a meaningful buy/.test(x)));
       let vis = all.slice(0, 2);
       const rot = all.find(x => /rotat/i.test(x));
       if (rot && !vis.includes(rot)) vis = [vis[0], rot].filter(Boolean);
@@ -1344,7 +1395,7 @@ function moverChip(r) {
   const kinds = (r.flags || []).map(f => f.kind);
   const primary = ["sl", "tp", "rebound", "cold", "hot", "event", "base", "quiet"].find(k => kinds.includes(k)) || "hot";
   return `<div class="mover-chip mover-${primary}">
-    <div class="mover-top">${r.image ? `<img src="${esc(r.image)}">` : ""}<b>${esc((r.symbol || r.name || "").toUpperCase())}</b>
+    <div class="mover-top">${r.image ? `<img src="${esc(r.image)}" alt="">` : ""}<b>${esc((r.symbol || r.name || "").toUpperCase())}</b>
       <span class="muted">${fmtMoney(r.price)}</span></div>
     <div class="mover-flags">${(r.flags || []).map(f =>
       `<span>${FLAG_ICONS[f.kind] || "•"} ${esc(f.text)}</span>`).join("")}</div>
@@ -1361,6 +1412,8 @@ async function loadAdvisor() {
   if (!a || !a.recommendations) {
     document.getElementById("advisor-briefing").textContent =
       "Still analyzing — results appear a few minutes after startup, once prices, history and news are in.";
+    const cn0 = document.getElementById("advisor-cash-note");
+    if (cn0) cn0.style.display = "none";
     return;
   }
   document.getElementById("advisor-briefing").textContent = a.briefing || "";
@@ -1374,7 +1427,7 @@ async function loadAdvisor() {
     ["Market", a.market_open === false ? '<span class="neg">CLOSED</span>' : '<span class="pos">OPEN</span>'],
     ["Trading Style", esc(a.style_label || styleLabel(state.style))],
     ["News Sentiment", esc(ms.label || "—") + (ms.score != null ? ` (${ms.score > 0 ? "+" : ""}${ms.score})` : "")],
-    ["Suggestions", actions.length + " action(s)"],
+    ["Suggestions", actions.length === 0 ? "No actions" : actions.length === 1 ? "1 action" : actions.length + " actions"],
     ["Cleared Today", String(doneCount)],   // dismissed by ✗ or settled by a logged trade
   ].map(x => `<div class="mini-stat"><span>${x[0]}</span><b>${x[1]}</b></div>`).join("");
 
@@ -1410,6 +1463,18 @@ async function loadAdvisor() {
             ...out.filter(r => !state.pins.includes(r.asset_id))];
   };
   const rest = arrange(a.recommendations.filter(r => ["HOLD", "WATCH"].includes(r.action)));
+  // the same not-enough-cash sentence on card after card reads once up top
+  // instead; each card's breakdown ledger still carries the full record
+  const cashRe = /a meaningful buy/;
+  const cashy = (a.recommendations || []).filter(r => (r.reasons || []).some(x => cashRe.test(x)));
+  _advisorCashDup = cashy.length >= 2;
+  const cashNoteEl = document.getElementById("advisor-cash-note");
+  if (cashNoteEl) {
+    cashNoteEl.style.display = _advisorCashDup ? "" : "none";
+    if (_advisorCashDup)
+      cashNoteEl.textContent = "One note that applies to " + cashy.length + " cards below: "
+        + ((cashy[0].reasons || []).find(x => cashRe.test(x)) || "");
+  }
   const shown = arrange(actions);
   document.getElementById("advisor-actions").innerHTML = shown.length
     ? shown.map(recCard).join("")
@@ -1720,9 +1785,42 @@ async function loadPortfolio() {
   };
 
   const tt = document.getElementById("tx-table");
-  tt.innerHTML = `<thead><tr><th>Date</th><th>Type</th><th>Asset</th><th>Quantity</th>
+  state.txShow = state.txShow || 50;
+  const fAsset = document.getElementById("tx-f-asset");
+  const seenAssets = new Map();
+  txs.forEach(t => { if (!seenAssets.has(t.asset_id)) seenAssets.set(t.asset_id, t.name || t.asset_id); });
+  const idsKey = state.market + "|" + [...seenAssets.keys()].sort().join(",");
+  if (fAsset.dataset.ids !== idsKey) {
+    const cur = fAsset.value;
+    fAsset.innerHTML = '<option value="">All assets</option>' +
+      [...seenAssets.entries()].sort((a, b) => String(a[1]).localeCompare(String(b[1])))
+        .map(([id, nm]) => `<option value="${esc(id)}">${esc(nm)}</option>`).join("");
+    fAsset.dataset.ids = idsKey;
+    fAsset.value = cur;
+    if (fAsset.selectedIndex < 0) fAsset.value = "";
+  }
+  const fv = { asset: fAsset.value, type: document.getElementById("tx-f-type").value,
+               from: document.getElementById("tx-f-from").value, to: document.getElementById("tx-f-to").value };
+  const txShown = txs.filter(t =>
+    (!fv.asset || t.asset_id === fv.asset) &&
+    (!fv.type || t.type === fv.type) &&
+    (!fv.from || String(t.ts) >= fv.from) &&
+    (!fv.to || String(t.ts).slice(0, 10) <= fv.to));
+  const txPage = txShown.slice(0, state.txShow);
+  ["tx-f-asset", "tx-f-type", "tx-f-from", "tx-f-to"].forEach(id => {
+    document.getElementById(id).onchange = () => { state.txShow = 50; loadPortfolio(); };
+  });
+  const more = document.getElementById("tx-more");
+  more.style.display = txShown.length > txPage.length ? "" : "none";
+  more.textContent = `Show 50 more (${txShown.length - txPage.length} not shown)`;
+  more.onclick = () => { state.txShow += 50; loadPortfolio(); };
+  const csvCur = state.market === "pse" ? "PHP" : "USD";
+  document.getElementById("tx-csv").onclick = () => downloadCsv("asset-tracker-transactions",
+    ["date", "type", "asset_name", "asset_id", "quantity", "price", "value", "fee", "currency"],
+    txShown.map(t => [t.ts, t.type, t.name || t.asset_id, t.asset_id, t.quantity, t.price, t.value, t.fee || 0, csvCur]));
+  tt.innerHTML = `<thead><tr><th>Date</th><th>Type</th><th style="text-align:left">Asset</th><th>Quantity</th>
     <th>Price</th><th>Value</th><th>Fee</th><th></th></tr></thead><tbody>` +
-    (txs.length ? txs.map(t => `<tr>
+    (txPage.length ? txPage.map(t => `<tr>
       <td>${esc(t.ts)}</td>
       <td><span class="${t.quantity >= 0 ? "pos" : "neg"}"><b>${esc(t.type)}</b></span></td>
       <td><div class="coin-cell"><span class="nm">${esc(t.name || t.asset_id)}</span></div></td>
@@ -1732,7 +1830,7 @@ async function loadPortfolio() {
       <td class="muted">${t.fee ? fmtMoney(t.fee) : "—"}</td>
       <td><button class="mini-btn" data-edit="${t.id}" title="Fix this entry">✎</button>
           <button class="del-btn" data-del="${t.id}">✕</button></td>
-    </tr>`).join("") : '<tr><td class="empty-note">No transactions yet.</td></tr>') + "</tbody>";
+    </tr>`).join("") : `<tr><td class="empty-note">${txs.length ? "Nothing matches this filter." : "No transactions yet."}</td></tr>`) + "</tbody>";
   tt.querySelectorAll("[data-del]").forEach(b => b.onclick = async () => {
     if (!confirm("Delete this transaction?")) return;
     await api(M() + "/transactions/" + b.dataset.del, { method: "DELETE" });
@@ -1755,6 +1853,11 @@ async function loadPortfolio() {
         <td class="muted">${h.qty > 1e-9 ? "still holding " + fmtQty(h.qty) : "closed"}</td>
       </tr>`).join("") + "</tbody>"
     : '<tr><td class="empty-note">Sell something to see realized profit/loss here.</td></tr>';
+  document.getElementById("pl-csv").onclick = () => downloadCsv("asset-tracker-realized-pl",
+    ["asset", "bought", "sold", "realized_pl", "status", "currency"],
+    rows.map(h => [h.name, h.bought_usd, h.sold_usd, h.realized,
+                   h.qty > 1e-9 ? "still holding " + h.qty : "closed",
+                   state.market === "pse" ? "PHP" : "USD"]));
   renderTradeStats(rows, p.summary);
 
   fillAssetCombo(txCombo);
@@ -1959,7 +2062,7 @@ async function loadMarket() {
        <th>24h Volume</th><th>Market Cap</th></tr></thead><tbody>` +
       (m.top100 || []).map(c => `<tr>
         <td class="muted">${c.market_cap_rank || ""}</td>
-        <td><div class="coin-cell">${c.image ? `<img src="${esc(c.image)}">` : ""}<span class="nm">${esc(c.name)}</span><span class="sym">${esc((c.symbol || "").toUpperCase())}</span></div></td>
+        <td><div class="coin-cell">${c.image ? `<img src="${esc(c.image)}" alt="">` : ""}<span class="nm">${esc(c.name)}</span><span class="sym">${esc((c.symbol || "").toUpperCase())}</span></div></td>
         <td>${fmtMoney(c.current_price)}</td>
         <td>${pctSpan(c.chg_1h, 1)}</td><td>${pctSpan(c.chg_24h, 1)}</td><td>${pctSpan(c.chg_7d, 1)}</td>
         <td class="muted">${fmtMoney(c.total_volume, true)}</td>
@@ -1992,7 +2095,7 @@ async function loadMarket() {
     table.innerHTML =
       `<thead><tr><th>Stock</th><th>Price</th><th>Day</th><th>EPS</th><th>P/E</th><th>Div Yield</th></tr></thead><tbody>` +
       assets.map(a => `<tr>
-        <td><div class="coin-cell">${a.image ? `<img src="${esc(a.image)}">` : ""}<span class="nm">${esc(a.name)}</span><span class="sym">${esc(a.symbol)}</span></div></td>
+        <td><div class="coin-cell">${a.image ? `<img src="${esc(a.image)}" alt="">` : ""}<span class="nm">${esc(a.name)}</span><span class="sym">${esc(a.symbol)}</span></div></td>
         <td>${fmtMoney(a.price)}</td>
         <td>${pctSpan(a.chg_24h, 2)}</td>
         <td>${fmtNum(a.eps)}</td>
@@ -2032,6 +2135,27 @@ function newsCell(a) {
   return `<td><span class="${cls}" title="${esc(n.top || "")} — ${n.n} recent article${n.n > 1 ? "s" : ""}, scored ${n.score > 0 ? "+" : ""}${n.score} on the advisor's −3..+3 news scale">${arrow} ${n.score > 0 ? "+" : ""}${n.score}</span></td>`;
 }
 
+// a column whose every cell reads "—" (or is blank text) carries nothing:
+// drop it instead of spending width on it. Cells holding elements (sparkline
+// canvases, buttons) are never counted as empty.
+function hideEmptyColumns(table) {
+  const body = [...table.querySelectorAll("tbody tr")].filter(r => r.cells.length > 1);
+  if (!body.length) return;
+  const heads = table.querySelectorAll("thead th");
+  for (let c = 0; c < heads.length; c++) {
+    const empty = body.every(r => {
+      const cell = r.cells[c];
+      if (!cell || cell.childElementCount) return cell ? false : true;
+      const t = cell.textContent.trim();
+      return t === "—" || t === "";
+    });
+    if (empty) {
+      heads[c].classList.add("col-hidden");
+      body.forEach(r => r.cells[c] && r.cells[c].classList.add("col-hidden"));
+    }
+  }
+}
+
 function renderWatchlist(assets) {
   const isPse = state.market === "pse";
   const isCrypto = state.market === "crypto";
@@ -2048,8 +2172,9 @@ function renderWatchlist(assets) {
   const wt = document.getElementById("watch-table");
   const sortKey = "watch:" + state.market;
   const filter = (state.filter || "").toUpperCase();
-  const rows = applySort(assets.filter(a => !filter ||
-    a.symbol.toUpperCase().includes(filter) || (a.name || "").toUpperCase().includes(filter)), sortKey);
+  const matches = assets.filter(a => !filter ||
+    a.symbol.toUpperCase().includes(filter) || (a.name || "").toUpperCase().includes(filter));
+  const rows = applySort(matches, sortKey);
 
   if (isCrypto) {
     wt.innerHTML = `<thead><tr>` +
@@ -2059,7 +2184,7 @@ function renderWatchlist(assets) {
       th("News", "news.score", sortKey) + th("Market Cap", "market_cap", sortKey) +
       `<th>7d Trend</th>` + th("Signal", "signal.score", sortKey) + `<th></th></tr></thead><tbody>` +
       rows.map((a, i) => `<tr>
-        <td><div class="coin-cell">${a.image ? `<img src="${esc(a.image)}">` : ""}<span class="nm nm-link" data-chart-open="${esc(a.asset_id)}" title="Open this asset's chart">${esc(a.name)}</span><span class="sym">${esc(a.symbol)}</span></div></td>
+        <td><div class="coin-cell">${a.image ? `<img src="${esc(a.image)}" alt="">` : ""}<span class="nm nm-link" data-chart-open="${esc(a.asset_id)}" title="Open this asset's chart">${esc(a.name)}</span><span class="sym">${esc(a.symbol)}</span></div></td>
         <td><b>${fmtMoney(a.price)}</b></td>
         <td>${pctSpan(a.chg_1h, 1)}</td><td>${pctSpan(a.chg_24h, 1)}</td>
         <td>${pctSpan(a.chg_7d, 1)}</td><td>${pctSpan(a.chg_30d, 1)}</td>
@@ -2081,7 +2206,7 @@ function renderWatchlist(assets) {
       th("News", "news.score", sortKey) +
       `<th>30d Trend</th>` + th("Signal", "signal.score", sortKey) + rm + `</tr></thead><tbody>` +
       rows.map((a, i) => `<tr>
-        <td><div class="coin-cell">${a.image ? `<img src="${esc(a.image)}">` : ""}<span class="nm nm-link" data-chart-open="${esc(a.asset_id)}" title="Open this asset's chart">${esc(a.name)}</span><span class="sym">${esc(a.symbol)}</span></div></td>
+        <td><div class="coin-cell">${a.image ? `<img src="${esc(a.image)}" alt="">` : ""}<span class="nm nm-link" data-chart-open="${esc(a.asset_id)}" title="Open this asset's chart">${esc(a.name)}</span><span class="sym">${esc(a.symbol)}</span></div></td>
         <td><b>${fmtMoney(a.price)}</b></td>
         <td>${pctSpan(a.chg_24h, 2)}</td>
         ${isPse ? `<td class="muted">${a.value_traded ? fmtMoney(a.value_traded, true) : "—"}</td>` : ""}
@@ -2096,6 +2221,7 @@ function renderWatchlist(assets) {
         ${isPse ? "" : `<td><button class="del-btn" data-rm="${esc(a.asset_id)}">✕</button></td>`}
       </tr>`).join("") + "</tbody>";
   }
+  hideEmptyColumns(wt);
   rows.forEach((a, i) => {
     const cnv = document.getElementById("spark-" + i);
     if (cnv) drawSpark(cnv, a.sparkline);
@@ -2107,10 +2233,15 @@ function renderWatchlist(assets) {
   });
   bindSort(wt, sortKey, () => renderWatchlist(assets));
 
-  // signal cards: holdings + anything with a non-HOLD signal (capped)
-  const withSig = assets.filter(a => a.signal && a.signal.action !== "WAIT");
+  // signal cards: holdings + anything with a non-HOLD signal (capped) -
+  // narrowed by the same filter as the table above
+  const withSig = matches.filter(a => a.signal && a.signal.action !== "WAIT");
   const interesting = withSig.filter(a => a.signal.action !== "HOLD");
   const shown = (interesting.length ? interesting : withSig).slice(0, 24);
+  if (filter && !shown.length) {
+    document.getElementById("signal-grid").innerHTML =
+      '<div class="empty-note">No signal cards match this filter.</div>';
+  } else
   document.getElementById("signal-grid").innerHTML = shown.map(a => {
     const s = a.signal;
     const ind = (s && s.indicators) || {};
@@ -2120,7 +2251,7 @@ function renderWatchlist(assets) {
     if (ind.macd_hist != null) chips.push(`MACD ${ind.macd_hist >= 0 ? "▲" : "▼"}`);
     return `<div class="signal-card">
       <div class="sig-head">
-        <div class="sig-coin">${a.image ? `<img src="${esc(a.image)}">` : ""}${esc(a.name)}
+        <div class="sig-coin">${a.image ? `<img src="${esc(a.image)}" alt="">` : ""}${esc(a.name)}
           <span class="muted">${fmtMoney(a.price)}</span></div>
         <div class="head-right">${sigBadge(s)}${s && s.action !== "WAIT" ? scorePill(s.score) : ""}</div>
       </div>
@@ -2155,9 +2286,10 @@ function setupWatchTools() {
 
 async function loadCharts() {
   await fillAssetCombo(chartCombo);
-  const saved = state.chartAsset[state.market];
+  let saved = state.chartAsset[state.market];
+  if (!saved) saved = await topHoldingId("chart");
   if (saved) chartCombo.set(saved, (state.chartMeta || {})[state.market]);
-  state.chartAsset[state.market] = chartCombo.value;
+  state.chartAsset[state.market] = saved || chartCombo.value;
   renderHoldingChips("chart-holdings",
     h => state.chartAsset[state.market] === h.asset_id,
     (aid, hm) => {
@@ -2184,6 +2316,58 @@ async function drawHistory() {
     ? { year: "numeric", month: "short" }
     : { month: "short", day: "numeric", hour: "2-digit" };
 
+  // your own trades belong on the chart: each recorded buy/sell as a marker
+  // at its date, and a dashed line at your average buy price
+  let tradeSets = [];
+  if (pts.length > 1) {
+    try {
+      const [txs, port] = await Promise.all([api(M() + "/transactions"), api(M() + "/portfolio")]);
+      const mine = (txs || []).filter(t => t.asset_id === aid && t.type !== "Adjust");
+      const at = (ms) => {
+        if (ms < pts[0][0] || ms > pts[pts.length - 1][0]) return -1;
+        let i = 0;
+        while (i < pts.length - 1 && pts[i][0] < ms) i++;
+        // the NEAREST bucket: daily buckets are stamped at their start, so an
+        // afternoon trade belongs to its own day, not the next one
+        if (i > 0 && Math.abs(pts[i - 1][0] - ms) < Math.abs(pts[i][0] - ms)) i--;
+        return i;
+      };
+      const txMs = (ts) => {
+        const s = String(ts);
+        // stamps carry Manila wall time; pin the zone so every viewer's
+        // markers land on the same candles
+        return new Date(s.length > 10 ? s.replace(" ", "T") + "+08:00" : s + "T12:00+08:00").getTime();
+      };
+      const mk = (type, color, rot) => {
+        const data = Array(pts.length).fill(null), tips = {};
+        mine.filter(t => t.type === type).forEach(t => {
+          const i = at(txMs(t.ts));
+          if (i >= 0) {
+            data[i] = t.price;   // several trades in one bucket: the marker sits at the last, the tooltip lists them all
+            const line = `${type} ${fmtQty(Math.abs(t.quantity))} @ ${fmtMoney(t.price)} (${String(t.ts).slice(0, 10)})`;
+            tips[i] = tips[i] ? [...tips[i], line] : [line];
+          }
+        });
+        return data.some(v => v != null)
+          ? [{ label: "your " + type.toLowerCase() + "s", data, showLine: false, pointStyle: "triangle",
+               pointRotation: rot, pointRadius: 6, pointHoverRadius: 8, borderColor: color,
+               backgroundColor: color, _tips: tips }] : [];
+      };
+      tradeSets = [...mk("Buy", "#22c55e", 0), ...mk("Sell", "#ef4444", 180)];
+      const held = ((port || {}).holdings || []).find(x => x.asset_id === aid);
+      if (held && held.qty > 1e-9 && held.avg_buy) {
+        const lo = Math.min(...pts.map(p => p[1])), hi = Math.max(...pts.map(p => p[1]));
+        // far outside this window the line would flatten the whole chart's
+        // scale - the Holdings table carries the figure in that case
+        if (held.avg_buy >= lo * 0.85 && held.avg_buy <= hi * 1.15) {
+          tradeSets.push({ label: "your avg buy " + fmtMoney(held.avg_buy),
+            data: Array(pts.length).fill(held.avg_buy), borderColor: "#8b93a7",
+            borderDash: [6, 5], pointRadius: 0, borderWidth: 1.5, fill: false, tension: 0 });
+        }
+      }
+    } catch (e) { /* the price line stands on its own */ }
+  }
+
   makeChart("history-chart", {
     type: "line",
     data: {
@@ -2193,18 +2377,20 @@ async function drawHistory() {
         data: pts.map(p => p[1]),
         borderColor: "#60a5fa", backgroundColor: "rgba(96,165,250,.08)",
         fill: true, pointRadius: 0, borderWidth: 2, tension: .2,
-      }],
+      }, ...tradeSets],
     },
     options: {
       maintainAspectRatio: false, interaction: { mode: "index", intersect: false },
-      plugins: { legend: { display: false },
+      plugins: { legend: { display: tradeSets.length > 0, labels: { boxWidth: 12, usePointStyle: true } },
         tooltip: { callbacks: {
           // long ranges label the axis by month — the tooltip shows the
           // point's actual date so no day is unreachable
           title: items => longRange
             ? new Date(pts[items[0].dataIndex][0]).toLocaleDateString([], { year: "numeric", month: "short", day: "numeric" })
             : items[0].label,
-          label: c => fmtMoney(c.parsed.y) } } },
+          label: c => c.dataset._tips
+            ? c.dataset._tips[c.dataIndex]
+            : (c.dataset.borderDash ? c.dataset.label : fmtMoney(c.parsed.y)) } } },
       scales: { x: { ticks: { maxTicksLimit: 8, maxRotation: 0 } },
                 y: { ticks: { callback: v => fmtMoney(v, true) },
                      // a stock that never trades is a perfectly flat series;
@@ -2273,7 +2459,7 @@ function newsItemHtml(it) {
   }).join(" ");
   // asset chips: tracked names this story mentions (💼 = one you hold)
   const mine = new Set([...(it._mine || []), ...(it.held || [])]);
-  const impactChip = it.impact != null && (state.newsOrder === "impact" || it._digest)
+  const impactChip = it.impact != null
     ? `<span class="badge sec-chip impact-chip" title="How likely this is to move the market or what you hold (0-100): ${esc((it.impact_why || []).join("; ") || "general news")}">Impact ${it.impact}</span>` : "";
   const wideChip = (it.wide || []).length
     ? `<span class="badge sec-chip" title="Touches a driver that moves the whole market">🌐 ${esc(it.wide.slice(0, 2).join(", "))}</span>` : "";
@@ -2380,18 +2566,37 @@ async function loadNews() {
     sum.style.display = "none";
   }
   const stripShowing = scoped && sum.style.display !== "none";
+  state._newsItems = items;
+  const newsKey = state.market + "|" + state.newsScope + "|" + src + "|" + state.newsOrder;
+  if (state._newsKey !== newsKey) { state._newsKey = newsKey; state.newsShow = 25; }
+  renderNewsList({ total: n.items.length, scoped, anyHeld, src, stripShowing });
+}
+
+// the list itself: first 25, more on demand, searched without refetching
+function renderNewsList(ctx) {
+  ctx = state._newsCtx = ctx || state._newsCtx || { total: 0 };
+  const q = (document.getElementById("news-search").value || "").trim().toUpperCase();
+  let items = state._newsItems || [];
+  if (q) items = items.filter(it =>
+    (it.title || "").toUpperCase().includes(q) || (it.summary || "").toUpperCase().includes(q));
+  const page = items.slice(0, state.newsShow || 25);
+  const more = document.getElementById("news-more");
+  more.style.display = items.length > page.length ? "" : "none";
+  more.textContent = `Load more (${items.length - page.length} not shown)`;
   document.getElementById("news-list").innerHTML =
-    !n.items.length
+    !ctx.total
       ? '<div class="empty-note">Fetching news… the first load takes a minute or two.</div>'
-      : items.length
-        ? items.map(newsItemHtml).join("")
-        : !scoped
-          ? '<div class="empty-note">Fetching news… the first load takes a minute or two.</div>'
-          : !anyHeld
-            ? '<div class="empty-note">You don\'t hold anything in this market yet — once you do, news about your holdings collects here.</div>'
-            : stripShowing
-              ? '<div class="empty-note">No stories to list right now — the scores above summarize the last few days of coverage.</div>'
-              : `<div class="empty-note">Nothing in this week's news mentions what you hold${src ? " (from this source)" : ""} — quiet weeks are normal.</div>`;
+      : page.length
+        ? page.map(newsItemHtml).join("")
+        : q
+          ? '<div class="empty-note">Nothing in the loaded stories matches that search.</div>'
+          : !ctx.scoped
+            ? '<div class="empty-note">Fetching news… the first load takes a minute or two.</div>'
+            : !ctx.anyHeld
+              ? '<div class="empty-note">You don\'t hold anything in this market yet — once you do, news about your holdings collects here.</div>'
+              : ctx.stripShowing
+                ? '<div class="empty-note">No stories to list right now — the scores above summarize the last few days of coverage.</div>'
+                : `<div class="empty-note">Nothing in this week's news mentions what you hold${ctx.src ? " (from this source)" : ""} — quiet weeks are normal.</div>`;
 }
 
 /* ---------------------------------------------------------- tabs & boot */
@@ -2508,21 +2713,77 @@ const BLANK_ON_SWITCH = ["header-stats", "pv-pl", "coming-up", "macro-stats", "m
   "market-summary-2", "global-stats", "dash-gainers", "dash-losers", "advisor-briefing",
   "advisor-movers", "advisor-updated", "wallet-live", "market-cards", "watch-holdings",
   "signal-grid", "chart-holdings", "pred-holdings", "pred-analyst", "news-holdings-summary",
-  "pred-up", "pred-down", "dash-news-note", "pred-score"];
+  "pred-up", "pred-down", "dash-news-note", "pred-score", "advisor-cash-note"];
 
 const _tabMkt = {};   // tab -> the market it last rendered
 
-function switchTab(name) {
+// each tab is part of the address (#/trades, #/predictions, ...) so views can
+// be bookmarked, shared, opened in new windows and walked with Back
+const TAB_HASH = { dashboard: "dashboard", advisor: "advisor", portfolio: "trades", market: "market",
+  watchlist: "watchlist", charts: "charts", predict: "predictions", news: "news" };
+const HASH_TAB = Object.fromEntries(Object.entries(TAB_HASH).map(([t, h]) => [h, t]));
+
+function switchTab(name, opts) {
+  if (name === state.tab && !(opts && (opts.fromHistory || opts.boot))) { refresh(); return; }
+  if (!(opts && (opts.fromHistory || opts.boot))) {
+    try {
+      // remember where the outgoing view was scrolled, then give the new one
+      // its own history entry
+      history.replaceState({ tab: state.tab, scroll: window.scrollY }, "", "#/" + (TAB_HASH[state.tab] || state.tab));
+      history.pushState({ tab: name, scroll: 0 }, "", "#/" + (TAB_HASH[name] || name));
+    } catch (e) { }
+  }
   state.tab = name;
   localStorage.setItem("tab", name);
   document.querySelectorAll("nav#tabs button").forEach(b =>
     b.classList.toggle("active", b.dataset.tab === name));
   document.querySelectorAll(".tab").forEach(s =>
     s.classList.toggle("active", s.id === "tab-" + name));
+  const h1 = document.getElementById("page-h1");
+  const tabBtn = document.querySelector(`nav#tabs button[data-tab="${name}"]`);
+  if (h1 && tabBtn) h1.textContent = "Asset Tracker — " + tabBtn.textContent;
   // a tab still showing another market's rows sheds them before it loads
   showSkeletons(name, _tabMkt[name] !== undefined && _tabMkt[name] !== state.market);
+  window.scrollTo({ top: (opts && opts.scroll) || 0 });
+  const activeBtn = document.querySelector("nav#tabs button.active");
+  if (activeBtn && activeBtn.scrollIntoView) activeBtn.scrollIntoView({ block: "nearest", inline: "nearest" });
   refresh();
 }
+
+if ("scrollRestoration" in history) history.scrollRestoration = "manual";
+window.addEventListener("popstate", (e) => {
+  const name = (e.state && e.state.tab) || HASH_TAB[(location.hash || "").replace(/^#\/?/, "")];
+  if (name && loaders[name]) switchTab(name, { fromHistory: true, scroll: (e.state && e.state.scroll) || 0 });
+});
+
+document.querySelector(".skip-link").addEventListener("click", (e) => {
+  e.preventDefault();   // keep the #/tab address intact
+  const m = document.getElementById("main");
+  m.tabIndex = -1;
+  m.focus();
+  m.scrollIntoView();
+});
+
+const _tabsNav = document.getElementById("tabs");
+function _tabsFade() {
+  _tabsNav.classList.toggle("can-scroll",
+    _tabsNav.scrollLeft + _tabsNav.clientWidth < _tabsNav.scrollWidth - 1);
+}
+_tabsNav.addEventListener("scroll", _tabsFade, { passive: true });
+addEventListener("resize", _tabsFade);
+_tabsFade();
+
+// P0-5: past 200px of scroll the header condenses to one line (desktop only)
+let _hdrCompact = false;
+window.addEventListener("scroll", () => {
+  // engage past 200, release only under 120: no flapping when compacting
+  // itself changes the page height near the threshold
+  const want = _hdrCompact ? window.scrollY > 120 : window.scrollY > 200;
+  if (want !== _hdrCompact) {
+    _hdrCompact = want;
+    document.querySelector("header").classList.toggle("compact", want);
+  }
+}, { passive: true });
 
 function switchMarket(mkt) {
   if (mkt === state.market) return;
@@ -2539,6 +2800,13 @@ function switchMarket(mkt) {
   document.querySelectorAll("#mkt-switch button").forEach(b =>
     b.classList.toggle("active", b.dataset.market === mkt));
   state.predMovers = null;   // never repaint the old market's movers
+  state.txShow = 50;
+  state._newsItems = null;
+  state._newsCtx = null;
+  const nMore = document.getElementById("news-more");
+  if (nMore) nMore.style.display = "none";
+  const nSearch = document.getElementById("news-search");
+  if (nSearch) nSearch.value = "";
   tickClock();
   // the old market disappears on the tap: shimmer the active tab, blank the
   // rest, drop its charts
@@ -2644,6 +2912,8 @@ document.getElementById("watch-table").addEventListener("click", (e) => {
     switchTab("charts");
   }
 });
+document.getElementById("news-search").oninput = () => { state.newsShow = 25; renderNewsList(); };
+document.getElementById("news-more").onclick = () => { state.newsShow = (state.newsShow || 25) + 50; renderNewsList(); };
 document.getElementById("news-order").onchange = (e) => {
   state.newsOrder = e.target.value;
   localStorage.setItem("newsorder", state.newsOrder);
@@ -2687,11 +2957,25 @@ document.querySelectorAll("#pred-range button").forEach(b => b.onclick = () => {
   drawPrediction();
 });
 
+// the first render is most useful on the biggest thing you actually own
+async function topHoldingId(kind) {
+  try {
+    const p = await api(M() + "/portfolio");
+    const top = (p.holdings || []).filter(h => h.value > 0).sort((a, b) => b.value - a.value)[0];
+    if (!top) return null;
+    const meta = { symbol: top.symbol || "", name: top.name || "" };
+    if (kind === "chart") { state.chartMeta = state.chartMeta || {}; state.chartMeta[state.market] = meta; }
+    else { state.predMeta = state.predMeta || {}; state.predMeta[state.market] = meta; }
+    return top.asset_id;
+  } catch (e) { return null; }
+}
+
 async function loadPredict() {
   await fillAssetCombo(predCombo);
   state.predAsset = state.predAsset || {};
-  const saved = state.predAsset[state.market];
-  if (saved) predCombo.set(saved, (state.predMeta || {})[state.market]);
+  let saved = state.predAsset[state.market];
+  if (!saved) saved = await topHoldingId("pred");
+  if (saved) { state.predAsset[state.market] = saved; predCombo.set(saved, (state.predMeta || {})[state.market]); }
   else state.predAsset[state.market] = predCombo.value;
   loadPredHoldings();
   drawPrediction();
@@ -2802,7 +3086,7 @@ async function drawPrediction() {
       { label: "likely low", data: pad(d.proj.map(x => x.lo)), borderColor: "transparent",
         pointRadius: 0, fill: false },
       { label: "Likely range (~68%)", data: pad(d.proj.map(x => x.hi)), borderColor: "transparent",
-        backgroundColor: "rgba(247,147,26,.18)", pointRadius: 0, fill: "-1" },
+        backgroundColor: "rgba(247,147,26,.34)", pointRadius: 0, fill: "-1" },
       { label: "Projected path", data: pad(d.proj.map(x => x.center)), borderColor: "#f7931a",
         borderDash: [6, 4], pointRadius: 0, borderWidth: 2 },
     ]},
@@ -2905,12 +3189,36 @@ async function loadUser() {
     state.diversity = me.diversity || "balanced";
     state.custom = me.custom_params || {};
     const el = document.getElementById("user-menu");
-    el.innerHTML =
-      `<span class="muted">${esc(me.name || me.email)}</span>` +
-      (me.admin ? ' <button class="mini-btn" id="invite-btn" title="Create an invite code for a friend">+ Invite</button>'
-                + ' <button class="mini-btn" id="members-btn" title="See who has joined and which invite codes are used">Members</button>' : "") +
-      ' <button class="mini-btn" id="account-btn" title="Trading style and password">Account</button>' +
-      ' <a class="mini-btn" href="/logout" title="Sign out">Logout</a>';
+    el.innerHTML = `<div class="user-dd">
+      <button class="mini-btn" id="user-dd-btn" aria-expanded="false">👤 ${esc(me.name || me.email)} ▾</button>
+      <div class="user-dd-menu" id="user-dd-menu" hidden>
+        ${me.admin ? '<button class="dd-item" id="invite-btn" title="Create an invite code for a friend">+ Invite a friend</button>'
+                   + '<button class="dd-item" id="members-btn" title="See who has joined and which invite codes are used">Members</button>' : ""}
+        <button class="dd-item" id="account-btn" title="Trading style, your own rules, clock and password">Account</button>
+        <button class="dd-item" id="tour-menu-btn" title="A 60-second walkthrough of the tabs">Take the quick tour</button>
+        <a class="dd-item" href="/logout">Logout</a>
+      </div></div>`;
+    const ddBtn = document.getElementById("user-dd-btn"), ddMenu = document.getElementById("user-dd-menu");
+    ddBtn.onclick = (e) => {
+      e.stopPropagation();
+      const open = ddMenu.hidden;
+      ddMenu.hidden = !open;
+      ddBtn.setAttribute("aria-expanded", String(open));
+    };
+    ddMenu.onclick = () => { ddMenu.hidden = true; ddBtn.setAttribute("aria-expanded", "false"); };
+    if (!document.body.dataset.ddClose) {
+      document.body.dataset.ddClose = "1";
+      document.addEventListener("click", () => {
+        const m = document.getElementById("user-dd-menu"), b = document.getElementById("user-dd-btn");
+        if (m && !m.hidden) { m.hidden = true; if (b) b.setAttribute("aria-expanded", "false"); }
+      });
+      document.addEventListener("keydown", (e) => {
+        if (e.key !== "Escape") return;
+        const m = document.getElementById("user-dd-menu"), b = document.getElementById("user-dd-btn");
+        if (m && !m.hidden) { m.hidden = true; if (b) { b.setAttribute("aria-expanded", "false"); b.focus(); } }
+      });
+    }
+    document.getElementById("tour-menu-btn").onclick = startTour;
     const inv = document.getElementById("invite-btn");
     if (inv) inv.onclick = async () => {
       const r = await api("/api/invites", { method: "POST" });
@@ -3010,6 +3318,9 @@ async function showAccount() {
       <input type="password" id="pw-current" autocomplete="current-password"></label>
     <label class="acct-field">New password (8+ characters)
       <input type="password" id="pw-new" autocomplete="new-password"></label>
+    <label class="acct-field">Confirm new password
+      <input type="password" id="pw-new2" autocomplete="new-password"></label>
+    <label class="style-opt"><input type="checkbox" id="pw-show"> <span>Show passwords</span></label>
     <button class="primary-btn small" id="pw-save">Update password</button>
     <div class="form-msg" id="pw-msg"></div>
   </div>`;
@@ -3078,9 +3389,17 @@ async function showAccount() {
     saveRules({});
   };
 
+  document.getElementById("pw-show").onchange = (e) => {
+    ["pw-current", "pw-new", "pw-new2"].forEach(id =>
+      document.getElementById(id).type = e.target.checked ? "text" : "password");
+  };
   document.getElementById("pw-save").onclick = async () => {
     const msg = document.getElementById("pw-msg");
     msg.textContent = "";
+    if (document.getElementById("pw-new").value !== document.getElementById("pw-new2").value) {
+      msg.innerHTML = '<span class="neg">The two new passwords don\'t match.</span>';
+      return;
+    }
     try {
       await api("/api/change_password", {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -3092,6 +3411,7 @@ async function showAccount() {
       msg.innerHTML = '<span class="pos">Password updated ✓</span>';
       document.getElementById("pw-current").value = "";
       document.getElementById("pw-new").value = "";
+      document.getElementById("pw-new2").value = "";
     } catch (e) { msg.innerHTML = `<span class="neg">${esc(e.message)}</span>`; }
   };
 }
@@ -3108,7 +3428,7 @@ async function showMembers() {
     <div class="table-wrap"><table>
       <thead><tr><th>Name</th><th>Email</th><th>Joined</th><th>Password</th><th></th></tr></thead>
       <tbody>${d.users.map(u => `<tr><td>${esc(u.name || "")}</td><td>${esc(u.email)}</td>
-        <td class="muted">${esc(u.created || "")}</td>
+        <td class="muted">${esc(u.created || "—")}</td>
         <td>${u.reset_code_locked
           ? '<span class="badge strong-sell" title="Five wrong tries paused that code for 15 minutes. Making a fresh one clears the pause immediately">CODE PAUSED</span> '
           : u.reset_requested
@@ -3116,14 +3436,15 @@ async function showMembers() {
           : u.reset_code_active
           ? '<span class="badge hold" title="A one-time code is out and unused — it expires 24h after you made it">CODE OUT</span> '
           : ""}<button class="mini-btn" data-reset="${u.id}"
-            title="Make a one-time password-reset code for ${esc(u.email)} — hand it to them yourself; it works once and expires in 24h">Reset code</button></td>
+            title="Make a one-time password-reset code for ${esc(u.email)} — hand it to them yourself; it works once and expires in 24h">Password reset code</button></td>
         <td>${u.is_admin ? '<span class="badge hold">ADMIN</span>' : ""}</td></tr>`).join("")}</tbody>
     </table></div>
     <div id="reset-code-out"></div>
     <div class="panel-head" style="margin-top:14px"><h3>Invite codes</h3></div>
     <div class="table-wrap"><table>
       <thead><tr><th>Code</th><th>Created</th><th>Status</th></tr></thead>
-      <tbody>${d.invites.map(i => `<tr><td><b>${esc(i.code)}</b></td>
+      <tbody>${d.invites.map(i => `<tr><td><b>${esc(i.code)}</b>
+          <button class="mini-btn" data-copy="${esc(i.code)}" title="Copy the full code">Copy</button></td>
         <td class="muted">${esc(i.created || "")}</td>
         <td>${i.used_by_email
           ? '<span class="muted">used by ' + esc(i.used_by_email) + " · " + esc(i.used_at || "") + "</span>"
@@ -3161,6 +3482,15 @@ async function showMembers() {
       if (typeof loadMacro === "function") loadMacro();
     } catch (e) { msg.innerHTML = `<span class="neg">${esc(e.message)}</span>`; }
   };
+  overlay.querySelectorAll("[data-copy]").forEach(b => b.onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(b.dataset.copy);
+      b.textContent = "Copied ✓";
+    } catch (e) {
+      b.textContent = "Copy failed — select it";
+    }
+    setTimeout(() => { b.textContent = "Copy"; }, 1800);
+  });
   document.getElementById("members-close").onclick = () => overlay.remove();
   overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
   overlay.querySelectorAll("[data-reset]").forEach(b => b.onclick = async () => {
@@ -3214,7 +3544,7 @@ const TOUR_STEPS = [
     text: "Every tracked asset with its technical read and a News score from −3 to +3. Sort the columns, filter by name — and once you hold something, its ticker appears as a one-tap chip up top." },
   { tab: "news", sel: "#news-scope", title: "News that's about YOU",
     text: "All news, or just the stories that touch your holdings — 💼 marks a story naming something you own. On the stock markets, sector-wide news that moves your kind of company is included too." },
-  { sel: "#account-btn", title: "Make it yours",
+  { sel: "#user-dd-btn", title: "Make it yours",
     text: "Set your trading style (day trader to income investor), aggressiveness, portfolio spread — or type your own rules (take-profit, stop, holding time, number of names) and the advisor enforces them. That's the loop: watch, decide, log. Welcome aboard! 📈" },
 ];
 let _tourIdx = -1;
@@ -3285,7 +3615,7 @@ async function _tourShow(i, hops) {
   _tourIdx = i;
   if (_tourObs) { _tourObs.disconnect(); _tourObs = null; }
   if (st.tab && state.tab !== st.tab) {
-    switchTab(st.tab);
+    switchTab(st.tab, { fromHistory: true });   // a guided walk isn't browsing history
     await new Promise(r => setTimeout(r, 900));
     if (gen !== _tourGen) return;   // ended (or moved on) while we waited
   }
@@ -3308,7 +3638,7 @@ async function _tourShow(i, hops) {
 function startTour() {
   _tourEnd();
   _tourReturnTab = localStorage.getItem("tab") || "dashboard";
-  switchTab("dashboard");
+  if (state.tab !== "dashboard") switchTab("dashboard", { fromHistory: true });
   setTimeout(() => _tourShow(0), 600);
 }
 document.addEventListener("keydown", (e) => {
@@ -3329,8 +3659,11 @@ addEventListener("scroll", () => {
 document.querySelectorAll("#mkt-switch button").forEach(b =>
   b.classList.toggle("active", b.dataset.market === state.market));
 loadUser();
-if (state.tab !== "dashboard") switchTab(state.tab);  // restore last tab
+const bootHashTab = HASH_TAB[(location.hash || "").replace(/^#\/?/, "")];
+if (bootHashTab) state.tab = bootHashTab;                 // a shared link wins
+if (state.tab !== "dashboard") switchTab(state.tab, { boot: true });  // restore last tab
 else { showSkeletons("dashboard"); refresh(); }
+try { history.replaceState({ tab: state.tab, scroll: 0 }, "", "#/" + (TAB_HASH[state.tab] || state.tab)); } catch (e) { }
 // first visit after registering: walk the new member through the app
 if (localStorage.getItem("tour") === "pending") {
   localStorage.setItem("tour", "done");

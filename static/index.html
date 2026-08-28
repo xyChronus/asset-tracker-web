@@ -3,13 +3,16 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Asset Tracker — an invite-only portfolio tracker for crypto, PSE and global stocks: live prices, signals, a plain-language advisor, and news that says why it matters.">
 <title>Asset Tracker</title>
 <link rel="stylesheet" href="/static/style.css">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📊</text></svg>">
 </head>
 <body>
+<a class="skip-link" href="#main">Skip to content</a>
 
 <header>
+  <h1 class="sr-only" id="page-h1">Asset Tracker — Dashboard</h1>
   <a class="corner-link" id="changelog-btn" title="What's new">Changelog</a>
   <div class="brand">📊 Asset Tracker</div>
   <div class="mkt-switch" id="mkt-switch">
@@ -22,7 +25,7 @@
     <option value="USD">USD $</option>
     <option value="PHP">PHP ₱</option>
   </select>
-  <div class="header-stats" id="header-stats"></div>
+  <div class="header-stats" id="header-stats" aria-live="polite" aria-atomic="true"></div>
   <span class="mkt-clock" id="mkt-clock"></span>
   <div class="status-wrap"><span class="status-dot" id="status-dot"></span><span class="status-text" id="status-text">connecting…</span></div>
   <div class="user-menu" id="user-menu"></div>
@@ -39,7 +42,7 @@
   <button data-tab="news">News</button>
 </nav>
 
-<main>
+<main id="main">
 
 <!-- ======================= DASHBOARD ======================= -->
 <section id="tab-dashboard" class="tab active">
@@ -142,6 +145,10 @@
     <div class="panel-head"><h3>Daily Briefing</h3><span class="muted small-note" id="advisor-updated"></span></div>
     <p class="summary-text" id="advisor-briefing">Analyzing the market, the news and your holdings…</p>
     <div class="mini-stats" id="advisor-stats"></div>
+    <p class="muted small-note">Advisor scores blend the technicals with news, fundamentals, analyst
+      reads and what you already hold — so a card here can read differently from the pure-technical
+      number on the Watchlist tab. Two lenses, one market; neither is an instruction.</p>
+    <div id="advisor-cash-note" class="muted small-note" style="display:none"></div>
   </div>
   <div class="panel-head standalone" id="movers-head" style="display:none">
     <h3>🌡️ Hot &amp; Cold</h3>
@@ -178,7 +185,7 @@
       <div class="chart-controls">
         <button class="link-btn" id="pred-to-chart" title="The same asset's price history">← price history 📈</button>
         <div class="combo" id="pred-coin-combo">
-          <input type="text" class="combo-input" id="pred-coin-input" placeholder="Type a name or ticker…" autocomplete="off" spellcheck="false">
+          <input type="text" class="combo-input" id="pred-coin-input" placeholder="Type a name or ticker…" aria-label="Choose an asset to project" autocomplete="off" spellcheck="false">
           <input type="hidden" id="pred-coin">
           <div class="combo-list" id="pred-coin-list"></div>
         </div>
@@ -252,8 +259,8 @@
             <select id="adj-asset"></select>
           </div>
           <div class="input-row">
-            <input type="number" step="any" min="0" id="adj-qty" placeholder="true quantity (0 = none)">
-            <input type="number" step="any" min="0" id="adj-avg" placeholder="avg buy price (optional)">
+            <input type="number" step="any" min="0" id="adj-qty" placeholder="true quantity" aria-label="True quantity held (0 = none)">
+            <input type="number" step="any" min="0" id="adj-avg" aria-label="Average buy price (optional)" placeholder="avg buy (optional)">
             <button type="button" id="adj-save" class="mini-btn">Adjust</button>
           </div>
         </label>
@@ -290,13 +297,24 @@
         <span class="muted small-note">Learn from your record — computed from your closed trades.</span>
       </div>
       <div class="mini-stats" id="trade-stats"><div class="empty-note">Close a trade to start your record.</div></div>
-      <div class="panel-head" style="margin-top:14px"><h3>Realized Profit / Loss</h3></div>
+      <div class="panel-head" style="margin-top:14px"><h3>Realized Profit / Loss</h3>
+      <button class="mini-btn" id="pl-csv" title="Download this table as a CSV — amounts in the market's own currency">Download CSV</button></div>
       <div class="table-wrap"><table id="closed-table"></table></div>
     </div>
   </div>
   <div class="panel">
-    <div class="panel-head"><h3>Transaction History</h3></div>
+    <div class="panel-head"><h3>Transaction History</h3>
+      <button class="mini-btn" id="tx-csv" title="Download every row matching the current filter (not just the page shown) as a CSV — amounts in the market's own currency">Download CSV</button></div>
+    <div class="tx-tools">
+      <select id="tx-f-asset" aria-label="Filter by asset"><option value="">All assets</option></select>
+      <select id="tx-f-type" aria-label="Filter by type">
+        <option value="">All types</option><option>Buy</option><option>Sell</option><option>Adjust</option>
+      </select>
+      <input type="date" id="tx-f-from" aria-label="From date" title="From date">
+      <input type="date" id="tx-f-to" aria-label="To date" title="To date">
+    </div>
     <div class="table-wrap"><table id="tx-table"></table></div>
+    <div class="input-row"><button class="mini-btn" id="tx-more" style="display:none">Show 50 more</button></div>
   </div>
 </section>
 
@@ -320,14 +338,17 @@
     <div class="panel-head">
       <h3 id="watch-title">Watchlist</h3>
       <div class="watch-tools">
-        <input type="text" id="watch-filter" placeholder="Filter…" class="filter-input" style="display:none">
+        <input type="text" id="watch-filter" placeholder="Filter…" aria-label="Filter the watchlist" class="filter-input" style="display:none">
         <form id="watch-add" class="inline-form">
-          <input type="text" id="watch-query" placeholder="Add (name or ticker)…">
+          <input type="text" id="watch-query" placeholder="Add (name or ticker)…" aria-label="Add an asset by name or ticker">
           <button type="submit" class="primary-btn small">Add</button>
         </form>
       </div>
     </div>
     <div class="muted small-note" id="watch-note"></div>
+    <div class="muted small-note">Signal numbers on this tab are the pure technical read — price
+      action only (trend, RSI, momentum, volume), with ±4 or more reading as strong. The Advisor blends
+      more inputs, so its scores can differ — that's two lenses, not a contradiction.</div>
     <div id="watch-holdings" class="pred-holdings"></div>
     <div class="table-wrap tall-wrap"><table id="watch-table"></table></div>
   </div>
@@ -345,7 +366,7 @@
       <div class="chart-controls">
         <button class="link-btn" id="chart-to-pred" title="The same asset on the Predictions tab">projection 🔮 →</button>
         <div class="combo" id="chart-coin-combo">
-          <input type="text" class="combo-input" id="chart-coin-input" placeholder="Type a name or ticker…" autocomplete="off" spellcheck="false">
+          <input type="text" class="combo-input" id="chart-coin-input" placeholder="Type a name or ticker…" aria-label="Choose an asset to chart" autocomplete="off" spellcheck="false">
           <input type="hidden" id="chart-coin">
           <div class="combo-list" id="chart-coin-list"></div>
         </div>
@@ -374,6 +395,8 @@
           <button data-nscope="all" class="active">All news</button>
           <button data-nscope="holdings">Your holdings</button>
         </span>
+        <input type="text" id="news-search" class="filter-input" placeholder="Search headlines…"
+          aria-label="Search the loaded headlines">
         <select id="news-order" title="How to order the stories">
           <option value="latest">Latest first</option>
           <option value="impact">Most likely to matter</option>
@@ -391,6 +414,7 @@
       together. A ranking of attention, not a trade signal.</p>
     <div id="news-holdings-summary" style="display:none"></div>
     <div id="news-list" class="news-list"></div>
+    <div class="input-row"><button class="mini-btn" id="news-more" style="display:none">Load more</button></div>
   </div>
 </section>
 
@@ -402,7 +426,7 @@
   · <button class="link-btn" id="tour-btn">Take the quick tour</button>
 </footer>
 
-<div id="toast"></div>
+<div id="toast" role="status" aria-live="polite"></div>
 <script src="/static/chart.umd.js"></script>
 <script src="/static/app.js"></script>
 </body>

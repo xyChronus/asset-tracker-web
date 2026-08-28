@@ -327,7 +327,7 @@ def _industry_news(assets, fundamentals, news_items, now_ms, per_asset_news):
 
 # ------------------------------------------------------- fundamentals voting
 
-def _value_votes(f, price):
+def _value_votes(f, price, cur_word="peso/dollar"):
     """Valuation-based votes for stocks. Returns (votes, reasons)."""
     votes = 0.0
     reasons = []
@@ -337,7 +337,7 @@ def _value_votes(f, price):
     if pe is not None and pe > 0:
         if pe <= 10:
             votes += 2
-            reasons.append(f"P/E {pe:.1f} - cheap; you pay little for each peso/dollar of profit")
+            reasons.append(f"P/E {pe:.1f} - cheap; you pay little for each {cur_word} of profit")
         elif pe <= 18:
             votes += 1
             reasons.append(f"P/E {pe:.1f} - reasonably valued")
@@ -838,7 +838,7 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
         h = hold_by_id.get(aid)
         price = a.get("price") or (h or {}).get("price")
         f = fundamentals.get(aid)
-        value_votes, value_reasons = _value_votes(f, price)
+        value_votes, value_reasons = _value_votes(f, price, "peso" if currency == "₱" else "dollar")
         if style == "income" and not is_crypto:
             # an income investor buys the dividend stream (crypto pays none -
             # the style simply behaves like a long-term investor there).
@@ -1252,7 +1252,7 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
                     f"(~{currency}{min_buy:,.0f}"
                     + (f", about {min_buy / capital * 100:.0f}% of your {wallet_word}"
                        if capital > 0 else "")
-                    + ") - spending the last few pesos/dollars just feeds fees. "
+                    + f") - spending the last few {'pesos' if currency == '₱' else 'dollars'} just feeds fees. "
                     "Sit tight, or free up funds by rotating out of a weaker holding.")
             elif good_setup:
                 action = "BUY"

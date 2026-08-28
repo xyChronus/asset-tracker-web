@@ -3711,7 +3711,7 @@ def api_status(market):
     else:
         quotes_updated = db.kv_get("crypto:watch_markets", {}).get("updated")
         err = coingecko.last_error
-    return jsonify({"quotes_updated": quotes_updated,
+    return jsonify({"quotes_updated": quotes_updated, "open": market_session(market)[0],
                     "signals_updated": db.kv_get(f"{market}:signals", {}).get("updated"),
                     "news_updated": db.kv_get(f"{market}:news_updated"),
                     "source_error": err})
