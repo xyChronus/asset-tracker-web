@@ -545,9 +545,13 @@ async function loadHeader() {
 function planCell(h) {
   if (!h.tp_price && !h.sl_price && !h.note && !h.trail_pct && !h.trail_buy_pct) {
     // no personal plan yet: lead with the AI's style-tuned suggestion
-    if (h.sugg_tp) return `<button class="tgt-btn plain" data-tgt="${esc(h.asset_id)}"
-        title="Suggested (+${h.sugg_tp_pct}% / −${h.sugg_sl_pct}%${h.sugg_rr ? ", risk:reward 1:" + h.sugg_rr : ""}): ${esc(h.sugg_why || "")} — click to adopt or adjust">
-      <span class="tgt-chip tgt-sugg">🎯 ${fmtMoney(h.sugg_tp)}</span><span class="tgt-chip tgt-sugg">🛑 ${fmtMoney(h.sugg_sl)}</span></button>`;
+    if (h.sugg_tp) {
+      const tpReached = h.price != null && h.price >= h.sugg_tp;
+      const slBreached = h.price != null && h.price <= h.sugg_sl;
+      return `<button class="tgt-btn plain" data-tgt="${esc(h.asset_id)}"
+        title="Suggested (+${h.sugg_tp_pct}% / −${h.sugg_sl_pct}%${h.sugg_rr ? ", risk:reward 1:" + h.sugg_rr : ""}): ${esc(h.sugg_why || "")}${tpReached ? " · the 🎯 level is already reached — the Advisor reads this as take-profit territory" : ""}${slBreached ? " · the 🛑 level is already breached" : ""} — click to adopt or adjust">
+      <span class="tgt-chip tgt-sugg ${tpReached ? "tgt-hit-tp" : ""}">🎯 ${fmtMoney(h.sugg_tp)}</span><span class="tgt-chip tgt-sugg ${slBreached ? "tgt-hit-sl" : ""}">🛑 ${fmtMoney(h.sugg_sl)}</span></button>`;
+    }
     return `<button class="mini-btn tgt-btn" data-tgt="${esc(h.asset_id)}" title="Set a take-profit / stop-loss plan">＋ plan</button>`;
   }
   const bits = [];

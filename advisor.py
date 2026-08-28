@@ -627,11 +627,14 @@ _SL_Z = 1.4          # stop sits ~1.4 typical horizon-moves away
 _SNAP_GAP = 0.25     # snapped levels sit this fraction of a daily move beyond the structure
 
 
-def suggest_plan(price, style, prim=None, wk52_high=None, style_label=None, custom=None):
+def suggest_plan(price, style, prim=None, wk52_high=None, style_label=None, custom=None,
+                 anchor=None):
     """Data-deduced TP/SL suggestion. Returns
     {tp, sl, tp_pct, sl_pct, rr, why} or None (no price).
     A member's own tp_pct/sl_pct rules take precedence over the data-deduced
-    levels - their rule IS the plan, stated as such."""
+    levels - their rule IS the plan, stated as such. For a HELD position pass
+    anchor=average buy: the advisor fires the rule against the average, so the
+    shown levels must sit exactly where it will actually trigger."""
     if not price or price <= 0:
         return None
     style = STYLE_ALIASES.get(style, style)
@@ -640,12 +643,15 @@ def suggest_plan(price, style, prim=None, wk52_high=None, style_label=None, cust
         sp0 = STYLE_PARAMS.get(style) or STYLE_PARAMS[DEFAULT_STYLE]
         tp_pct = c.get("tp_pct") or sp0["tp_pct"]
         sl_pct = c.get("sl_pct") or round(tp_pct / 2.0, 2)
+        base = anchor if anchor and anchor > 0 else price
         why = (f"+{tp_pct:g}% {'your own target' if c.get('tp_pct') else sp0['label'] + ' default'}"
-               f" / -{sl_pct:g}% {'your own stop' if c.get('sl_pct') else 'half the target'}")
-        return {"tp": price * (1 + tp_pct / 100), "sl": price * (1 - sl_pct / 100),
+               f" / -{sl_pct:g}% {'your own stop' if c.get('sl_pct') else 'half the target'}"
+               + (f", measured from your {_fmt_price(base)} average buy - where the advisor "
+                  "actually triggers" if anchor and anchor > 0 else ""))
+        return {"tp": base * (1 + tp_pct / 100), "sl": base * (1 - sl_pct / 100),
                 "tp_pct": round(tp_pct, 1), "sl_pct": round(sl_pct, 1),
                 "rr": round(tp_pct / sl_pct, 1) if sl_pct else None,
-                "why": why, "custom": True}
+                "why": why, "custom": True, "anchored": bool(anchor and anchor > 0)}
     ps = PLAN_STYLE.get(style) or PLAN_STYLE[DEFAULT_STYLE]
     sp = STYLE_PARAMS.get(style) or STYLE_PARAMS[DEFAULT_STYLE]
     label = style_label or sp["label"]

@@ -1808,8 +1808,11 @@ def portfolio_state(market, user):
         sgn = signals_data.get(aid)
         # data-deduced suggestion: the asset's own volatility + structure,
         # scaled to the user's style horizon (anchored on the current price)
+        # a held position's rule-based levels anchor on the AVERAGE BUY -
+        # that is where the advisor's take-profit / stop actually fires
         sugg = adv.suggest_plan(price, style, prim=(sgn or {}).get("plan"),
-                                wk52_high=wk52.get(aid), custom=custom) if price else None
+                                wk52_high=wk52.get(aid), custom=custom,
+                                anchor=(p["cost"] / p["qty"]) if p.get("qty") else None) if price else None
         holdings.append({**p, "symbol": m.get("symbol", ""), "image": m.get("image"),
                          "price": price, "avg_buy": p["cost"] / p["qty"], "value": value,
                          "chg_24h": chg24, "chg_7d": chg7, "chg_30d": chg30,
