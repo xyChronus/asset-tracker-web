@@ -2864,6 +2864,24 @@ const chartCombo = setupCombo("chart-coin", (v) => {
   drawHistory();
 });
 
+const walletAdjust = async (sign) => {
+  const msg = document.getElementById("wallet-msg");
+  msg.textContent = "";
+  const v = parseFloat(document.getElementById("wallet-delta").value);
+  if (!(v > 0)) { msg.innerHTML = '<span class="neg">Enter an amount first.</span>'; return; }
+  try {
+    const r = await api(M() + "/wallet", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ add: sign * v }),
+    });
+    document.getElementById("wallet-delta").value = "";
+    msg.innerHTML = `<span class="pos">${sign > 0 ? "Added" : "Withdrew"} ${fmtMoney(v)} — the budget is now ${fmtMoney(r.budget)} ✓</span>`;
+    loadPortfolio(); loadHeader();
+  } catch (e) { msg.innerHTML = `<span class="neg">${esc(e.message)}</span>`; }
+};
+document.getElementById("wallet-add").onclick = () => walletAdjust(1);
+document.getElementById("wallet-take").onclick = () => walletAdjust(-1);
+
 document.getElementById("wallet-save").onclick = async () => {
   const msg = document.getElementById("wallet-msg");
   msg.textContent = "";

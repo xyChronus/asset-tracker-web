@@ -2594,6 +2594,29 @@ def api_set_cash(market):
 def api_wallet(market):
     _check(market)
     d = request.get_json(force=True)
+    # {"add": +/-amount}: adjust the budget by a deposit or withdrawal without
+    # retyping the total. One atomic UPDATE, so two adjustments can never lose
+    # each other's money.
+    if d.get("add") not in (None, ""):
+        try:
+            delta = float(d["add"])
+        except (TypeError, ValueError):
+            return jsonify({"error": "enter a plain number, e.g. 1000"}), 400
+        row = db.conn().execute(
+            "UPDATE wallets SET budget = budget + %s"
+            " WHERE user_id=%s AND market=%s AND budget IS NOT NULL AND budget + %s >= 0"
+            " RETURNING budget", (delta, uid(), market, delta)).fetchone()
+        if row is None:
+            cur = db.conn().execute(
+                "SELECT budget FROM wallets WHERE user_id=%s AND market=%s",
+                (uid(), market)).fetchone()
+            if not cur or cur["budget"] is None:
+                return jsonify({"error": "set a starting budget first - there's nothing to adjust yet"}), 400
+            return jsonify({"error": f"that would take the budget below zero (it's {cur['budget']:g} now)"}), 400
+        budget = float(row["budget"])
+        _record_budget(uid(), market, budget)
+        _invalidate_advisor(market, uid())
+        return jsonify({"ok": True, "budget": budget})
     raw = d.get("budget")
     if raw in (None, ""):
         budget = None
@@ -2609,7 +2632,7 @@ def api_wallet(market):
                       (uid(), market, budget))
     _record_budget(uid(), market, budget)
     _invalidate_advisor(market, uid())
-    return jsonify({"ok": True})
+    return jsonify({"ok": True, "budget": budget})
 
 
 def _record_budget(user, market, budget):

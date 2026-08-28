@@ -477,3 +477,6 @@ Web-only items are marked **(web)**.
 ### Changed
 - **Swing closes by the end of its trading week.** The Swing style's time stop is no longer "7 days": a position closes by its trading week's final session — the coming Friday (pulled earlier when Friday is a market holiday), with a Friday or weekend entry running to the next week's close so a just-opened position is never same-session force-sold. Classic swing: nothing rides past its week by default. The card names the day it was opened; the strength exception ("let strong ones run") and a typed *Close within (days)* rule still override it.
 - **Stop/target hits while the market is closed say so.** Today's Plan now adds: the hit is against the last traded price, an actual sell can only happen when trading resumes, and prices can gap between close and open — re-check before logging anything.
+## [1.39.1] — 2026-08-26 — Add to the wallet without retyping it
+### Added
+- **Add / Withdraw on the Wallet.** Deposited or pulled out money? Type just the amount and press *+ Add* or *− Withdraw* — the budget updates itself and the confirmation shows the new total. Setting the full figure still works, and both land on the budget timeline the Dashboard chart uses. Withdrawing more than the budget holds is refused with the current figure shown.

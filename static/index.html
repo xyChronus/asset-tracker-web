@@ -223,9 +223,17 @@
             <button type="button" id="wallet-save" class="mini-btn">Save</button>
           </div>
         </label>
-        <div class="muted small-note">Set this once and the app tracks your cash
+        <label style="margin-top:8px">Deposited or withdrew money? Adjust it here
+          <div class="input-row">
+            <input type="number" step="any" min="0" id="wallet-delta" placeholder="amount, e.g. 1000">
+            <button type="button" id="wallet-add" class="mini-btn">+ Add</button>
+            <button type="button" id="wallet-take" class="mini-btn">− Withdraw</button>
+          </div>
+        </label>
+        <div class="muted small-note">Set the budget once and the app tracks your cash
           automatically: available cash = budget − money currently in positions.
-          Update it whenever you add or withdraw money. Leave empty to turn off.</div>
+          When you move money in or out, Add/Withdraw the amount — no need to retype
+          the total. Leave the budget empty to turn cash tracking off.</div>
         <div class="form-msg" id="wallet-msg"></div>
       </div>
       <div class="panel-head"><h3>🔧 Fix records</h3></div>
