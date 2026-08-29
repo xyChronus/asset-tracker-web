@@ -502,3 +502,8 @@ An outside audit walked every tab of the live site and wrote up 35 findings. Thi
 ## [1.40.1] — 2026-08-29 — Rule levels sit where they actually trigger
 ### Fixed
 - **Your take-profit / stop-loss rules now show their real price levels on the Dashboard.** For a held position, the 🎯/🛑 suggestion in the Plan column is measured from your **average buy** — exactly where the advisor fires your rule — instead of drifting with the current price. The tooltip says so ("+10% your own target, measured from your ₱100.00 average buy — where the advisor actually triggers"), and a level the price has already crossed is marked as reached. Fresh entries you don't hold yet keep their entry-anchored suggestion, which is the correct anchor for a position that doesn't exist.
+## [1.41.0] — 2026-08-29 — The whole PSE board, preferred shares included
+### Fixed
+- **107 quoted PSE tickers were missing from the watchlist.** The PSE Edge directory only lists common shares, so preferred shares (ACPB3, ALCPD…), warrants (AGIW) and B-shares never made it onto the board even though the live feed quotes them every session. The weekly sync now merges **every quoted ticker** onto the shared board, and the signal, volume and projection collectors cover them too. Edge has no fundamentals for these, so their EPS/P/E cells stay honestly blank.
+### Added
+- **Add a missing ticker** on the PSE watchlist (the box the other markets already had). It checks the live feed first — a ticker phisix can't price is refused with the reason — and an add goes to the shared board every member sees, which the confirmation says plainly.

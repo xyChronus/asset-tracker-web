@@ -2166,11 +2166,13 @@ function renderWatchlist(assets) {
 
   document.getElementById("watch-title").textContent =
     isPse ? `All PSE Companies (${assets.length})` : `${MKT_LABEL[state.market]} Watchlist`;
-  document.getElementById("watch-add").style.display = isPse ? "none" : "flex";
+  document.getElementById("watch-add").style.display = "flex";
+  document.getElementById("watch-query").placeholder =
+    isPse ? "Add a missing ticker (e.g. ACPB3)…" : "Add (name or ticker)…";
   const filterEl = document.getElementById("watch-filter");
   filterEl.style.display = "block";
   document.getElementById("watch-note").textContent = isPse
-    ? "Synced from the PSE Edge directory. EPS & P/E fill in gradually (a couple of hours on first run); dividend columns only show declared dividends whose ex-date hasn't passed — buy before that date to receive them."
+    ? "The PSE Edge directory plus every ticker the live feed quotes (preferred shares and the like included). EPS & P/E come from Edge, which only covers common shares; dividend columns only show declared dividends whose ex-date hasn't passed. Missing a ticker? Add it below — it joins the shared board everyone sees."
     : "";
 
   const wt = document.getElementById("watch-table");
@@ -2275,7 +2277,9 @@ function setupWatchTools() {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ query: inp.value.trim() }),
       });
-      toast("Added " + r.added.name + " — prices & history will appear within a minute or two.");
+      toast("Added " + r.added.name + (r.shared
+        ? " to the shared PSE board — everyone sees it. Prices appear within minutes; Edge fundamentals only exist for common shares."
+        : " — prices & history will appear within a minute or two."));
       inp.value = "";
       loadWatchlist();
     } catch (err) { toast(err.message, "error"); }

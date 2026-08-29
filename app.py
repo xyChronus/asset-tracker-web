@@ -610,7 +610,12 @@ def tracked_ids_all_users(market):
     """Everything the collector must keep fresh: every user's watchlist plus
     every asset anyone holds."""
     if market == "pse":
-        rows = db.conn().execute("SELECT symbol AS a FROM pse_companies").fetchall()
+        # the shared board (directory + every phisix-quoted ticker), plus
+        # anything anyone holds - pse_companies alone misses the preferred
+        # shares and warrants the live feed quotes
+        rows = db.conn().execute(
+            "SELECT DISTINCT asset_id AS a FROM watchlist WHERE market='pse'"
+            " UNION SELECT DISTINCT asset_id FROM transactions WHERE market='pse'").fetchall()
         return [r["a"] for r in rows]
     rows = db.conn().execute(
         "SELECT DISTINCT asset_id AS a FROM watchlist WHERE market=%s"
@@ -889,8 +894,19 @@ def pse_sync_directory_if_needed():
         c.execute("INSERT INTO watchlist VALUES (0,'pse',%s,%s,%s,%s)"
                   " ON CONFLICT DO NOTHING",
                   (co["symbol"], co["symbol"], co["name"], db.now_iso()))
+    # Edge's directory lists COMMON shares only; phisix also quotes the
+    # preferred shares, warrants and B-shares. Every quoted ticker belongs on
+    # the shared board - fundamentals stay blank for them (Edge has none).
+    quotes = db.kv_get("pse:quotes", {}).get("data") or {}
+    for sym, q in quotes.items():
+        if sym in config.PSE_EXCLUDED:
+            continue
+        c.execute("INSERT INTO watchlist VALUES (0,'pse',%s,%s,%s,%s)"
+                  " ON CONFLICT DO NOTHING",
+                  (sym, sym, (q.get("name") or sym), db.now_iso()))
     for sym in config.PSE_EXCLUDED:   # purge any rows that predate the exclusion
         c.execute("DELETE FROM pse_companies WHERE symbol=%s", (sym,))
+        c.execute("DELETE FROM watchlist WHERE user_id=0 AND market='pse' AND asset_id=%s", (sym,))
         c.execute("DELETE FROM watchlist WHERE market='pse' AND user_id=0 AND asset_id=%s", (sym,))
     db.kv_set("pse:directory_synced", now_ms())
     global _pse_backfill_done
@@ -2839,12 +2855,29 @@ def api_watchlist(market):
 @app.post("/api/<market>/watchlist")
 def api_watchlist_add(market):
     _check(market)
-    if market == "pse":
-        return jsonify({"error": "The PSE watchlist tracks all listed companies automatically."}), 400
     q = (request.get_json(force=True).get("query") or "").strip()
     if not q:
         return jsonify({"error": "Type something to search for."}), 400
     c = db.conn()
+    if market == "pse":
+        # the board is shared, so an add is for everyone - validated against
+        # the live phisix feed (a ticker we can't price helps nobody)
+        symb = q.upper()
+        if symb in config.PSE_EXCLUDED:
+            return jsonify({"error": f"{symb} is deliberately excluded - it hasn't traded in years (suspended)."}), 400
+        if c.execute("SELECT 1 FROM watchlist WHERE user_id=0 AND market='pse' AND asset_id=%s",
+                     (symb,)).fetchone():
+            return jsonify({"error": f"{symb} is already on the board - try the filter box."}), 409
+        qd = db.kv_get("pse:quotes", {}).get("data") or {}
+        hit = qd.get(symb)
+        if not hit:
+            return jsonify({"error": f'"{symb}" isn\'t in the PSE price feed - it may be delisted, '
+                                     "suspended, or too new for the feed. Use the exact ticker, e.g. ACPB3."}), 404
+        c.execute("INSERT INTO watchlist VALUES (0,'pse',%s,%s,%s,%s) ON CONFLICT DO NOTHING",
+                  (symb, symb, hit.get("name") or symb, db.now_iso()))
+        _invalidate_advisor(market, uid())
+        return jsonify({"ok": True, "shared": True,
+                        "added": {"asset_id": symb, "symbol": symb, "name": hit.get("name") or symb}})
     if market == "crypto":
         try:
             res = coingecko.get("/search", {"query": q})
@@ -2881,7 +2914,7 @@ def api_watchlist_add(market):
 def api_watchlist_remove(market, asset_id):
     _check(market)
     if market == "pse":
-        return jsonify({"error": "PSE companies can't be removed - the list mirrors the exchange."}), 400
+        return jsonify({"error": "PSE tickers can't be removed - the shared board lists every quoted name for everyone."}), 400
     db.conn().execute("DELETE FROM watchlist WHERE market=%s AND asset_id=%s AND user_id=%s",
                       (market, asset_id, uid()))
     _invalidate_advisor(market, uid())
