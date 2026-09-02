@@ -8,6 +8,7 @@ Per-user tables/rows:    users, invites, transactions, watchlist (crypto/global)
 
 import os
 import threading
+import weakref
 from datetime import datetime
 
 import psycopg
@@ -165,12 +166,28 @@ class _Conn:
 
     def __init__(self):
         self._pg = None
+        self.last_used = 0.0
 
     def _ensure(self):
         if self._pg is None or self._pg.closed:
             self._pg = psycopg.connect(DATABASE_URL, autocommit=True,
                                        row_factory=dict_row, connect_timeout=15)
+        self.last_used = time.monotonic()
         return self._pg
+
+    def release_if_idle(self, idle_s):
+        """Close the socket if this thread hasn't touched it for idle_s - the
+        pooler allows only 15 sessions in total, and a thread that served one
+        request an hour ago must not keep one pinned. The next use reconnects."""
+        pg = self._pg
+        if pg is not None and not pg.closed and time.monotonic() - self.last_used > idle_s:
+            self._pg = None
+            try:
+                pg.close()
+            except Exception:
+                pass
+            return True
+        return False
 
     def execute(self, sql, params=None):
         try:
@@ -195,11 +212,35 @@ class _Conn:
         pass  # autocommit
 
 
+IDLE_CLOSE_S = 90.0
+_all_conns = weakref.WeakSet()
+_janitor_started = False
+
+
+def _janitor():
+    while True:
+        time.sleep(30)
+        for c in list(_all_conns):
+            try:
+                c.release_if_idle(IDLE_CLOSE_S)
+            except Exception:
+                pass
+
+
+def _start_janitor():
+    global _janitor_started
+    if not _janitor_started:
+        _janitor_started = True
+        threading.Thread(target=_janitor, daemon=True, name="db-janitor").start()
+
+
 def conn():
     c = getattr(_local, "conn", None)
     if c is None:
         c = _Conn()
         _local.conn = c
+        _all_conns.add(c)
+        _start_janitor()
     return c
 
 
