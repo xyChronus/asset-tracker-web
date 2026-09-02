@@ -600,6 +600,7 @@ function showTargets(h) {
       <span class="muted small-note">Enter levels as</span>
       <button class="mini-btn tgt-mode active" data-mode="abs" type="button">price</button>
       <button class="mini-btn tgt-mode" data-mode="pct" type="button">% from current</button>
+      <button class="mini-btn tgt-mode" data-mode="avg" type="button" title="Measured from your average buy — the anchor your Account rules fire from">% from avg buy</button>
     </div>
     <label class="acct-field"><span id="tgt-tp-label">🎯 Take-profit price — sell into strength here</span>
       <input type="number" step="any" min="0" id="tgt-tp"
@@ -638,16 +639,25 @@ function showTargets(h) {
   // −% (stop below); values convert to prices at save time so the server and
   // every downstream flag keep speaking prices
   let mode = "abs";
+  // the % modes anchor on the current price or on your average buy - the
+  // latter is exactly where your Account rules (+X% / -Y%) fire
+  const anchor = () => mode === "avg" ? (h.avg_buy || NaN) : (h.price || NaN);
   const toPrice = (raw, isTp) => {
     const v = parseFloat(raw);
     if (!v) return NaN;
-    if (mode === "abs") return v;   // absolute prices never need a live quote
-    return h.price ? h.price * (1 + (isTp ? Math.abs(v) : -Math.abs(v)) / 100) : NaN;
+    if (mode === "abs") return v;   // absolute prices never need an anchor
+    const a = anchor();
+    return a ? a * (1 + (isTp ? Math.abs(v) : -Math.abs(v)) / 100) : NaN;
   };
   if (!h.price) {                   // no live quote: % mode has no anchor
     const pctBtn = overlay.querySelector('[data-mode="pct"]');
     pctBtn.disabled = true;
     pctBtn.title = "Needs a live price - enter absolute prices instead";
+  }
+  if (!h.avg_buy) {                 // nothing bought yet: no average to measure from
+    const avgBtn = overlay.querySelector('[data-mode="avg"]');
+    avgBtn.disabled = true;
+    avgBtn.title = "You don't hold this yet - there's no average buy to measure from";
   }
   overlay.querySelectorAll(".tgt-mode").forEach(b => b.onclick = () => {
     const tpEl = document.getElementById("tgt-tp"), slEl = document.getElementById("tgt-sl");
@@ -656,13 +666,21 @@ function showTargets(h) {
     overlay.querySelectorAll(".tgt-mode").forEach(x => x.classList.toggle("active", x === b));
     document.getElementById("tgt-tp-label").textContent = mode === "abs"
       ? "🎯 Take-profit price — sell into strength here"
+      : mode === "avg" ? `🎯 Take-profit, % above your ${fmtMoney(h.avg_buy)} average buy`
       : "🎯 Take-profit, % above the current price";
     document.getElementById("tgt-sl-label").textContent = mode === "abs"
       ? "🛑 Stop-loss price — cut the loss here"
+      : mode === "avg" ? `🛑 Stop-loss, % below your ${fmtMoney(h.avg_buy)} average buy`
       : "🛑 Stop-loss, % below the current price";
     // carry the same levels across the switch so nothing silently changes
-    tpEl.value = isFinite(prevTp) ? (mode === "abs" ? prevTp.toPrecision(6) : ((prevTp / h.price - 1) * 100).toFixed(1)) : "";
-    slEl.value = isFinite(prevSl) ? (mode === "abs" ? prevSl.toPrecision(6) : ((1 - prevSl / h.price) * 100).toFixed(1)) : "";
+    const a = anchor();
+    tpEl.value = isFinite(prevTp) ? (mode === "abs" ? prevTp.toPrecision(6) : ((prevTp / a - 1) * 100).toFixed(1)) : "";
+    slEl.value = isFinite(prevSl) ? (mode === "abs" ? prevSl.toPrecision(6) : ((1 - prevSl / a) * 100).toFixed(1)) : "";
+    // your typed rules are the natural starting point in this mode
+    if (mode === "avg") {
+      if (!tpEl.value && state.custom && state.custom.tp_pct) tpEl.placeholder = "your rule: " + state.custom.tp_pct;
+      if (!slEl.value && state.custom && state.custom.sl_pct) slEl.placeholder = "your rule: " + state.custom.sl_pct;
+    }
     calc();
   });
 
@@ -674,6 +692,9 @@ function showTargets(h) {
     if (tp && h.price && tp <= h.price) parts.push(`🎯 already at/below the current price — it would trigger immediately`);
     if (sl && h.price && sl < h.price) parts.push(`🛑 ${(100 - sl / h.price * 100).toFixed(1)}% below`);
     if (sl && h.price && sl >= h.price) parts.push(`🛑 already at/above the current price — it would trigger immediately`);
+    // the same levels measured from the average buy, whichever way they were typed
+    if (h.avg_buy && tp) parts.push(`🎯 ${tp >= h.avg_buy ? "+" : ""}${((tp / h.avg_buy - 1) * 100).toFixed(1)}% from your average buy`);
+    if (h.avg_buy && sl) parts.push(`🛑 ${sl >= h.avg_buy ? "+" : ""}${((sl / h.avg_buy - 1) * 100).toFixed(1)}% from your average buy`);
     if (tp && sl && h.price && h.price > sl && tp > h.price)
       parts.push(`<b>risk : reward ≈ 1 : ${((tp - h.price) / (h.price - sl)).toFixed(1)}</b>`);
     document.getElementById("tgt-calc").innerHTML = parts.join(" · ");
