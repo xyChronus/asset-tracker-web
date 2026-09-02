@@ -510,4 +510,5 @@ An outside audit walked every tab of the live site and wrote up 35 findings. Thi
 ## [1.42.0] — 2026-09-02 — The PSE is archived
 ### Changed
 - **The Philippine market is archived.** Its moves are driven by information that numbers and news can't see — the best read there comes from people inside the market — so the app now focuses on **Crypto and Global**. Every PSE collector is off (prices, directory, fundamentals, dividends, news, signals, volume, projections, analyst votes), the 🇵🇭 button is gone from the switcher, and nobody lands on it by default.
+- Deploys are sturdier: if the database's connection pool is momentarily full while a new instance boots (the old one is still holding its connections), startup now retries for a minute instead of exiting.
 - **Nothing was deleted.** Your PSE positions, trades and history stay exactly as they were and remain viewable read-only through the 👤 menu → *PSE (archived)*, under a banner that says the data is frozen. Its advisor shows no suggestions (frozen data can't carry a current one), the status dot reads "archived · last data …", and nothing can be added to its board.

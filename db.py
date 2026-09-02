@@ -208,7 +208,18 @@ def now_iso():
 
 
 def init():
-    conn().execute(SCHEMA)
+    # a deploy briefly runs two instances, each holding a connection per
+    # thread, and the pooler's session-mode cap can be full for a few seconds
+    # exactly when the new one boots - retry rather than let gunicorn exit
+    for attempt in range(8):
+        try:
+            conn().execute(SCHEMA)
+            break
+        except psycopg.OperationalError as e:
+            if attempt == 7:
+                raise
+            print(f"[db] boot connect failed ({str(e).splitlines()[0][:90]}); retrying in 8s")
+            time.sleep(8)
     # migrations for columns added after the initial deploy (idempotent)
     conn().execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS trading_style TEXT DEFAULT 'swing'")
     conn().execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS agreed_terms BOOLEAN DEFAULT FALSE")
