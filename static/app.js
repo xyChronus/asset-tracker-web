@@ -5,6 +5,19 @@
 
 const CUR = { crypto: "$", pse: "₱", global: "$" };
 const MKT_LABEL = { crypto: "Crypto", pse: "PSE Stocks", global: "Global Stocks" };
+// markets kept for history only (mirrors config.ARCHIVED_SINCE on the server):
+// hidden from the switcher, no collectors, reachable read-only from the menu
+const ARCHIVED = { pse: "2026-08-30" };
+
+function updateArchiveBanner() {
+  const b = document.getElementById("archive-banner");
+  if (!b) return;
+  const since = ARCHIVED[state.market];
+  b.hidden = !since;
+  if (since) b.innerHTML = `🗄️ <b>${esc(MKT_LABEL[state.market])} is archived</b> (since ${esc(since)}): no new prices,
+    news, signals or projections are collected — what you see is the last snapshot. Positions and history
+    stay viewable; Crypto and Global are the live markets.`;
+}
 
 const STYLES = [
   { v: "day", label: "Day Trader", desc: "Intraday: positions close the same day (a time stop flags anything held overnight). Quick to act, takes profit around +4%, rotates banked wins, light on fundamentals." },
@@ -528,7 +541,10 @@ async function loadHeader() {
       dot.className = "status-dot warn";
       txt.textContent = "waiting for first price update…";
     }
-    if (st.source_error) {
+    if (ARCHIVED[state.market]) {
+      dot.className = "status-dot idle";
+      txt.textContent = "archived · last data " + (st.quotes_updated ? timeAgo(st.quotes_updated) : "n/a");
+    } else if (st.source_error) {
       dot.className = "status-dot err";
       txt.textContent = "data source issue — showing cached data";
     }
@@ -1011,6 +1027,11 @@ async function loadTodayPlan() {
       return `<div class="plan-item"><span class="badge cold-badge">HEADS UP</span>
         <span><b>${esc(r.name)}</b> <span class="muted">· ${esc(fl.text)}</span></span></div>`;
     }).join("");
+  if (a.closed_reason === "archived") {
+    el.innerHTML = `<div class="plan-item"><span class="badge wait">ARCHIVED</span>
+      <span>${esc(MKT_LABEL[state.market])} is archived — no new data, so no suggestions. Your positions and history stay viewable.</span></div>`;
+    return;
+  }
   if (a.market_open === false) {
     // your plan's stop/target hits stay visible even while the market sleeps
     el.innerHTML = tpslHtml
@@ -2166,7 +2187,7 @@ function renderWatchlist(assets) {
 
   document.getElementById("watch-title").textContent =
     isPse ? `All PSE Companies (${assets.length})` : `${MKT_LABEL[state.market]} Watchlist`;
-  document.getElementById("watch-add").style.display = "flex";
+  document.getElementById("watch-add").style.display = ARCHIVED[state.market] ? "none" : "flex";
   document.getElementById("watch-query").placeholder =
     isPse ? "Add a missing ticker (e.g. ACPB3)…" : "Add (name or ticker)…";
   const filterEl = document.getElementById("watch-filter");
@@ -2808,6 +2829,7 @@ function switchMarket(mkt) {
   document.querySelectorAll("#mkt-switch button").forEach(b =>
     b.classList.toggle("active", b.dataset.market === mkt));
   state.predMovers = null;   // never repaint the old market's movers
+  updateArchiveBanner();
   state.txShow = 50;
   state._newsItems = null;
   state._newsCtx = null;
@@ -3204,6 +3226,7 @@ async function loadUser() {
                    + '<button class="dd-item" id="members-btn" title="See who has joined and which invite codes are used">Members</button>' : ""}
         <button class="dd-item" id="account-btn" title="Trading style, your own rules, clock and password">Account</button>
         <button class="dd-item" id="tour-menu-btn" title="A 60-second walkthrough of the tabs">Take the quick tour</button>
+        ${Object.keys(ARCHIVED).map(m => `<button class="dd-item" data-archive="${m}" title="Read-only: no new data since ${ARCHIVED[m]}">🗄️ ${esc(MKT_LABEL[m])} (archived)</button>`).join("")}
         <a class="dd-item" href="/logout">Logout</a>
       </div></div>`;
     const ddBtn = document.getElementById("user-dd-btn"), ddMenu = document.getElementById("user-dd-menu");
@@ -3227,6 +3250,7 @@ async function loadUser() {
       });
     }
     document.getElementById("tour-menu-btn").onclick = startTour;
+    el.querySelectorAll("[data-archive]").forEach(b => b.onclick = () => switchMarket(b.dataset.archive));
     const inv = document.getElementById("invite-btn");
     if (inv) inv.onclick = async () => {
       const r = await api("/api/invites", { method: "POST" });
@@ -3664,8 +3688,12 @@ addEventListener("scroll", () => {
   if (target) _tourPlace(target, _tourIdx, st);
 }, { passive: true });
 
-document.querySelectorAll("#mkt-switch button").forEach(b =>
-  b.classList.toggle("active", b.dataset.market === state.market));
+if (ARCHIVED[state.market]) { state.market = "crypto"; localStorage.setItem("mkt", "crypto"); }
+document.querySelectorAll("#mkt-switch button").forEach(b => {
+  b.hidden = !!ARCHIVED[b.dataset.market];
+  b.classList.toggle("active", b.dataset.market === state.market);
+});
+updateArchiveBanner();
 loadUser();
 const bootHashTab = HASH_TAB[(location.hash || "").replace(/^#\/?/, "")];
 if (bootHashTab) state.tab = bootHashTab;                 // a shared link wins

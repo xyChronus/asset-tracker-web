@@ -166,6 +166,10 @@ main { padding: 18px 22px 30px; max-width: 1400px; margin: 0 auto; }
    a wide table stretches its column instead of scrolling inside it */
 .grid2 > *, .gl-grid > *, .cards > *, .rec-grid > *, .signal-grid > * { min-width: 0; }
 @media (max-width: 950px) { .grid2, .grid2.uneven { grid-template-columns: 1fr; } }
+.archive-banner {
+  margin: 12px 22px 0; padding: 10px 14px; border: 1px solid var(--border); border-radius: 10px;
+  background: var(--panel-2); color: var(--muted); font-size: 13px; line-height: 1.5;
+}
 
 .mkt-clock { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .nm-link { cursor: pointer; }

@@ -3,6 +3,13 @@
 PORT = 8950
 
 MARKETS = ["crypto", "pse", "global"]
+# Markets kept for history but no longer collected, nor shown by default.
+# 2026-08-30: the PSE was archived - its moves come from information that
+# numbers and news can't see, so the app focuses on crypto + global. Data
+# stays; collectors stop; the tab is reachable read-only from the account menu.
+ARCHIVED_MARKETS = {"pse"}
+ARCHIVED_SINCE = {"pse": "2026-08-30"}
+ACTIVE_MARKETS = [m for m in MARKETS if m not in ARCHIVED_MARKETS]
 CURRENCY = {"crypto": "$", "pse": "₱", "global": "$"}
 MARKET_LABELS = {"crypto": "Crypto", "pse": "PSE Stocks", "global": "Global Stocks"}
 

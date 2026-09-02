@@ -278,7 +278,8 @@ def api_me():
                                                            r.get("trading_style")) or "swing",
                     "aggressiveness": r.get("aggressiveness") or "balanced",
                     "diversity": r.get("diversity") or "balanced",
-                    "custom_params": _load_custom(r.get("custom_params"))})
+                    "custom_params": _load_custom(r.get("custom_params")),
+                    "archived": {m: config.ARCHIVED_SINCE.get(m) for m in sorted(config.ARCHIVED_MARKETS)}})
 
 
 def _load_custom(raw):
@@ -1631,45 +1632,50 @@ def scheduler():
         [lambda: 2 * 86400, 0, supabase_keepalive],
         [lambda: iv["crypto"]["news"], 0, lambda: fetch_news("crypto")],
         [lambda: iv["crypto"]["news"], 0, lambda: news_scores_tick("crypto")],
-        [lambda: iv["pse"]["news"], 0, lambda: news_scores_tick("pse")],
         [lambda: iv["global"]["news"], 0, lambda: news_scores_tick("global")],
         [lambda: iv["crypto"]["signals"], 0, lambda: recompute_signals("crypto")],
-        [lambda: iv["pse"]["directory"], 0, pse_sync_directory_if_needed],
-        [lambda: iv["pse"]["quotes"] if _pse_open() else 1800, 0, pse_fetch_quotes],
-        [lambda: iv["pse"]["fundamentals"], 0, pse_fundamentals_tick],
-        [lambda: 30, 0, pse_backfill_tick],
-        [lambda: iv["pse"]["dividends"], 0, pse_fetch_dividends],
-        [lambda: iv["pse"]["news"], 0, lambda: fetch_news("pse")],
+        [lambda: iv["global"]["quotes"], 0, global_fetch_quotes],
+        [lambda: iv["global"]["history"], 0, global_history_tick],
         # stock signals only need recomputing while prices can move: outside
         # market hours an hourly sweep re-reads the whole window for nothing,
         # which was a large slice of the database's data budget
-        [lambda: iv["pse"]["signals"] if _pse_open() else 6 * 3600, 0,
-         lambda: recompute_signals("pse")],
-        [lambda: iv["global"]["quotes"], 0, global_fetch_quotes],
-        [lambda: iv["global"]["history"], 0, global_history_tick],
         [lambda: iv["global"]["signals"] if market_session("global")[0] else 6 * 3600, 0,
          lambda: recompute_signals("global")],
         [lambda: 43200, 0, earnings_calendar_tick],
-        [lambda: 1800, 0, lambda: analyst_votes_tick("pse")],
         [lambda: 86400, 0, macro_tick],
         [lambda: 120, 0, advisor_warm_tick],
-        [lambda: 25, 0, lambda: volume_backfill_tick("pse")],
         [lambda: 40, 0, lambda: volume_backfill_tick("crypto")],
         [lambda: 20, 0, lambda: volume_backfill_tick("global")],
         [lambda: 1800, 0, lambda: analyst_votes_tick("global")],
         [lambda: 86400, 0, spx_daily_tick],
         [lambda: 21600, 0, lambda: predictions_tick("crypto")],
-        [lambda: 21600, 0, lambda: predictions_tick("pse")],
         [lambda: 21600, 0, lambda: predictions_tick("global")],
         [lambda: 120, 0, lambda: history_backfill_tick("crypto")],
         [lambda: 60, 0, lambda: history_backfill_tick("global")],
-        [lambda: 45, 0, lambda: history_backfill_tick("pse")],
         [lambda: 21600, 0, daily_close_tick],
         [lambda: 600, 0, trailing_tick],
         [lambda: iv["global"]["metrics"], 0, global_metrics_tick],
         [lambda: iv["global"]["indices"], 0, global_fetch_indices],
         [lambda: iv["global"]["news"], 0, lambda: fetch_news("global")],
     ]
+    if "pse" not in config.ARCHIVED_MARKETS:
+        # the whole PSE pipeline: quotes, directory, fundamentals, dividends,
+        # news, signals, volume, projections, analyst votes, history backfill
+        jobs += [
+            [lambda: iv["pse"]["news"], 0, lambda: news_scores_tick("pse")],
+            [lambda: iv["pse"]["directory"], 0, pse_sync_directory_if_needed],
+            [lambda: iv["pse"]["quotes"] if _pse_open() else 1800, 0, pse_fetch_quotes],
+            [lambda: iv["pse"]["fundamentals"], 0, pse_fundamentals_tick],
+            [lambda: 30, 0, pse_backfill_tick],
+            [lambda: iv["pse"]["dividends"], 0, pse_fetch_dividends],
+            [lambda: iv["pse"]["news"], 0, lambda: fetch_news("pse")],
+            [lambda: iv["pse"]["signals"] if _pse_open() else 6 * 3600, 0,
+             lambda: recompute_signals("pse")],
+            [lambda: 1800, 0, lambda: analyst_votes_tick("pse")],
+            [lambda: 25, 0, lambda: volume_backfill_tick("pse")],
+            [lambda: 21600, 0, lambda: predictions_tick("pse")],
+            [lambda: 45, 0, lambda: history_backfill_tick("pse")],
+        ]
     # stagger the first runs: on 0.1-CPU free instances a boot-time stampede
     # of collectors starves the web server and the router marks it down
     for i, job in enumerate(jobs):
@@ -2859,6 +2865,8 @@ def api_watchlist_add(market):
     if not q:
         return jsonify({"error": "Type something to search for."}), 400
     c = db.conn()
+    if market in config.ARCHIVED_MARKETS:
+        return jsonify({"error": "This market is archived - no new data is collected, so there's nothing to add to."}), 400
     if market == "pse":
         # the board is shared, so an add is for everyone - validated against
         # the live phisix feed (a ticker we can't price helps nobody)
@@ -3010,6 +3018,19 @@ def api_advisor(market):
     _check(market)
     _advisor_seen[(market, uid())] = now_ms()
     snap = dict(get_advisor(market, uid()))
+    if market in config.ARCHIVED_MARKETS:
+        # frozen data can't carry a current suggestion: say so, show nothing
+        snap["recommendations"] = []
+        if "movers" in snap:
+            snap["movers"] = []
+        snap["briefing"] = (
+            f"The PSE is archived (since {config.ARCHIVED_SINCE.get(market, '')}): no new prices, "
+            "news, signals or projections are collected, so nothing here is a current suggestion. "
+            "Your positions and history stay viewable; Crypto and Global are the live markets.")
+        snap["market_open"] = False
+        snap["next_open"] = None
+        snap["closed_reason"] = "archived"
+        return jsonify(snap)
     dis = dismissals(uid(), market)
     recs = []
     for r in snap.get("recommendations", []):
@@ -3319,7 +3340,7 @@ def trailing_tick():
     A trailing STOP only ever moves up (peak * (1 - trail%)); a trailing BUY
     alert's trough only ever moves down. The advisor and dashboard read the
     materialized sl_price, so every existing flag keeps working unchanged."""
-    for market in config.MARKETS:
+    for market in config.ACTIVE_MARKETS:
         rows = db.conn().execute(
             "SELECT * FROM targets WHERE market=%s AND"
             " (trail_pct IS NOT NULL OR trail_buy_pct IS NOT NULL)",
@@ -3374,7 +3395,7 @@ def daily_close_tick():
     # the whole hourly retention window: idempotent and DB-internal, so a
     # scheduler outage of any length self-heals as long as hourly data lives
     since = (today - config.HISTORY_KEEP_DAYS) * 86400000
-    for market in config.MARKETS:
+    for market in config.ACTIVE_MARKETS:
         db.conn().execute(
             "INSERT INTO price_history_daily"
             " SELECT market, asset_id, (ts / 86400000) * 86400000,"
@@ -3658,7 +3679,7 @@ def api_news_digest(market):
     including the PSE lunch break and the 15:00-15:30 run-off - it stays out
     of the way and the dashboard shows plain latest news."""
     _check(market)
-    if market == "crypto":
+    if market == "crypto" or market in config.ARCHIVED_MARKETS:
         return jsonify({"open": True})
     is_open, next_open, closed_reason = market_session(market)
     bucket, settled = _session_state(market)
