@@ -7,7 +7,7 @@ const CUR = { crypto: "$", pse: "₱", global: "$" };
 const MKT_LABEL = { crypto: "Crypto", pse: "PSE Stocks", global: "Global Stocks" };
 // markets kept for history only (mirrors config.ARCHIVED_SINCE on the server):
 // hidden from the switcher, no collectors, reachable read-only from the menu
-const ARCHIVED = { pse: "2026-08-30" };
+const ARCHIVED = { pse: "2026-09-02" };
 
 function updateArchiveBanner() {
   const b = document.getElementById("archive-banner");

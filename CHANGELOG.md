@@ -507,7 +507,7 @@ An outside audit walked every tab of the live site and wrote up 35 findings. Thi
 - **107 quoted PSE tickers were missing from the watchlist.** The PSE Edge directory only lists common shares, so preferred shares (ACPB3, ALCPD…), warrants (AGIW) and B-shares never made it onto the board even though the live feed quotes them every session. The weekly sync now merges **every quoted ticker** onto the shared board, and the signal, volume and projection collectors cover them too. Edge has no fundamentals for these, so their EPS/P/E cells stay honestly blank.
 ### Added
 - **Add a missing ticker** on the PSE watchlist (the box the other markets already had). It checks the live feed first — a ticker phisix can't price is refused with the reason — and an add goes to the shared board every member sees, which the confirmation says plainly.
-## [1.42.0] — 2026-08-30 — The PSE is archived
+## [1.42.0] — 2026-09-02 — The PSE is archived
 ### Changed
 - **The Philippine market is archived.** Its moves are driven by information that numbers and news can't see — the best read there comes from people inside the market — so the app now focuses on **Crypto and Global**. Every PSE collector is off (prices, directory, fundamentals, dividends, news, signals, volume, projections, analyst votes), the 🇵🇭 button is gone from the switcher, and nobody lands on it by default.
 - **Nothing was deleted.** Your PSE positions, trades and history stay exactly as they were and remain viewable read-only through the 👤 menu → *PSE (archived)*, under a banner that says the data is frozen. Its advisor shows no suggestions (frozen data can't carry a current one), the status dot reads "archived · last data …", and nothing can be added to its board.
