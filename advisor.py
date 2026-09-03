@@ -1819,7 +1819,7 @@ def build(assets, signals, portfolio, news_items, market, now_ms,
     elif actionable:
         top = actionable[0]
         verb = "buying" if top["action"] in ("BUY", "BUY MORE") else "selling"
-        amt_txt = f" ~{currency}{top['usd']}" if top["usd"] else ""
+        amt_txt = f" ~{currency}{top['usd']:,.2f}" if top["usd"] else ""
         briefing += (f" Strongest suggestion: {top['action']} {top['name']}"
                      f" ({verb}{amt_txt}) - see below for the reasoning.")
     else:

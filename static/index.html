@@ -27,7 +27,9 @@
   </select>
   <div class="header-stats" id="header-stats" aria-live="polite" aria-atomic="true"></div>
   <span class="mkt-clock" id="mkt-clock"></span>
-  <div class="status-wrap"><span class="status-dot" id="status-dot"></span><span class="status-text" id="status-text">connecting…</span></div>
+  <div class="status-wrap"><span class="status-dot" id="status-dot"></span><span class="status-text" id="status-text">connecting…</span>
+    <button class="refresh-btn" id="refresh-btn" type="button" aria-label="Refresh now"
+      title="Refresh now — fetches everything on this view again (the page also does that every 2 minutes); on the Dashboard and Advisor it also asks the advisor to re-read your portfolio"><span class="ico" aria-hidden="true">↻</span></button></div>
   <div class="user-menu" id="user-menu"></div>
 </header>
 
@@ -48,7 +50,7 @@
 <!-- ======================= DASHBOARD ======================= -->
 <section id="tab-dashboard" class="tab active">
   <div class="panel plan-panel">
-    <div class="panel-head"><h3>📋 Today's Plan</h3><button class="link-btn" data-goto="advisor">full analysis →</button></div>
+    <div class="panel-head"><h3>📋 Today's Plan</h3><span id="plan-note" class="muted plan-note"></span><button class="link-btn" data-goto="advisor">full analysis →</button></div>
     <div id="today-plan" class="plan-row"><span class="empty-note">Analyzing your portfolio…</span></div>
   </div>
   <div class="cards" id="dash-cards"></div>

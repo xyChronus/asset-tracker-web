@@ -996,21 +996,54 @@ async function loadDashboard() {
   document.getElementById("holdings-extra").style.display =
     upcoming.length ? "" : "none";
 
-  loadMarketPanels("dash");
-  loadMacro();
-  loadDashNews();
-  loadTodayPlan();
-  loadPredMovers();
+  // painted as each lands; a ↻ press waits for all of them before it says done
+  trackBg(loadMarketPanels("dash"), loadMacro(), loadDashNews(), loadTodayPlan(), loadPredMovers());
 }
 
 let _advisorCashDup = false;   // "no spare cash" hoisted to one panel note
 
 let planLoadSeq = 0;   // drops a stale run's late writes
 
+// while the header's Refresh button is running, the advisor is asked for a
+// genuine re-read (the server rebuilds a snapshot older than a minute behind
+// its reply); the reply's `rebuilding` flag says one is in progress, and the
+// panel then re-asks a few seconds later on its own instead of showing the
+// old read until the next 2-minute auto-refresh
+let _manualRefresh = false;
+const advisorOpts = () => _manualRefresh ? { headers: { "X-Refresh": "manual" } } : undefined;
+let _advTimer = null, _advTries = 0;
+// moments when a re-render would get in the way of what the member is doing
+function refreshBlocked() {
+  const el = document.activeElement;
+  const typing = el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA");
+  const dialogOpen = document.querySelector(".app-overlay, #accept-overlay, #targets-overlay");
+  return document.hidden || !!typing || !!dialogOpen || _tourIdx >= 0;
+}
+function advisorRecheck(loader) {
+  clearTimeout(_advTimer);
+  if (!loader || _advTries >= 4) return;   // ~30 s of looking; past that the auto-refresh carries it
+  const mkt = state.market, tab = state.tab;
+  _advTimer = setTimeout(() => {
+    if (state.market !== mkt || state.tab !== tab) return;
+    if (refreshBlocked()) { advisorRecheck(loader); return; }   // look again once it's clear; not a try
+    _advTries++;
+    _resp.delete(M() + "/advisor");
+    loader().catch(() => { });
+  }, 7000);
+}
+function noteAdvisorBuild(a, loader) {
+  state.advRebuilding = !!(a && a.rebuilding);
+  if (state.advRebuilding) advisorRecheck(loader);
+  else _advTries = 0;
+}
+
 async function loadTodayPlan() {
   const planSeq = ++planLoadSeq;
-  const a = await api(M() + "/advisor").catch(() => null);
+  const a = await api(M() + "/advisor", advisorOpts()).catch(() => null);
   const el = document.getElementById("today-plan");
+  if (a) noteAdvisorBuild(a, loadTodayPlan);
+  const pn = document.getElementById("plan-note");
+  if (pn) pn.textContent = a && a.rebuilding ? "re-reading your portfolio now…" : "";
   if (!a || !a.recommendations) {
     el.innerHTML = '<span class="empty-note">Analyzing… first results appear a few minutes after startup.</span>';
     return;
@@ -1450,9 +1483,10 @@ function moverChip(r) {
 
 async function loadAdvisor() {
   const [a, tg] = await Promise.all([
-    api(M() + "/advisor"),
+    api(M() + "/advisor", advisorOpts()),
     api(M() + "/targets").catch(() => null),  // null = unknown, NOT "no plans"
   ]);
+  noteAdvisorBuild(a, loadAdvisor);
   state.targetsMap = tg ? {} : null;
   ((tg && tg.targets) || []).forEach(t => { state.targetsMap[t.asset_id] = t; });
   if (!a || !a.recommendations) {
@@ -1464,7 +1498,8 @@ async function loadAdvisor() {
   }
   document.getElementById("advisor-briefing").textContent = a.briefing || "";
   document.getElementById("advisor-updated").textContent =
-    a.updated ? "updated " + timeAgo(a.updated) : "";
+    (a.updated ? "updated " + timeAgo(a.updated) : "") +
+    (a.rebuilding ? " · re-reading your portfolio now…" : "");
   const ms = a.market_sentiment || {};
   const actionable = a.recommendations.filter(r => !["HOLD", "WATCH"].includes(r.action));
   const actions = actionable.filter(r => !r.dismissed);
@@ -2839,6 +2874,7 @@ function switchMarket(mkt) {
   if (mkt === state.market) return;
   if (state.editingTx) endEditTx();
   _gen++;   // replies still in flight for the old market are dropped
+  endManualRefresh(_manualRun);   // a ↻ press in flight can't finish now: release the button
   state.market = mkt;
   localStorage.setItem("mkt", mkt);
   state.watch[mkt] = null;
@@ -2883,7 +2919,7 @@ async function refresh() {
   const fxP = api("/api/fx").then(fx => { fxRate = fx.rate || null; }).catch(() => { });
   loadHeader();                // alongside the tab's own requests, not after them
   await fxP;                   // instant after the first load (remembered)
-  try { await loaders[state.tab](); _tabMkt[state.tab] = state.market; }
+  try { await loaders[state.tab](); _tabMkt[state.tab] = state.market; return true; }
   catch (e) {
     console.error(e);
     toast("Couldn't refresh: " + e.message, "error");
@@ -2893,6 +2929,7 @@ async function refresh() {
       if (el && el.querySelector(".skel"))
         el.innerHTML = '<div class="empty-note">Couldn\'t load this just now — it retries on the next refresh.</div>';
     }
+    return false;
   }
 }
 
@@ -3593,6 +3630,8 @@ const TOUR_STEPS = [
     text: "Scored buy/sell suggestions with their full reasoning ledger — technicals and news, plus fundamentals and professional analyst consensus on stocks. Accept logs the trade, ✗ dismisses it for today, ⏳ arms a trailing plan, ⧉ copies it for the group chat, 📌 pins it up top." },
   { tab: "portfolio", sel: ".tx-form", title: "Log what you actually did",
     text: "Record your real buys and sells (fees too) and the tracker mirrors your exchange. If the numbers ever drift, the 🔧 Fix records box on this tab sets them straight without inventing profit." },
+  { sel: "#refresh-btn", title: "Fresh numbers on demand",
+    text: "The page refreshes itself every two minutes while it's open. Just logged something, or want the latest right now? ↻ fetches everything on the view again — and on the Dashboard and Advisor tabs it asks the advisor to re-read your portfolio." },
   { tab: "watchlist", sel: "#watch-table", title: "Watchlist & Signals",
     text: "Every tracked asset with its technical read and a News score from −3 to +3. Sort the columns, filter by name — and once you hold something, its ticker appears as a one-tap chip up top." },
   { tab: "news", sel: "#news-scope", title: "News that's about YOU",
@@ -3749,18 +3788,59 @@ function autoRefresh() {
   if (state.tab === "watchlist") state.watch[state.market] = null;
   refresh();
 }
+
+// the header's ↻: forget what's remembered for this market (and the shared
+// bits like the FX rate) so every panel on the view is fetched again rather
+// than re-served from the 15-second memory; on the Dashboard and Advisor the
+// advisor is also asked to re-read. The press owns the button until its
+// loads have landed - or until a market switch releases it (replies still in
+// flight for the old market never settle, by design, so nothing else would).
+let _manualRun = 0, _manualSeq = 0;   // _manualRun: the press that owns the button (0 = none)
+const _bg = [];                       // un-awaited panel loads a press waits for
+function trackBg(...ps) {
+  if (_manualRefresh) _bg.push(...ps.map(p => Promise.resolve(p).catch(() => { })));
+}
+function endManualRefresh(run) {
+  if (!run || run !== _manualRun) return;
+  _manualRun = 0;
+  _manualRefresh = false;
+  _bg.length = 0;
+  const btn = document.getElementById("refresh-btn");
+  btn.classList.remove("busy");
+  btn.removeAttribute("aria-busy");
+  btn.removeAttribute("aria-disabled");
+}
+async function manualRefresh() {
+  if (_manualRun) return;
+  const run = _manualRun = ++_manualSeq, g = _gen;
+  const btn = document.getElementById("refresh-btn");
+  btn.classList.add("busy");
+  btn.setAttribute("aria-busy", "true");
+  btn.setAttribute("aria-disabled", "true");   // not `disabled`: that would drop keyboard focus
+  for (const k of [..._resp.keys()]) if (!_marketPath(k) || k.startsWith(M() + "/")) _resp.delete(k);
+  state.watch[state.market] = null;
+  state.advRebuilding = false;
+  _advTries = 0;
+  lastRefreshAt = Date.now();
+  _manualRefresh = true;
+  let ok = false;
+  try {
+    ok = await refresh();
+    if (ok && run === _manualRun) await Promise.allSettled(_bg.splice(0));
+  } finally { endManualRefresh(run); }
+  if (ok && g === _gen)
+    toast(state.advRebuilding
+      ? "Refreshed ✓ — the advisor is re-reading your portfolio; its panel updates itself in a few seconds."
+      : "Refreshed ✓");
+}
+document.getElementById("refresh-btn").onclick = manualRefresh;
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     const ov = document.querySelector("#accept-overlay, #targets-overlay, #account-overlay, #members-overlay, #trail-overlay");
     if (ov) ov.remove();
   }
 });
-setInterval(() => {
-  const el = document.activeElement;
-  const typing = el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA");
-  const dialogOpen = document.querySelector(".app-overlay, #accept-overlay, #targets-overlay");
-  if (!document.hidden && !typing && !dialogOpen && _tourIdx < 0) autoRefresh();
-}, REFRESH_MS);
+setInterval(() => { if (!refreshBlocked()) autoRefresh(); }, REFRESH_MS);
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden && Date.now() - lastRefreshAt > REFRESH_MS) autoRefresh();
 });

@@ -516,3 +516,10 @@ An outside audit walked every tab of the live site and wrote up 35 findings. Thi
 ## [1.42.1] — 2026-09-02 — Plan levels from your average buy
 ### Added
 - The 🎯/🛑 plan dialog gained a third way to enter levels: **% from avg buy**, next to *price* and *% from current*. Type +10 / −5 and the levels land exactly where your Account rules fire; the box hints your own rule as a placeholder. Switching modes carries the same levels across (nothing silently changes), and the summary now also states each level as a % from your average buy whichever way you typed it. Greyed out for assets you don't hold yet — there's no average to measure from.
+
+## [1.42.2] — 2026-09-03 — A refresh button
+### Added
+- A **↻ Refresh button** in the header, beside the live/updated status. The page has always refreshed itself every two minutes while open; this does it now — every panel on the view is fetched again rather than re-served from the short-lived memory. On the Dashboard and Advisor tabs it also asks the advisor for a **genuine re-read** of your portfolio (a snapshot older than a minute is rebuilt behind the reply; the panel says "re-reading your portfolio now…" and picks the new read up by itself a few seconds later). The button spins until everything on the view has landed and a toast confirms when it's done. It also has a stop on the tour.
+### Fixed
+- The archived PSE's advisor snapshot was still being re-read in the background every ten minutes someone viewed it. Frozen data has nothing new to read, so it's now served as is.
+- The Daily Briefing's "Strongest suggestion" amount could print unrounded ("selling ~$1505.123479282876" for a full-position sell); it's now a money figure to the cent.

@@ -2173,10 +2173,12 @@ def get_advisor(market, user, force=False):
     key = f"advisor:{market}:{user}"
     cached = db.kv_get(key)
     if cached and not force:
-        if not _advisor_fresh(cached):
+        # an archived market's data is frozen: its snapshot is served as is,
+        # never re-read in the background every ten minutes someone looks
+        if not _advisor_fresh(cached) and market not in config.ARCHIVED_MARKETS:
             _advisor_refresh_async(market, user)
         return cached
-    return _build_advisor(market, user)
+    return _build_advisor(market, user, force=force)
 
 
 _advisor_queue = queue.Queue()
@@ -2184,9 +2186,9 @@ _advisor_queue = queue.Queue()
 
 def _advisor_worker():
     while True:
-        market, user = _advisor_queue.get()
+        market, user, force = _advisor_queue.get()
         try:
-            _build_advisor(market, user)
+            _build_advisor(market, user, force=force)
         except Exception as e:
             print(f"[advisor] background rebuild {market}/{user}: {e}")
         finally:
@@ -2197,16 +2199,23 @@ def _advisor_worker():
 _advisor_worker_started = False
 
 
-def _advisor_refresh_async(market, user):
+_advisor_async_lock = threading.Lock()
+
+
+def _advisor_refresh_async(market, user, force=False):
     global _advisor_worker_started
     tag = (market, user)
-    if tag in _advisor_building:
-        return
-    _advisor_building.add(tag)
-    if not _advisor_worker_started:
-        threading.Thread(target=_advisor_worker, daemon=True).start()
-        _advisor_worker_started = True
-    _advisor_queue.put(tag)
+    with _advisor_async_lock:   # check-then-add is atomic across request threads
+        if tag in _advisor_building:
+            return
+        if not _advisor_worker_started:
+            try:
+                threading.Thread(target=_advisor_worker, daemon=True).start()
+            except RuntimeError:
+                return          # no thread to be had right now: the snapshot is served as is
+            _advisor_worker_started = True
+        _advisor_building.add(tag)
+        _advisor_queue.put((market, user, force))
 
 
 def advisor_warm_tick():
@@ -2215,7 +2224,7 @@ def advisor_warm_tick():
     cutoff = now_ms() - 24 * 3600000
     stale = []
     for (market, user), seen in list(_advisor_seen.items()):
-        if seen < cutoff:
+        if seen < cutoff or market in config.ARCHIVED_MARKETS:
             _advisor_seen.pop((market, user), None)
             continue
         cached = db.kv_get(f"advisor:{market}:{user}")
@@ -2226,12 +2235,12 @@ def advisor_warm_tick():
         _build_advisor(market, user)
 
 
-def _build_advisor(market, user):
+def _build_advisor(market, user, force=False):
     key = f"advisor:{market}:{user}"
     with _advisor_lock:
         # another thread may have built it while this one waited for the lock
         cached = db.kv_get(key)
-        if _advisor_fresh(cached):
+        if _advisor_fresh(cached) and not force:
             return cached
         epoch = _advisor_epoch.get((market, user), 0)
         pm, _ = price_map(market)
@@ -3013,10 +3022,14 @@ def api_changelog():
         return jsonify({"markdown": ""})
 
 
+ADVISOR_MANUAL_MIN_S = 60   # a Refresh press rebuilds a snapshot older than this
+
+
 @app.get("/api/<market>/advisor")
 def api_advisor(market):
     _check(market)
-    _advisor_seen[(market, uid())] = now_ms()
+    tag = (market, uid())
+    _advisor_seen[tag] = now_ms()
     snap = dict(get_advisor(market, uid()))
     if market in config.ARCHIVED_MARKETS:
         # frozen data can't carry a current suggestion: say so, show nothing
@@ -3031,6 +3044,15 @@ def api_advisor(market):
         snap["next_open"] = None
         snap["closed_reason"] = "archived"
         return jsonify(snap)
+    # the header's Refresh button asks for a genuine re-read, not the same
+    # snapshot handed back: one older than a minute is rebuilt behind this
+    # reply by the single advisor worker (one build per member at a time, so
+    # pressing again while it runs queues nothing more). The reply says
+    # whether a build is running so the panel can pick the result up itself.
+    if (request.headers.get("X-Refresh") == "manual"
+            and now_ms() - (snap.get("updated") or 0) > ADVISOR_MANUAL_MIN_S * 1000):
+        _advisor_refresh_async(market, uid(), force=True)
+    snap["rebuilding"] = tag in _advisor_building
     dis = dismissals(uid(), market)
     recs = []
     for r in snap.get("recommendations", []):
