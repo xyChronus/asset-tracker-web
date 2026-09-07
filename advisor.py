@@ -96,7 +96,33 @@ ALIASES = {
     "dogecoin": ["doge"],
     "hedera-hashgraph": ["hedera hashgraph"],
     "ethereum": ["ether"],  # \b keeps this from matching "tether"
+    # stocks: how headlines actually write the company, where that differs
+    # from the registered name the profile carries (keyed by ticker)
+    "TSM": ["tsmc", "taiwan semiconductor"],
+    "HOOD": ["robinhood"],
+    "STX": ["seagate"],
+    "GE": ["ge aerospace"],
+    "ANET": ["arista"],
+    "AMZN": ["amazon"],
+    "GOOGL": ["google", "alphabet"],
+    "GOOG": ["google", "alphabet"],
+    "META": ["facebook", "instagram"],
+    "JPM": ["jpmorgan", "jp morgan"],
+    "XOM": ["exxon"],
+    "COST": ["costco"],
+    "MU": ["micron"],
+    "AVGO": ["broadcom"],
+    "BRK.B": ["berkshire"],
+    "UNH": ["unitedhealth"],
+    "LLY": ["eli lilly", "lilly"],
+    "NFLX": ["netflix"],
+    "AMD": ["advanced micro devices"],
 }
+
+# tickers that are also everyday acronyms in financial news: their bare
+# symbol says nothing about the company (the Bank of England's rate-setting
+# MPC is not Marathon Petroleum), so only the name and aliases count for them
+SYMBOL_IS_A_WORD = {"MPC"}
 
 _NAME_SUFFIX = re.compile(
     r"\b(incorporated|inc|corporation|corp|company|co|plc|ltd|the)\b\.?", re.I)
@@ -119,7 +145,8 @@ def _asset_patterns(assets):
         name_rx = [re.compile(r"\b" + re.escape(t) + r"\b") for t in terms]
         sym = (a.get("symbol") or "").upper()
         # case-sensitive, >=3 chars, so tickers like NEAR/ALL don't match prose
-        sym_rx = re.compile(r"\b" + re.escape(sym) + r"\b") if len(sym) >= 3 else None
+        sym_rx = (re.compile(r"\b" + re.escape(sym) + r"\b")
+                  if len(sym) >= 3 and sym not in SYMBOL_IS_A_WORD else None)
         mask = [n for n, aid in cleaned
                 if aid != a["asset_id"] and name and len(name) >= 4
                 and name in n and n != name]
