@@ -523,3 +523,7 @@ An outside audit walked every tab of the live site and wrote up 35 findings. Thi
 ### Fixed
 - The archived PSE's advisor snapshot was still being re-read in the background every ten minutes someone viewed it. Frozen data has nothing new to read, so it's now served as is.
 - The Daily Briefing's "Strongest suggestion" amount could print unrounded ("selling ~$1505.123479282876" for a full-position sell); it's now a money figure to the cent.
+
+## [1.42.3] — 2026-09-07 — ADR fundamentals in the right currency
+### Fixed
+- **Foreign companies traded in the US as ADRs carried their home listing's figures.** Finnhub reports TSM's numbers in Taiwan dollars, Gold Fields' in rand cents, KB's in won, Ericsson's in kronor and Vodafone's in pence, so a $429 TSM sat beside a "52-week range" of 1,145–2,535 and the advisor read every one of them as far below its yearly low. The collector now spots a band the dollar price can't sit inside, rebuilds the 52-week range from the app's own stored closes, and leaves the home-currency amounts (EPS, dividend per share) honestly blank; the currency-free ratios (P/E, yield, growth, margins) are kept. The five affected names were repaired on the spot.

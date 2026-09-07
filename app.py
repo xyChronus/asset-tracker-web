@@ -1137,6 +1137,36 @@ def global_history_tick():
             db.kv_set("global:signals", {"updated": now_ms(), "data": merged})
 
 
+def _reconcile_adr_metrics(symb, m, price):
+    """Finnhub reports a foreign company's absolute figures in its HOME
+    listing's currency - TSM in Taiwan dollars, GFI in rand cents, KB in won,
+    ERIC in kronor, VOD in pence - while the quote is the US-listed share in
+    dollars. A 52-week band the dollar price can't sit inside is that
+    mismatch (a real move never lands 40% outside its own year's range): the
+    band is rebuilt from our own stored closes, and the home-currency amounts
+    (EPS, dividend per share) are left blank rather than shown beside a dollar
+    price. Ratios (P/E, yield, growth, margins) carry no currency and stay."""
+    lo, hi = m.get("wk52_low"), m.get("wk52_high")
+    if not price or not lo or not hi or lo * 0.6 <= price <= hi * 1.6:
+        return m
+    m = dict(m)
+    m["eps"] = None
+    m["div_ps"] = None
+    since = now_ms() - 365 * 86400000
+    row = db.conn().execute(
+        "SELECT min(price) AS lo, max(price) AS hi FROM ("
+        "  SELECT price FROM price_history_daily WHERE market='global' AND asset_id=%s AND ts >= %s"
+        "  UNION ALL"
+        "  SELECT price FROM price_history WHERE market='global' AND asset_id=%s AND ts >= %s) x",
+        (symb, since, symb, since)).fetchone()
+    own_lo, own_hi = (row or {}).get("lo"), (row or {}).get("hi")
+    m["wk52_low"] = min(own_lo, price) if own_lo else None
+    m["wk52_high"] = max(own_hi, price) if own_hi else None
+    print(f"[global] metrics {symb}: home-currency figures from Finnhub "
+          f"(52w {lo}-{hi} vs ${price}); 52-week band rebuilt from stored closes, EPS/dividend blanked")
+    return m
+
+
 def global_metrics_tick():
     ids = tracked_ids_all_users("global")
     if not ids:
@@ -1153,6 +1183,7 @@ def global_metrics_tick():
         db.set_fundamentals("global", stalest,
                             updated=now_ms() - (config.METRICS_REFRESH_HOURS - 1) * 3600000)
         return
+    m = _reconcile_adr_metrics(stalest, m, (price_map("global")[0].get(stalest) or {}).get("price"))
     # the industry tag never changes: fetch it once per symbol, then reuse.
     # "" (not NULL) when Finnhub has no tag, so we never re-ask forever
     if (fund.get(stalest) or {}).get("sector") is None:
