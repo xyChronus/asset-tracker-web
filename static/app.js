@@ -2304,6 +2304,21 @@ function renderWatchlist(assets) {
         ${isPse ? "" : `<td><button class="del-btn" data-rm="${esc(a.asset_id)}">✕</button></td>`}
       </tr>`).join("") + "</tbody>";
   }
+  if (!rows.length && filter) {
+    // the Filter box only narrows what's tracked - a ticker nobody has added
+    // yet finds nothing here, so say so and offer the add right where the
+    // member is looking (the Add box does the same thing, one step over)
+    const tickerish = /^[A-Z][A-Z0-9.\-]{0,6}$/.test(filter);
+    const canAdd = tickerish && !ARCHIVED[state.market] && state.market !== "pse";
+    wt.querySelector("tbody").innerHTML = `<tr><td colspan="14" class="empty-note">Nothing on your list matches "${esc(state.filter.trim())}"${canAdd
+      ? ` — it isn't tracked yet. <button type="button" class="mini-btn" id="watch-add-missing">Add ${esc(filter)} to your list</button>`
+      : "."}</td></tr>`;
+    const addBtn = document.getElementById("watch-add-missing");
+    if (addBtn) addBtn.onclick = () => {
+      document.getElementById("watch-query").value = filter;
+      document.getElementById("watch-add").requestSubmit();
+    };
+  }
   hideEmptyColumns(wt);
   rows.forEach((a, i) => {
     const cnv = document.getElementById("spark-" + i);
