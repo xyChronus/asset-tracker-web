@@ -539,3 +539,7 @@ An outside audit walked every tab of the live site and wrote up 35 findings. Thi
 ## [1.43.0] — 2026-09-09 — Star your watchlist
 ### Added
 - **Favourites on the Watchlist.** Every row has a ☆; tap it and the name is starred and **pinned to the top of the table** in whatever order the columns are sorted. A **★ only** button beside the filter narrows the table and the signal cards to just your starred names (remembered per market). Stars are yours alone — a member's favourites don't show on anyone else's list — and removing a name from the list clears its star.
+
+## [1.43.1] — 2026-09-09 — Budget and cash on hand are no longer tied together
+### Fixed
+- **"Set actual cash on hand" rewrote your budget.** Cash was defined as budget minus what your trades took out, so the only way to land the cash where you said was to change the budget — which is how a budget could read −$634. The two now live apart: the cash figure you set is stored as a correction of its own, the budget stays exactly what you typed, and retyping the budget no longer moves your cash either. Add/Withdraw still moves both, because a deposit is cash. The wallet-over-time chart uses the correction that applied at each hour, and the Wallet panel says when a correction is in force. If your budget currently shows a nonsense figure from the old behaviour, type the real one once — your cash will stay put.

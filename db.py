@@ -306,6 +306,11 @@ def init():
                           WHERE b.user_id = w.user_id AND b.market = w.market)""")
     conn().execute("UPDATE targets SET manual_sl_price=sl_price"
                    " WHERE manual_sl_price IS NULL AND trail_pct IS NULL AND sl_price IS NOT NULL")
+    # cash correction: 'Set actual cash on hand' used to rewrite the budget so
+    # the derived cash landed right; the two figures now live apart -
+    # cash = budget - money in positions + cash_adj (timeline kept per change)
+    conn().execute("ALTER TABLE wallets ADD COLUMN IF NOT EXISTS cash_adj DOUBLE PRECISION NOT NULL DEFAULT 0")
+    conn().execute("ALTER TABLE budget_history ADD COLUMN IF NOT EXISTS cash_adj DOUBLE PRECISION NOT NULL DEFAULT 0")
     conn().execute("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS source TEXT")
     conn().execute("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS fee DOUBLE PRECISION DEFAULT 0")
     for col in ("eps_growth", "rev_growth", "net_margin", "debt_equity", "pb", "roe"):

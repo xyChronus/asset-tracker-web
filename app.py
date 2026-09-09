@@ -1748,9 +1748,10 @@ def portfolio_state(market, user):
         (market, user)).fetchall()
     pm, updated = price_map(market)
     signals_data = db.kv_get(f"{market}:signals", {}).get("data", {})
-    w = db.conn().execute("SELECT budget FROM wallets WHERE user_id=%s AND market=%s",
+    w = db.conn().execute("SELECT budget, cash_adj FROM wallets WHERE user_id=%s AND market=%s",
                           (user, market)).fetchone()
     budget = w["budget"] if w else None
+    cash_adj = float(w["cash_adj"] or 0) if w else 0.0
     # money currently tied up = trade values + every fee paid (fees are cash
     # out). 'Adjust' rows are reconciliations, not trades - they change what
     # you HOLD, never what you SPENT, so they stay out of the cash math.
@@ -1892,11 +1893,14 @@ def portfolio_state(market, user):
                 tot_change24 += value - value / (1 + chg24 / 100)
     holdings.sort(key=lambda h: -(h["value"] or 0))
     closed.sort(key=lambda h: -abs(h["realized"]))
-    cash = (budget - net_flow) if budget is not None else None
+    # cash = what you put in, less what trades and fees took out, plus the
+    # correction typed under 'Set actual cash on hand' (kept separate so the
+    # budget stays exactly what the member typed)
+    cash = (budget - net_flow + cash_adj) if budget is not None else None
     return {
         "updated": updated, "holdings": holdings, "closed": closed,
         "summary": {
-            "budget": budget, "cash": cash,
+            "budget": budget, "cash": cash, "cash_adj": cash_adj if budget is not None else None,
             "total_worth": (tot_value + cash) if cash is not None else None,
             "budget_return_pct": ((tot_value + cash - budget) / budget * 100)
                                  if cash is not None and budget else None,
@@ -1936,13 +1940,13 @@ def portfolio_history(market, user, hours, step_h=1):
     # members who predate the timeline, that is whatever they had when it
     # started); no record at all = no wallet series.
     bh = db.conn().execute(
-        "SELECT budget, ts FROM budget_history WHERE user_id=%s AND market=%s ORDER BY ts",
+        "SELECT budget, cash_adj, ts FROM budget_history WHERE user_id=%s AND market=%s ORDER BY ts",
         (user, market)).fetchall()
     if not bh:
-        w = db.conn().execute("SELECT budget FROM wallets WHERE user_id=%s AND market=%s",
+        w = db.conn().execute("SELECT budget, cash_adj FROM wallets WHERE user_id=%s AND market=%s",
                               (user, market)).fetchone()
-        bh = [{"budget": w["budget"], "ts": 0}] if w else []
-    budget_at = [(r["ts"], r["budget"]) for r in bh]
+        bh = [{"budget": w["budget"], "cash_adj": w["cash_adj"], "ts": 0}] if w else []
+    budget_at = [(r["ts"], r["budget"], float(r["cash_adj"] or 0)) for r in bh]
     end = now_ms() // 3600000 * 3600000
     start = end - hours * 3600000
     prices = {aid: [] for aid in assets}
@@ -1993,10 +1997,12 @@ def portfolio_history(market, user, hours, step_h=1):
         while bi + 1 < len(budget_at) and budget_at[bi + 1][0] <= hpoint:
             bi += 1
         budget = budget_at[bi][1] if budget_at else None
+        adj = budget_at[bi][2] if budget_at else 0.0
         # 4th element: whole-wallet worth = positions + the cash left at that
-        # hour (that hour's budget minus everything spent by then) - realized
-        # gains land in cash, so they show up here naturally; 5th: that budget
-        wallet = round(total + budget - flow, 2) if budget is not None else None
+        # hour (that hour's budget minus everything spent by then, plus the
+        # cash correction in force then) - realized gains land in cash, so
+        # they show up here naturally; 5th: that budget
+        wallet = round(total + budget - flow + adj, 2) if budget is not None else None
         points.append([hpoint, round(total, 2), round(invested, 2), wallet, budget])
         if not held and not budget_at:
             points.pop()   # nothing held and no wallet: nothing to chart
@@ -2629,10 +2635,22 @@ def api_adjust(market):
     return jsonify({"ok": True})
 
 
+def _spent_so_far(market, user):
+    """Cash that trades and fees have taken out of the wallet so far ('Adjust'
+    rows restate what you hold, never what you spent)."""
+    txs = db.conn().execute(
+        "SELECT value, fee, type FROM transactions WHERE market=%s AND user_id=%s",
+        (market, user)).fetchall()
+    return sum((t["value"] or 0) + (t["fee"] or 0) for t in txs if t["type"] != "Adjust")
+
+
 @app.post("/api/<market>/set_cash")
 def api_set_cash(market):
-    """Set the TRUE cash on hand; the budget is back-computed so available
-    cash lands exactly where the user says it is."""
+    """Set the TRUE cash on hand. The difference from what the trades imply is
+    stored as a correction of its own; the budget stays exactly as typed
+    (it used to be rewritten to make the cash land, which tied the two
+    figures together). With no budget yet, the budget is seeded so cash
+    tracking starts at this figure."""
     _check(market)
     d = request.get_json(force=True)
     try:
@@ -2641,18 +2659,27 @@ def api_set_cash(market):
         return jsonify({"error": "Enter your actual cash as a plain number."}), 400
     if not math.isfinite(cash) or cash < 0:
         return jsonify({"error": "Cash can't be negative."}), 400
-    txs = db.conn().execute(
-        "SELECT value, fee, type FROM transactions WHERE market=%s AND user_id=%s",
-        (market, uid())).fetchall()
-    net_flow = sum((t["value"] or 0) + (t["fee"] or 0) for t in txs
-                   if t["type"] != "Adjust")
-    budget = cash + net_flow
-    db.conn().execute("INSERT INTO wallets VALUES (%s,%s,%s)"
-                      " ON CONFLICT (user_id, market) DO UPDATE SET budget=EXCLUDED.budget",
-                      (uid(), market, budget))
-    _record_budget(uid(), market, budget)
+    net_flow = _spent_so_far(market, uid())
+    # one statement against the stored budget, rounded to cents: a save from
+    # another device in the same instant can't be overwritten with stale numbers
+    row = db.conn().execute(
+        "UPDATE wallets SET cash_adj = ROUND((%s - (budget - %s))::numeric, 2)"
+        " WHERE user_id=%s AND market=%s AND budget IS NOT NULL RETURNING budget, cash_adj",
+        (cash, net_flow, uid(), market)).fetchone()
+    if row:
+        budget, cash_adj, seeded = float(row["budget"]), float(row["cash_adj"]) or 0.0, False
+    else:
+        # no budget yet: seed one so cash tracking starts at this figure -
+        # never below zero (a net seller's surplus sits in the correction)
+        budget = max(0.0, cash + net_flow)
+        cash_adj = round(cash + net_flow - budget, 2) or 0.0
+        seeded = True
+        db.conn().execute("INSERT INTO wallets (user_id, market, budget, cash_adj) VALUES (%s,%s,%s,%s)"
+                          " ON CONFLICT (user_id, market) DO UPDATE SET budget=EXCLUDED.budget, cash_adj=EXCLUDED.cash_adj",
+                          (uid(), market, budget, cash_adj))
+    _record_budget(uid(), market, budget, cash_adj)
     _invalidate_advisor(market, uid())
-    return jsonify({"ok": True, "budget": budget, "cash": cash})
+    return jsonify({"ok": True, "budget": budget, "cash": cash, "cash_adj": cash_adj, "seeded": seeded})
 
 
 @app.post("/api/<market>/wallet")
@@ -2679,7 +2706,7 @@ def api_wallet(market):
                 return jsonify({"error": "set a starting budget first - there's nothing to adjust yet"}), 400
             return jsonify({"error": f"that would take the budget below zero (it's {cur['budget']:g} now)"}), 400
         budget = float(row["budget"])
-        _record_budget(uid(), market, budget)
+        _record_budget(uid(), market, budget, _cash_adj(uid(), market))
         _invalidate_advisor(market, uid())
         return jsonify({"ok": True, "budget": budget})
     raw = d.get("budget")
@@ -2690,22 +2717,43 @@ def api_wallet(market):
             budget = float(raw)
         except (TypeError, ValueError):
             return jsonify({"error": "enter a plain number, e.g. 5000"}), 400
-        if budget < 0:
+        if not math.isfinite(budget) or budget < 0:
             return jsonify({"error": "the budget can't be negative"}), 400
-    db.conn().execute("INSERT INTO wallets VALUES (%s,%s,%s)"
-                      " ON CONFLICT (user_id, market) DO UPDATE SET budget=EXCLUDED.budget",
-                      (uid(), market, budget))
-    _record_budget(uid(), market, budget)
+    # retyping the budget is a statement about money put in, not a deposit:
+    # the cash on hand stays where it is (the correction absorbs the change,
+    # in one statement so two saves can't cross). The first budget ever set
+    # seeds cash = budget - spent; clearing it turns cash tracking off and
+    # drops the correction.
+    cash_adj = 0.0
+    row = None
+    if budget is not None:
+        row = db.conn().execute(
+            "UPDATE wallets SET cash_adj = ROUND((cash_adj + (budget - %s))::numeric, 2), budget = %s"
+            " WHERE user_id=%s AND market=%s AND budget IS NOT NULL RETURNING cash_adj",
+            (budget, budget, uid(), market)).fetchone()
+        if row:
+            cash_adj = float(row["cash_adj"]) or 0.0
+    if not row:
+        db.conn().execute("INSERT INTO wallets (user_id, market, budget, cash_adj) VALUES (%s,%s,%s,0)"
+                          " ON CONFLICT (user_id, market) DO UPDATE SET budget=EXCLUDED.budget, cash_adj=0",
+                          (uid(), market, budget))
+    _record_budget(uid(), market, budget, cash_adj)
     _invalidate_advisor(market, uid())
-    return jsonify({"ok": True, "budget": budget})
+    return jsonify({"ok": True, "budget": budget, "cash_adj": cash_adj})
 
 
-def _record_budget(user, market, budget):
-    """Append to the budget timeline (None = budget cleared) so history
-    charts can use the budget that applied at each moment."""
+def _cash_adj(user, market):
+    w = db.conn().execute("SELECT cash_adj FROM wallets WHERE user_id=%s AND market=%s",
+                          (user, market)).fetchone()
+    return float(w["cash_adj"] or 0) if w else 0.0
+
+
+def _record_budget(user, market, budget, cash_adj=0.0):
+    """Append to the wallet timeline (None = budget cleared) so history
+    charts can use the budget and cash correction that applied at each moment."""
     db.conn().execute(
-        "INSERT INTO budget_history (user_id, market, budget, ts) VALUES (%s,%s,%s,%s)",
-        (user, market, budget, now_ms()))
+        "INSERT INTO budget_history (user_id, market, budget, cash_adj, ts) VALUES (%s,%s,%s,%s,%s)",
+        (user, market, budget, cash_adj, now_ms()))
 
 
 @app.post("/api/<market>/targets")

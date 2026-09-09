@@ -240,17 +240,21 @@
             <button type="button" id="wallet-take" class="mini-btn">− Withdraw</button>
           </div>
         </label>
-        <div class="muted small-note">Set the budget once and the app tracks your cash
-          automatically: available cash = budget − money currently in positions.
-          When you move money in or out, Add/Withdraw the amount — no need to retype
-          the total. Leave the budget empty to turn cash tracking off.</div>
+        <div class="muted small-note">The budget is what you've put in; cash available is
+          tracked from it and your trades. Add/Withdraw moves both (money in is money in).
+          Retyping the budget moves only the budget — your cash stays where it is — and
+          <b>Set actual cash on hand</b> below moves only the cash. Leave the budget empty
+          to turn cash tracking off (that also clears any cash correction).</div>
         <div class="form-msg" id="wallet-msg"></div>
       </div>
       <div class="panel-head"><h3>🔧 Fix records</h3></div>
       <div class="wallet-box">
         <div class="muted small-note">If the tracker has drifted from your real
-          exchange or broker, set the true numbers here — corrections change your
-          records without touching cash or profit/loss history.</div>
+          exchange or broker, set the true numbers here. Setting the cash stores the
+          difference as a correction of its own: your budget and your trades' profit/loss
+          are left alone, and the correction shows in your total worth and return vs budget
+          as an unexplained gain or loss (with no budget set yet, it starts cash tracking
+          by seeding one). Correcting a position changes what you hold, not what you spent.</div>
         <label>Set actual cash on hand
           <div class="input-row">
             <input type="number" step="any" min="0" id="fix-cash" placeholder="what's really available">

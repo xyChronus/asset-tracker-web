@@ -1829,7 +1829,9 @@ async function loadPortfolio() {
     ? `<div class="mini-stat"><span>Cash available</span>
          <b class="${s.cash > 0 ? "pos" : "neg"}">${fmtMoney(s.cash)}</b></div>
        <div class="mini-stat"><span>In positions</span><b>${fmtMoney(s.value)}</b></div>
-       <div class="mini-stat"><span>Budget</span><b>${fmtMoney(s.budget)}</b></div>`
+       <div class="mini-stat"><span>Budget</span><b>${fmtMoney(s.budget)}</b></div>` +
+       (Math.abs(s.cash_adj || 0) >= 0.005 ? `<div class="mini-stat" title="The difference between the cash your trades imply and the cash you've set (or kept when retyping the budget) — included in Cash available, so it also shows in your return vs budget">
+         <span>Cash correction</span><b>${moneySpan(s.cash_adj)}</b></div>` : "")
     : '<div class="mini-stat"><span>Cash tracking</span><b class="muted">off — set a budget below</b></div>';
 
   // Fix-records widgets: position picker + handlers
@@ -1843,9 +1845,13 @@ async function loadPortfolio() {
     const v = parseFloat(document.getElementById("fix-cash").value);
     if (!(v >= 0)) { fixMsg.innerHTML = '<span class="neg">Enter your actual cash (0 or more).</span>'; return; }
     try {
-      await api(M() + "/set_cash", { method: "POST",
+      const r = await api(M() + "/set_cash", { method: "POST",
         headers: { "Content-Type": "application/json" }, body: JSON.stringify({ cash: v }) });
-      toast("Cash set ✓ — the budget was recalculated to match.");
+      const corr = Math.abs(r.cash_adj || 0) >= 0.005;
+      toast(r.seeded
+        ? `Cash set ✓ — cash tracking starts here, with the budget seeded at ${fmtMoney(r.budget)}${corr ? ` and a correction of ${fmtMoney(r.cash_adj)}` : ""}.`
+        : corr ? `Cash set ✓ — stored as a correction of ${fmtMoney(r.cash_adj)}; your budget is unchanged.`
+               : "Cash set ✓ — your trades already put the cash there, so no correction was needed.");
       document.getElementById("fix-cash").value = "";
       loadPortfolio(); loadHeader();
     } catch (e) { fixMsg.innerHTML = `<span class="neg">${esc(e.message)}</span>`; }
@@ -3325,11 +3331,11 @@ document.getElementById("wallet-save").onclick = async () => {
   const msg = document.getElementById("wallet-msg");
   msg.textContent = "";
   try {
-    await api(M() + "/wallet", {
+    const r = await api(M() + "/wallet", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ budget: document.getElementById("wallet-budget").value }),
     });
-    msg.innerHTML = '<span class="pos">Saved ✓</span>';
+    msg.innerHTML = `<span class="pos">Saved ✓${r.budget != null && Math.abs(r.cash_adj || 0) >= 0.005 ? " — your cash on hand stays where it is" : ""}</span>`;
     loadPortfolio(); loadHeader();
   } catch (e) {
     msg.innerHTML = `<span class="neg">${esc(e.message)}</span>`;
