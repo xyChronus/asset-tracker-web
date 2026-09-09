@@ -55,6 +55,8 @@ const state = {
   chartAsset: {},        // per market
   txSide: "buy",
   watch: {},             // per-market watchlist cache
+  favOnly: { crypto: !!localStorage.getItem("favonly:crypto"), pse: !!localStorage.getItem("favonly:pse"),
+             global: !!localStorage.getItem("favonly:global") },   // '★ only' view, per market
   filter: "",
   sort: {},              // per-table sort: { <tableKey>: {key, dir} }
 };
@@ -2237,6 +2239,8 @@ function hideEmptyColumns(table) {
   }
 }
 
+const _favQ = {};   // asset_id -> the star request in flight, so taps queue in order
+
 function renderWatchlist(assets) {
   const isPse = state.market === "pse";
   const isCrypto = state.market === "crypto";
@@ -2255,9 +2259,19 @@ function renderWatchlist(assets) {
   const wt = document.getElementById("watch-table");
   const sortKey = "watch:" + state.market;
   const filter = (state.filter || "").toUpperCase();
-  const matches = assets.filter(a => !filter ||
-    a.symbol.toUpperCase().includes(filter) || (a.name || "").toUpperCase().includes(filter));
-  const rows = applySort(matches, sortKey);
+  const favOnly = !!state.favOnly[state.market];
+  const favBtn = document.getElementById("watch-fav-only");
+  favBtn.setAttribute("aria-pressed", favOnly ? "true" : "false");
+  favBtn.title = favOnly ? "Showing only your starred names — tap to show everything"
+                         : "Show only the names you've starred";
+  const hit = a => !filter || a.symbol.toUpperCase().includes(filter) || (a.name || "").toUpperCase().includes(filter);
+  const matches = assets.filter(a => (!favOnly || a.fav) && hit(a));
+  // starred names sit at the top in whatever order the columns are sorted
+  const sorted = applySort(matches, sortKey);
+  const rows = [...sorted.filter(a => a.fav), ...sorted.filter(a => !a.fav)];
+  const favCell = (a) => `<button type="button" class="fav-btn${a.fav ? " on" : ""}" data-fav="${esc(a.asset_id)}"
+    aria-pressed="${a.fav ? "true" : "false"}" aria-label="Star ${esc(a.symbol || a.name)}"
+    title="${a.fav ? "Starred — pinned to the top of your list" : "Star this name to pin it to the top of your list"}">${a.fav ? "★" : "☆"}</button>`;
 
   if (isCrypto) {
     wt.innerHTML = `<thead><tr>` +
@@ -2275,10 +2289,10 @@ function renderWatchlist(assets) {
         <td class="muted">${fmtMoney(a.market_cap, true)}</td>
         <td><canvas class="spark" id="spark-${i}"></canvas></td>
         <td>${sigBadge(a.signal)}${a.signal && a.signal.action !== "WAIT" ? " " + scorePill(a.signal.score) : ""}${rvolChip(a.signal)}</td>
-        <td><button class="del-btn" data-rm="${esc(a.asset_id)}">✕</button></td>
+        <td class="row-tools">${favCell(a)}<button class="del-btn" data-rm="${esc(a.asset_id)}">✕</button></td>
       </tr>`).join("") + "</tbody>";
   } else {
-    const rm = isPse ? "" : "<th></th>";
+    const rm = "<th></th>";   // ★ for every market; ✕ only where the list is the member's own
     wt.innerHTML = `<thead><tr>` +
       th(isPse ? "Company" : "Stock", "name", sortKey) + th("Price", "price", sortKey) +
       th("Day", "chg_24h", sortKey) +
@@ -2301,10 +2315,16 @@ function renderWatchlist(assets) {
         ${newsCell(a)}
         <td><canvas class="spark" id="spark-${i}"></canvas></td>
         <td>${sigBadge(a.signal)}${a.signal && a.signal.action !== "WAIT" ? " " + scorePill(a.signal.score) : ""}${rvolChip(a.signal)}</td>
-        ${isPse ? "" : `<td><button class="del-btn" data-rm="${esc(a.asset_id)}">✕</button></td>`}
+        <td class="row-tools">${favCell(a)}${isPse ? "" : `<button class="del-btn" data-rm="${esc(a.asset_id)}">✕</button>`}</td>
       </tr>`).join("") + "</tbody>";
   }
-  if (!rows.length && filter) {
+  if (!rows.length && favOnly && (!filter || assets.some(hit))) {
+    wt.querySelector("tbody").innerHTML = `<tr><td colspan="14" class="empty-note">${assets.some(a => a.fav)
+      ? `None of your starred names match "${esc(state.filter.trim())}".`
+      : `Nothing starred yet — <button type="button" class="mini-btn" id="watch-fav-off">show the full list</button>, then tap ☆ on a row to pin it to the top.`}</td></tr>`;
+    const off = document.getElementById("watch-fav-off");
+    if (off) off.onclick = () => document.getElementById("watch-fav-only").click();
+  } else if (!rows.length && filter) {
     // the Filter box only narrows what's tracked - a ticker nobody has added
     // yet finds nothing here, so say so and offer the add right where the
     // member is looking (the Add box does the same thing, one step over)
@@ -2329,6 +2349,31 @@ function renderWatchlist(assets) {
     await api(M() + "/watchlist/" + encodeURIComponent(b.dataset.rm), { method: "DELETE" });
     loadWatchlist();
   });
+  wt.querySelectorAll("[data-fav]").forEach(b => b.onclick = async () => {
+    const a = assets.find(x => x.asset_id === b.dataset.fav);
+    if (!a) return;
+    const want = !a.fav;
+    a.fav = want;                    // shown at once; the reply confirms or reverts
+    renderWatchlist(assets);
+    // the table was rebuilt: put keyboard focus back on this name's star (or
+    // on the ★ only button when the row just left the view)
+    const again = [...wt.querySelectorAll("[data-fav]")].find(x => x.dataset.fav === a.asset_id);
+    (again || document.getElementById("watch-fav-only")).focus();
+    // taps on one name are sent in order, so the server always ends on the last tap
+    const send = () => api(M() + "/watchlist/" + encodeURIComponent(a.asset_id) + "/fav", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ on: want }),
+    });
+    try {
+      await (_favQ[a.asset_id] = (_favQ[a.asset_id] || Promise.resolve()).catch(() => { }).then(send));
+    } catch (e) {
+      a.fav = !want;
+      toast((want ? "Couldn't save the star: " : "Couldn't remove the star: ") + e.message, "error");
+      // re-read the list from the server - unless this table belongs to
+      // another market by now, in which case its own load is under way
+      if (state.watch[state.market] === assets) loadWatchlist();
+    }
+  });
   bindSort(wt, sortKey, () => renderWatchlist(assets));
 
   // signal cards: holdings + anything with a non-HOLD signal (capped) -
@@ -2336,9 +2381,11 @@ function renderWatchlist(assets) {
   const withSig = matches.filter(a => a.signal && a.signal.action !== "WAIT");
   const interesting = withSig.filter(a => a.signal.action !== "HOLD");
   const shown = (interesting.length ? interesting : withSig).slice(0, 24);
-  if (filter && !shown.length) {
-    document.getElementById("signal-grid").innerHTML =
-      '<div class="empty-note">No signal cards match this filter.</div>';
+  if ((filter || favOnly) && !shown.length) {
+    document.getElementById("signal-grid").innerHTML = `<div class="empty-note">${
+      favOnly && !assets.some(a => a.fav) ? "Star ☆ a name to see its signal card here."
+      : favOnly ? `None of your starred names has a signal card${filter ? " matching this filter" : " right now"}.`
+      : "No signal cards match this filter."}</div>`;
   } else
   document.getElementById("signal-grid").innerHTML = shown.map(a => {
     const s = a.signal;
@@ -2379,6 +2426,11 @@ function setupWatchTools() {
   document.getElementById("watch-filter").oninput = (e) => {
     state.filter = e.target.value;
     loadWatchlist();
+  };
+  document.getElementById("watch-fav-only").onclick = () => {
+    state.favOnly[state.market] = !state.favOnly[state.market];
+    try { localStorage.setItem("favonly:" + state.market, state.favOnly[state.market] ? "1" : ""); } catch (e) { }
+    renderWatchlist(state.watch[state.market] || []);
   };
 }
 
@@ -3648,7 +3700,7 @@ const TOUR_STEPS = [
   { sel: "#refresh-btn", title: "Fresh numbers on demand",
     text: "The page refreshes itself every two minutes while it's open. Just logged something, or want the latest right now? ↻ fetches everything on the view again — and on the Dashboard and Advisor tabs it asks the advisor to re-read your portfolio." },
   { tab: "watchlist", sel: "#watch-table", title: "Watchlist & Signals",
-    text: "Every tracked asset with its technical read and a News score from −3 to +3. Sort the columns, filter by name — and once you hold something, its ticker appears as a one-tap chip up top." },
+    text: "Every tracked asset with its technical read and a News score from −3 to +3. Sort the columns, filter by name, star ☆ the names you care most about to pin them to the top (★ only shows just those) — and once you hold something, its ticker appears as a one-tap chip up top." },
   { tab: "news", sel: "#news-scope", title: "News that's about YOU",
     text: "All news, or just the stories that touch your holdings — 💼 marks a story naming something you own. On the stock markets, sector-wide news that moves your kind of company is included too." },
   { sel: "#user-dd-btn", title: "Make it yours",

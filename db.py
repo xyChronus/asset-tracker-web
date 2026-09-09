@@ -118,6 +118,13 @@ CREATE TABLE IF NOT EXISTS pse_companies (
     sector TEXT,
     updated BIGINT
 );
+CREATE TABLE IF NOT EXISTS watch_favs (
+    user_id INTEGER NOT NULL,          -- per member, even on the shared PSE board
+    market TEXT NOT NULL,
+    asset_id TEXT NOT NULL,
+    added_ts TEXT,
+    PRIMARY KEY (user_id, market, asset_id)
+);
 CREATE TABLE IF NOT EXISTS advisor_dismissed (
     user_id INTEGER NOT NULL,
     market TEXT NOT NULL,

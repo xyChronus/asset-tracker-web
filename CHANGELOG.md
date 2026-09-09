@@ -535,3 +535,7 @@ An outside audit walked every tab of the live site and wrote up 35 findings. Thi
 ## [1.42.5] — 2026-09-07 — A ticker you can't find offers to be added
 ### Fixed
 - **Searching the watchlist for a ticker nobody has added yet just showed an empty table.** The Filter box only narrows what's already tracked, so a name like ACMR looked as if the app didn't know it. Now the empty result says so ("Nothing on your list matches ACMR — it isn't tracked yet") and carries an **Add ACMR to your list** button that does exactly what the Add box does. Any US-listed stock the price feed knows (about 18,000 of them) can be added this way; prices, history, fundamentals, signals and news follow within minutes.
+
+## [1.43.0] — 2026-09-09 — Star your watchlist
+### Added
+- **Favourites on the Watchlist.** Every row has a ☆; tap it and the name is starred and **pinned to the top of the table** in whatever order the columns are sorted. A **★ only** button beside the filter narrows the table and the signal cards to just your starred names (remembered per market). Stars are yours alone — a member's favourites don't show on anyone else's list — and removing a name from the list clears its star.

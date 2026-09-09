@@ -2863,6 +2863,8 @@ def api_watchlist(market):
     newsscores = db.kv_get(f"{market}:newsscores", {}).get("data") or {}
     sparks = _daily_sparks(market) if market != "crypto" else {}
     owner = 0 if market == "pse" else uid()
+    favs = {r["asset_id"] for r in db.conn().execute(
+        "SELECT asset_id FROM watch_favs WHERE market=%s AND user_id=%s", (market, uid())).fetchall()}
     out = []
     for r in db.conn().execute(
             "SELECT * FROM watchlist WHERE market=%s AND user_id=%s ORDER BY asset_id",
@@ -2894,8 +2896,34 @@ def api_watchlist(market):
             "sparkline": spark,
             "signal": signals_data.get(aid),
             "news": newsscores.get(aid),
+            "fav": aid in favs,
         })
     return jsonify({"updated": updated, "assets": out})
+
+
+@app.post("/api/<market>/watchlist/<path:asset_id>/fav")
+def api_watchlist_fav(market, asset_id):
+    """Star / unstar a row of the member's own list (the shared PSE board
+    included): a favourite is pinned to the top of the Watchlist table and
+    the '★ only' view narrows to them. Per member; changes nothing else."""
+    _check(market)
+    body = request.get_json(force=True, silent=True)
+    on = body.get("on", True) if isinstance(body, dict) else True
+    if not isinstance(on, bool):
+        return jsonify({"error": "'on' must be true or false."}), 400
+    owner = 0 if market == "pse" else uid()
+    c = db.conn()
+    if on:
+        if not c.execute("SELECT 1 FROM watchlist WHERE market=%s AND user_id=%s AND asset_id=%s",
+                         (market, owner, asset_id)).fetchone():
+            return jsonify({"error": "That name isn't on your list, so there's nothing to star."}), 404
+        c.execute("INSERT INTO watch_favs VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING",
+                  (uid(), market, asset_id, db.now_iso()))
+    else:
+        # removing a star needs no row to exist: nothing to 404 about
+        c.execute("DELETE FROM watch_favs WHERE user_id=%s AND market=%s AND asset_id=%s",
+                  (uid(), market, asset_id))
+    return jsonify({"ok": True, "asset_id": asset_id, "fav": on})
 
 
 @app.post("/api/<market>/watchlist")
@@ -2964,6 +2992,8 @@ def api_watchlist_remove(market, asset_id):
     if market == "pse":
         return jsonify({"error": "PSE tickers can't be removed - the shared board lists every quoted name for everyone."}), 400
     db.conn().execute("DELETE FROM watchlist WHERE market=%s AND asset_id=%s AND user_id=%s",
+                      (market, asset_id, uid()))
+    db.conn().execute("DELETE FROM watch_favs WHERE market=%s AND asset_id=%s AND user_id=%s",
                       (market, asset_id, uid()))
     _invalidate_advisor(market, uid())
     return jsonify({"ok": True})

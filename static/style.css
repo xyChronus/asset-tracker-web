@@ -414,6 +414,15 @@ select { width: auto; }
 }
 .mini-btn:hover, .link-btn:hover { color: var(--text); }
 .del-btn:hover { color: var(--red); border-color: var(--red); }
+.row-tools { white-space: nowrap; }
+.fav-btn {
+  background: none; border: none; cursor: pointer; color: var(--muted);
+  font-size: 17px; line-height: 1; padding: 2px 7px; vertical-align: middle;
+}
+.fav-btn:hover { color: var(--accent); }
+.fav-btn.on { color: var(--accent); }
+.fav-only[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+@media (pointer: coarse) { .fav-btn { font-size: 20px; padding: 6px 9px; } }
 .link-btn { border: none; background: none; }
 .form-msg { margin-top: 8px; font-size: 12.5px; min-height: 18px; }
 .inline-form { display: flex; gap: 8px; }
