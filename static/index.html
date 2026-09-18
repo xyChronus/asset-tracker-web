@@ -240,11 +240,13 @@
             <button type="button" id="wallet-take" class="mini-btn">− Withdraw</button>
           </div>
         </label>
-        <div class="muted small-note">The budget is what you've put in; cash available is
-          tracked from it and your trades. Add/Withdraw moves both (money in is money in).
-          Retyping the budget moves only the budget — your cash stays where it is — and
-          <b>Set actual cash on hand</b> below moves only the cash. Leave the budget empty
-          to turn cash tracking off (that also clears any cash correction).</div>
+        <div class="muted small-note">The budget is what you've put in, and it splits two ways:
+          <b>cash available</b> plus the money <b>in positions</b> (budget − cash). Retyping the
+          budget changes <b>In positions</b> directly — your cash stays where it is — while
+          Add/Withdraw moves the cash (a deposit is cash), and <b>Set actual cash on hand</b>
+          below moves only the cash. <b>Worth now</b> is what those positions would sell for
+          today. Leave the budget empty to turn cash tracking off (that also clears any cash
+          correction).</div>
         <div class="form-msg" id="wallet-msg"></div>
       </div>
       <div class="panel-head"><h3>🔧 Fix records</h3></div>

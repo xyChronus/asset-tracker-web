@@ -543,3 +543,10 @@ An outside audit walked every tab of the live site and wrote up 35 findings. Thi
 ## [1.43.1] — 2026-09-09 — Budget and cash on hand are no longer tied together
 ### Fixed
 - **"Set actual cash on hand" rewrote your budget.** Cash was defined as budget minus what your trades took out, so the only way to land the cash where you said was to change the budget — which is how a budget could read −$634. The two now live apart: the cash figure you set is stored as a correction of its own, the budget stays exactly what you typed, and retyping the budget no longer moves your cash either. Add/Withdraw still moves both, because a deposit is cash. The wallet-over-time chart uses the correction that applied at each hour, and the Wallet panel says when a correction is in force. If your budget currently shows a nonsense figure from the old behaviour, type the real one once — your cash will stay put.
+
+## [1.43.2] — 2026-09-18 — The budget lands in "In positions"
+### Changed
+- **Retyping the budget now changes "In positions" directly, and never your cash on hand.** The Wallet panel reads as one sum: your **budget** splits into **cash available** plus the money **in positions** (budget − cash). Type a new budget and the difference goes to In positions; the cash you set stays exactly where it is. Add/Withdraw still moves the cash, because a deposit is cash. (Member review.)
+- A new **Worth now** tile beside it shows what those positions would sell for today, with the gain or loss against the budget money in them — the same figure as your return vs budget. The header's breakdown now says "holdings + cash" so the live worth isn't mistaken for the money you put in.
+### Fixed
+- **Retyping the budget could leave the cash reading a red "−$0.00000984".** The save rounded the hidden cash correction to the cent, which nudged a pinned cash figure by a sliver. The correction is now carried exactly, cash is shown to the cent, and a cash of exactly zero is no longer painted red.

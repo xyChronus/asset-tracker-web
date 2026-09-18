@@ -1896,11 +1896,18 @@ def portfolio_state(market, user):
     # cash = what you put in, less what trades and fees took out, plus the
     # correction typed under 'Set actual cash on hand' (kept separate so the
     # budget stays exactly what the member typed)
-    cash = (budget - net_flow + cash_adj) if budget is not None else None
+    # to the cent, and never a negative zero: trade values are float products,
+    # so the raw figure carries sub-cent dust (a cash of -0.00000984 printed
+    # in red under a budget the member had just retyped)
+    cash = (round(budget - net_flow + cash_adj, 2) + 0.0) if budget is not None else None
     return {
         "updated": updated, "holdings": holdings, "closed": closed,
         "summary": {
             "budget": budget, "cash": cash, "cash_adj": cash_adj if budget is not None else None,
+            # the budget splits into cash on hand and money in positions, so a
+            # retyped budget lands HERE and the cash stays where it is. Never
+            # below zero: cash past the budget is banked profit, not a debt
+            "in_positions": (max(0.0, round(budget - cash, 2)) + 0.0) if cash is not None else None,
             "total_worth": (tot_value + cash) if cash is not None else None,
             "budget_return_pct": ((tot_value + cash - budget) / budget * 100)
                                  if cash is not None and budget else None,
@@ -2728,7 +2735,9 @@ def api_wallet(market):
     row = None
     if budget is not None:
         row = db.conn().execute(
-            "UPDATE wallets SET cash_adj = ROUND((cash_adj + (budget - %s))::numeric, 2), budget = %s"
+            # exact, not rounded: rounding the correction here is what moved a
+            # pinned cash figure by a sub-cent sliver every time the budget changed
+            "UPDATE wallets SET cash_adj = cash_adj + (budget - %s), budget = %s"
             " WHERE user_id=%s AND market=%s AND budget IS NOT NULL RETURNING cash_adj",
             (budget, budget, uid(), market)).fetchone()
         if row:
@@ -2739,7 +2748,9 @@ def api_wallet(market):
                           (uid(), market, budget))
     _record_budget(uid(), market, budget, cash_adj)
     _invalidate_advisor(market, uid())
-    return jsonify({"ok": True, "budget": budget, "cash_adj": cash_adj})
+    # retyped: an existing budget was changed (the difference went to 'In
+    # positions', cash untouched) - as opposed to the first budget ever set
+    return jsonify({"ok": True, "budget": budget, "cash_adj": cash_adj, "retyped": bool(row)})
 
 
 def _cash_adj(user, market):

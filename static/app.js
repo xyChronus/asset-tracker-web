@@ -511,7 +511,7 @@ async function loadHeader() {
     const s = p.summary;
     const hsHtml = s.total_worth != null
       ? `<span class="hv">${fmtMoney(s.total_worth)}</span>` +
-        `<span class="muted">= ${fmtMoney(s.value)} invested + ${fmtMoney(s.cash)} cash</span>` +
+        `<span class="muted">= ${fmtMoney(s.value)} holdings + ${fmtMoney(s.cash)} cash</span>` +
         `<span>${pctSpan(s.change_24h_pct)} 24h</span>`
       : `<span class="hv">${fmtMoney(s.value)}</span>` +
         `<span>${pctSpan(s.change_24h_pct)} 24h</span>` +
@@ -1827,9 +1827,13 @@ async function loadPortfolio() {
   const s = p.summary || {};
   document.getElementById("wallet-live").innerHTML = s.cash != null
     ? `<div class="mini-stat"><span>Cash available</span>
-         <b class="${s.cash > 0 ? "pos" : "neg"}">${fmtMoney(s.cash)}</b></div>
-       <div class="mini-stat"><span>In positions</span><b>${fmtMoney(s.value)}</b></div>
-       <div class="mini-stat"><span>Budget</span><b>${fmtMoney(s.budget)}</b></div>` +
+         <b class="${s.cash >= 0.005 ? "pos" : s.cash <= -0.005 ? "neg" : "muted"}">${fmtMoney(s.cash)}</b></div>
+       <div class="mini-stat" title="Your budget minus your cash on hand — the part of the money you've put in that is riding in the market. Retyping the budget moves this figure directly; your cash on hand stays put.">
+         <span>In positions</span><b>${fmtMoney(s.in_positions, false, 2)}</b></div>
+       <div class="mini-stat"><span>Budget</span><b>${fmtMoney(s.budget)}</b></div>
+       <div class="mini-stat" title="What your positions would sell for at the latest prices. The coloured figure is that worth against the budget money in them — the same gain or loss as your return vs budget.">
+         <span>Worth now</span><b>${fmtMoney(s.value)}${s.total_worth != null && s.budget != null
+           ? ` <small class="${s.total_worth - s.budget >= 0 ? "pos" : "neg"}">${s.total_worth - s.budget >= 0 ? "+" : ""}${fmtMoney(s.total_worth - s.budget, false, 2)}</small>` : ""}</b></div>` +
        (Math.abs(s.cash_adj || 0) >= 0.005 ? `<div class="mini-stat" title="The difference between the cash your trades imply and the cash you've set (or kept when retyping the budget) — included in Cash available, so it also shows in your return vs budget">
          <span>Cash correction</span><b>${moneySpan(s.cash_adj)}</b></div>` : "")
     : '<div class="mini-stat"><span>Cash tracking</span><b class="muted">off — set a budget below</b></div>';
@@ -3335,7 +3339,7 @@ document.getElementById("wallet-save").onclick = async () => {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ budget: document.getElementById("wallet-budget").value }),
     });
-    msg.innerHTML = `<span class="pos">Saved ✓${r.budget != null && Math.abs(r.cash_adj || 0) >= 0.005 ? " — your cash on hand stays where it is" : ""}</span>`;
+    msg.innerHTML = `<span class="pos">Saved ✓${r.budget != null && r.retyped ? " — the change went to In positions; your cash on hand stays where it is" : ""}</span>`;
     loadPortfolio(); loadHeader();
   } catch (e) {
     msg.innerHTML = `<span class="neg">${esc(e.message)}</span>`;
