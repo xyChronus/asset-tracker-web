@@ -25,6 +25,36 @@ FH_MIN_INTERVAL = 1.2  # ~50/min vs the 60/min cap - margin for retries (quota a
 
 last_ok = None
 last_error = None
+last_error_at = None   # epoch seconds of that failure
+
+# One unreachable source must not stall the shared collector thread: after a
+# connection failure or timeout, calls to that source fail at once for SKIP_S
+# instead of each symbol sitting through its own 15-20 s timeout (a quote
+# round over dozens of symbols was taking 20+ minutes, freezing every
+# market's prices behind it). The next call after the window tries for real.
+SKIP_S = 90.0
+_skip = {}   # source -> monotonic time until which its calls fail fast
+_NET_ERRORS = (requests.ConnectionError, requests.Timeout)
+
+
+def _fail_fast(source):
+    if time.monotonic() < _skip.get(source, 0.0):
+        raise RuntimeError(f"{source} unreachable a moment ago - skipped until the next retry window")
+
+
+def _note_failure(source, e):
+    global last_error, last_error_at
+    last_error = str(e)
+    last_error_at = time.time()
+    if isinstance(e, _NET_ERRORS):
+        _skip[source] = time.monotonic() + SKIP_S
+
+
+def _note_ok(source):
+    global last_ok, last_error
+    last_ok = time.time()
+    last_error = None
+    _skip.pop(source, None)
 
 
 def _setting(env_name, settings_key):
@@ -52,10 +82,11 @@ def _f(x):
 
 def fh_get(path, params=None):
     """Rate-limited Finnhub GET. Raises if no key or on failure."""
-    global _last_fh_call, last_ok, last_error
+    global _last_fh_call
     key = _api_key()
     if not key:
         raise RuntimeError("no Finnhub API key configured")
+    _fail_fast("Finnhub")
     with _lock:
         wait = FH_MIN_INTERVAL - (time.monotonic() - _last_fh_call)
         if wait > 0:
@@ -69,11 +100,10 @@ def fh_get(path, params=None):
             time.sleep(30)
             r = requests.get(FINNHUB + path, params=p, headers=UA, timeout=20)
         r.raise_for_status()
-        last_ok = time.time()
-        last_error = None
+        _note_ok("Finnhub")
         return r.json()
     except requests.RequestException as e:
-        last_error = str(e)
+        _note_failure("Finnhub", e)
         raise
 
 
@@ -102,9 +132,14 @@ def twelvedata_quote(symbol):
     key = _setting("TWELVEDATA_API_KEY", "twelvedata_api_key")
     if not key:
         raise RuntimeError("no Twelve Data key")
-    r = requests.get(f"{TWELVE}/quote", params={"symbol": symbol, "apikey": key},
-                     headers=UA, timeout=15)
-    r.raise_for_status()
+    _fail_fast("Twelve Data")
+    try:
+        r = requests.get(f"{TWELVE}/quote", params={"symbol": symbol, "apikey": key},
+                         headers=UA, timeout=15)
+        r.raise_for_status()
+    except requests.RequestException as e:
+        _note_failure("Twelve Data", e)
+        raise
     d = r.json()
     price = d.get("close") or d.get("price")
     if not price:
@@ -119,9 +154,14 @@ def alphavantage_quote(symbol):
     key = _setting("ALPHAVANTAGE_API_KEY", "alphavantage_api_key")
     if not key:
         raise RuntimeError("no Alpha Vantage key")
-    r = requests.get(ALPHA, params={"function": "GLOBAL_QUOTE", "symbol": symbol,
-                                    "apikey": key}, headers=UA, timeout=15)
-    r.raise_for_status()
+    _fail_fast("Alpha Vantage")
+    try:
+        r = requests.get(ALPHA, params={"function": "GLOBAL_QUOTE", "symbol": symbol,
+                                        "apikey": key}, headers=UA, timeout=15)
+        r.raise_for_status()
+    except requests.RequestException as e:
+        _note_failure("Alpha Vantage", e)
+        raise
     g = r.json().get("Global Quote") or {}
     price = g.get("05. price")
     if not price:
@@ -237,10 +277,15 @@ def pse_fundamentals(symbol):
 # ------------------------------------------------------------------- yahoo
 
 def _yahoo_chart(symbol, interval, rng):
-    r = requests.get(f"{YAHOO}/{symbol}",
-                     params={"interval": interval, "range": rng},
-                     headers=UA, timeout=20)
-    r.raise_for_status()
+    _fail_fast("Yahoo")
+    try:
+        r = requests.get(f"{YAHOO}/{symbol}",
+                         params={"interval": interval, "range": rng},
+                         headers=UA, timeout=20)
+        r.raise_for_status()
+    except requests.RequestException as e:
+        _note_failure("Yahoo", e)
+        raise
     result = (r.json().get("chart", {}).get("result") or [None])[0]
     if not result:
         raise RuntimeError(f"yahoo: no data for {symbol}")
@@ -249,7 +294,7 @@ def _yahoo_chart(symbol, interval, rng):
 
 def yahoo_history(symbol, interval="1h", rng="60d"):
     """[[epoch_ms, close], ...] - hour-rounded, None closes skipped."""
-    global last_ok, last_error
+    global last_error, last_error_at
     try:
         res = _yahoo_chart(symbol, interval, rng)
         ts = res.get("timestamp") or []
@@ -259,11 +304,11 @@ def yahoo_history(symbol, interval="1h", rng="60d"):
             if cl is None:
                 continue
             out.append([int(t // 3600 * 3600) * 1000, float(cl)])
-        last_ok = time.time()
-        last_error = None
+        _note_ok("Yahoo")
         return out
     except Exception as e:
         last_error = str(e)
+        last_error_at = time.time()
         raise
 
 

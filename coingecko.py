@@ -26,6 +26,14 @@ _cooloff_until = 0.0  # monotonic ts; set when 429s persist (burst or monthly ca
 # Exposed for /api/status
 last_ok = None      # epoch seconds of last successful call
 last_error = None   # string of last failure, cleared on success
+last_error_at = None  # epoch seconds of that failure
+# after a connection failure or timeout, every call fails at once for this
+# long instead of each one sitting through its own retries (3 x 25 s): the
+# collector thread is shared by every market, and one unreachable source
+# must not freeze the others' prices for the duration
+_skip_until = 0.0
+SKIP_S = 60.0
+_NET_ERRORS = (requests.ConnectionError, requests.Timeout)
 
 
 class RateLimited(RuntimeError):
@@ -45,14 +53,17 @@ def _api_key():
 
 
 def get(path, params=None):
-    global _last_call, _cooloff_until, last_ok, last_error
+    global _last_call, _cooloff_until, _skip_until, last_ok, last_error, last_error_at
     with _lock:
         # while cooling off after persistent 429s, fail instantly instead of
         # sleeping the caller (the scheduler is single-threaded) - callers'
         # fallbacks (CoinMarketCap prices, backfill retry-later) take over
         if time.monotonic() < _cooloff_until:
             raise RateLimited("CoinGecko 429 cool-off active")
+        if time.monotonic() < _skip_until:
+            raise RuntimeError("CoinGecko unreachable a moment ago - skipped until the next retry window")
         got_429 = False
+        net_fail = False
         for attempt in range(3):
             key = _api_key()
             interval = 2.2 if key else MIN_INTERVAL  # a demo key allows ~30/min
@@ -68,16 +79,22 @@ def get(path, params=None):
                 if r.status_code == 429:
                     got_429 = True
                     last_error = "rate limited by CoinGecko, backing off"
+                    last_error_at = time.time()
                     time.sleep(15)
                     continue
                 r.raise_for_status()
                 last_ok = time.time()
                 last_error = None
                 _cooloff_until = 0.0
+                _skip_until = 0.0
                 return r.json()
             except requests.RequestException as e:
                 last_error = str(e)
+                last_error_at = time.time()
+                net_fail = isinstance(e, _NET_ERRORS)
                 if attempt == 2:
+                    if net_fail:
+                        _skip_until = time.monotonic() + SKIP_S
                     raise
                 time.sleep(5)
     if got_429:

@@ -33,11 +33,12 @@ EDGE_MIN_INTERVAL = 4.0
 
 last_ok = None
 last_error = None
+last_error_at = None   # epoch seconds of that failure
 
 
 def _edge_request(method, path, **kw):
     """Rate-limited request to PSE Edge."""
-    global _last_edge_call, last_ok, last_error
+    global _last_edge_call, last_ok, last_error, last_error_at
     with _lock:
         wait = EDGE_MIN_INTERVAL - (time.monotonic() - _last_edge_call)
         if wait > 0:
@@ -51,6 +52,7 @@ def _edge_request(method, path, **kw):
             return r.text
         except requests.RequestException as e:
             last_error = str(e)
+            last_error_at = time.time()
             raise
 
 
@@ -126,7 +128,7 @@ def _num(s):
 
 def fetch_quotes():
     """All PSE quotes: {SYMBOL: {price, chg_pct, volume, value, name}}."""
-    global last_ok, last_error
+    global last_ok, last_error, last_error_at
     err = None
     for url in PHISIX_URLS:
         try:
@@ -154,6 +156,7 @@ def fetch_quotes():
         except Exception as e:  # try the next mirror
             err = e
     last_error = str(err)
+    last_error_at = time.time()
     raise RuntimeError(f"phisix quotes failed: {err}")
 
 

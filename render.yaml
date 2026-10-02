@@ -16,3 +16,7 @@ services:
         sync: false
       - key: RUN_SCHEDULER
         value: "1"
+      # the app's own log lines (collector failures, scheduler tracebacks)
+      # were block-buffered and reached Render's logs hours late, in bursts
+      - key: PYTHONUNBUFFERED
+        value: "1"

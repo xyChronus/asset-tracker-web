@@ -558,31 +558,47 @@ async function loadHeader() {
     // ~2x each market's collection interval: amber must mean genuinely
     // stale, or everyone learns to ignore the one warning that matters
     const staleMs = state.market === "crypto" ? 15 * 60000 : 45 * 60000;
+    let cls, text, title = "";
     if (age != null && st.open === false) {
       // a closed market's data is as fresh as it can be - a green "live"
       // beside a closed market would read as a contradiction
-      dot.className = "status-dot idle";
-      txt.textContent = "updated " + timeAgo(st.quotes_updated) + " · market closed";
+      cls = "idle"; text = "updated " + timeAgo(st.quotes_updated) + " · market closed";
     } else if (age != null && age < staleMs) {
-      dot.className = "status-dot ok";
-      txt.textContent = "live · " + timeAgo(st.quotes_updated);
+      cls = "ok"; text = "live · " + timeAgo(st.quotes_updated);
     } else if (age != null) {
-      dot.className = "status-dot warn";
-      txt.textContent = "stale · " + timeAgo(st.quotes_updated);
+      cls = "warn"; text = "stale · " + timeAgo(st.quotes_updated);
     } else {
-      dot.className = "status-dot warn";
-      txt.textContent = "waiting for first price update…";
+      cls = "warn"; text = "waiting for first price update…";
     }
+    // a remembered failure only counts while it is the source's latest word:
+    // a success since then means it recovered, and fresh prices mean it cost
+    // nothing. Red is for a source that is failing NOW and prices going stale
+    // because of it - and the hover says which source, what it said, and when.
+    const errLive = !!st.source_error
+      && (!st.source_ok_at || !st.source_error_at || st.source_error_at >= st.source_ok_at);
+    const detail = st.source_error
+      ? `${st.source || "Data source"}: ${st.source_error}${st.source_error_at ? " (" + timeAgo(st.source_error_at) + ")" : ""}`
+      : "";
     if (ARCHIVED[state.market]) {
-      dot.className = "status-dot idle";
-      txt.textContent = "archived · last data " + (st.quotes_updated ? timeAgo(st.quotes_updated) : "n/a");
-    } else if (st.source_error) {
-      dot.className = "status-dot err";
-      txt.textContent = "data source issue — showing cached data";
+      cls = "idle"; text = "archived · last data " + (st.quotes_updated ? timeAgo(st.quotes_updated) : "n/a");
+    } else if (errLive && (age == null || age >= staleMs)) {
+      cls = "err"; text = "data source issue — showing cached data";
+      title = detail + ". Prices resume on their own once the source answers again; the advisor and charts keep using the last good data meanwhile.";
+    } else if (st.degraded) {
+      cls = "warn"; text = "live via backup source · " + timeAgo(st.quotes_updated);
+      title = "CoinGecko isn't answering" + (detail ? " — " + detail : "")
+        + ". Prices come from CoinMarketCap meanwhile (no sparklines or 1h/7d/30d changes until CoinGecko is back).";
+    } else if (errLive) {
+      title = detail + " — prices are still updating, so it cost nothing yet.";
     }
+    dot.className = "status-dot " + cls;
+    txt.textContent = text;
+    (dot.parentElement || txt).title = title;
   } catch (e) {
     document.getElementById("status-dot").className = "status-dot err";
     document.getElementById("status-text").textContent = "server unreachable";
+    const wrap = document.querySelector(".status-wrap");
+    if (wrap) wrap.title = "";
   }
 }
 

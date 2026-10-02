@@ -20,6 +20,7 @@ _lock = threading.Lock()
 _last_call = 0.0
 last_ok = None
 last_error = None
+last_error_at = None   # epoch seconds of that failure
 
 
 def _api_key():
@@ -36,7 +37,7 @@ def _api_key():
 def quotes_by_symbol(symbols):
     """{SYMBOL: {price, pct_24h, market_cap, volume, name}} for the given
     tickers. Returns {} if no key configured or on failure (caller decides)."""
-    global _last_call, last_ok, last_error
+    global _last_call, last_ok, last_error, last_error_at
     key = _api_key()
     syms = sorted({(s or "").upper() for s in symbols if s})
     if not key or not syms:
@@ -72,4 +73,5 @@ def quotes_by_symbol(symbols):
         return out
     except requests.RequestException as e:
         last_error = str(e)
+        last_error_at = time.time()
         return {}

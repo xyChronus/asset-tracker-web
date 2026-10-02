@@ -3967,19 +3967,31 @@ def api_news(market):
 def api_status(market):
     _check(market)
     c = db.conn()
+    degraded = None
     if market == "pse":
         quotes_updated = db.kv_get("pse:quotes", {}).get("updated")
-        err = pse_data.last_error
+        mod, source = pse_data, "PSE feeds"
     elif market == "global":
         quotes_updated = db.kv_get("global:quotes", {}).get("updated")
-        err = global_data.last_error
+        mod, source = global_data, "Stock data (Finnhub / Yahoo)"
     else:
-        quotes_updated = db.kv_get("crypto:watch_markets", {}).get("updated")
-        err = coingecko.last_error
+        snap = db.kv_get("crypto:watch_markets", {})
+        quotes_updated = snap.get("updated")
+        degraded = snap.get("degraded")   # prices served from CoinMarketCap meanwhile
+        mod, source = coingecko, "CoinGecko"
+    err = mod.last_error
+    # WHEN the source last failed and last answered, so the page can tell a
+    # failure that is costing data (no success since, prices going stale)
+    # from one a later call already recovered from - the dot used to go red
+    # on any remembered error string, even with prices updating normally
     return jsonify({"quotes_updated": quotes_updated, "open": market_session(market)[0],
                     "signals_updated": db.kv_get(f"{market}:signals", {}).get("updated"),
                     "news_updated": db.kv_get(f"{market}:news_updated"),
-                    "source_error": err})
+                    "source_error": err, "source": source,
+                    "source_error_at": int(mod.last_error_at * 1000) if err and mod.last_error_at else None,
+                    "source_ok_at": int(mod.last_ok * 1000) if mod.last_ok else None,
+                    "degraded": degraded,
+                    "interval_s": config.INTERVALS[market]["quotes"]})
 
 
 # ----------------------------------------------------------------------- boot
