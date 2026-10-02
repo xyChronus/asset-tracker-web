@@ -2689,6 +2689,17 @@ def api_set_cash(market):
     return jsonify({"ok": True, "budget": budget, "cash": cash, "cash_adj": cash_adj, "seeded": seeded})
 
 
+# Wallet figures live in float8 and the cash correction is kept RELATIVE to
+# the budget (cash_adj + (old - new)): a figure like 1e300 would swallow the
+# old budget and correction in that sum and the pinned cash could never be
+# recovered. Nobody's wallet is near this; it only stops absurd input.
+WALLET_MAX = 1e12
+# a stated total P/L is matched against the wallet's worth RIGHT NOW, so the
+# prices behind that worth must be current (collectors refresh every ~5-7
+# minutes, open or closed; the header calls 15-45 minutes "stale")
+PL_MAX_QUOTE_AGE_S = 3600
+
+
 @app.post("/api/<market>/wallet")
 def api_wallet(market):
     _check(market)
@@ -2701,6 +2712,8 @@ def api_wallet(market):
             delta = float(d["add"])
         except (TypeError, ValueError):
             return jsonify({"error": "enter a plain number, e.g. 1000"}), 400
+        if not math.isfinite(delta) or abs(delta) > WALLET_MAX:
+            return jsonify({"error": "that figure is too large"}), 400
         row = db.conn().execute(
             "UPDATE wallets SET budget = budget + %s"
             " WHERE user_id=%s AND market=%s AND budget IS NOT NULL AND budget + %s >= 0"
@@ -2716,16 +2729,55 @@ def api_wallet(market):
         _record_budget(uid(), market, budget, _cash_adj(uid(), market))
         _invalidate_advisor(market, uid())
         return jsonify({"ok": True, "budget": budget})
-    raw = d.get("budget")
-    if raw in (None, ""):
-        budget = None
-    else:
+    pl = None
+    solved_from = None   # (budget, cash_adj) the stated P/L was solved against
+    if d.get("pl") not in (None, ""):
+        # {"pl": amount}: the member states their total profit/loss. Total P/L
+        # IS wallet worth minus money put in; worth comes from live prices and
+        # the cash on hand, so the one figure a stated P/L can settle is the
+        # budget: budget = worth - P/L. It then goes through the same retype
+        # path as a typed budget (cash on hand pinned, In positions moves).
         try:
-            budget = float(raw)
+            # a JSON true/false would float() to 1.0/0.0 and quietly rewrite the budget
+            pl = float("x" if isinstance(d["pl"], bool) else d["pl"])
         except (TypeError, ValueError):
-            return jsonify({"error": "enter a plain number, e.g. 5000"}), 400
-        if not math.isfinite(budget) or budget < 0:
-            return jsonify({"error": "the budget can't be negative"}), 400
+            return jsonify({"error": "enter your total profit or loss as a plain number, e.g. -120 or 350"}), 400
+        if not math.isfinite(pl):
+            return jsonify({"error": "enter your total profit or loss as a plain number, e.g. -120 or 350"}), 400
+        if market in config.ARCHIVED_MARKETS:
+            return jsonify({"error": "this market is archived - its prices are frozen, so a total P/L "
+                                     "from today can't be matched to a budget here"}), 400
+        port = portfolio_state(market, uid())
+        worth = port["summary"].get("total_worth")
+        if worth is None:
+            return jsonify({"error": "set a budget first - your total P/L is measured against it"}), 400
+        if any(h.get("value") is None for h in port["holdings"]):
+            return jsonify({"error": "one of your positions has no live price right now, so the wallet's "
+                                     "worth isn't known - try again in a few minutes"}), 400
+        quoted = port.get("updated")
+        if port["holdings"] and (not quoted or now_ms() - quoted > PL_MAX_QUOTE_AGE_S * 1000):
+            return jsonify({"error": "prices haven't updated for a while, so the wallet's worth isn't current - "
+                                     "set it once the status at the top reads live again"}), 400
+        budget = round(worth - pl, 2) + 0.0
+        if budget < 0:
+            return jsonify({"error": f"a profit of {pl:,.2f} is more than the whole wallet is worth "
+                                     f"({worth:,.2f}) - that would mean a negative budget"}), 400
+        if budget > WALLET_MAX:
+            return jsonify({"error": "that figure is too large"}), 400
+        solved_from = (port["summary"]["budget"], port["summary"]["cash_adj"])
+    else:
+        raw = d.get("budget")
+        if raw in (None, ""):
+            budget = None
+        else:
+            try:
+                budget = float(raw)
+            except (TypeError, ValueError):
+                return jsonify({"error": "enter a plain number, e.g. 5000"}), 400
+            if not math.isfinite(budget) or budget < 0:
+                return jsonify({"error": "the budget can't be negative"}), 400
+            if budget > WALLET_MAX:
+                return jsonify({"error": "that figure is too large"}), 400
     # retyping the budget is a statement about money put in, not a deposit:
     # the cash on hand stays where it is (the correction absorbs the change,
     # in one statement so two saves can't cross). The first budget ever set
@@ -2733,7 +2785,21 @@ def api_wallet(market):
     # drops the correction.
     cash_adj = 0.0
     row = None
-    if budget is not None:
+    if solved_from is not None:
+        # the solved budget is only right for the wallet it was solved against:
+        # a deposit, cash fix or cleared budget from another tab in between
+        # would leave the P/L off by that amount under a message saying it was
+        # set. Compare-and-set, and never fall through to the first-budget
+        # INSERT (which resets the cash correction) - ask for a retry instead.
+        row = db.conn().execute(
+            "UPDATE wallets SET cash_adj = cash_adj + (budget - %s), budget = %s"
+            " WHERE user_id=%s AND market=%s AND budget = %s AND cash_adj = %s RETURNING cash_adj",
+            (budget, budget, uid(), market, solved_from[0], solved_from[1])).fetchone()
+        if not row:
+            return jsonify({"error": "your wallet changed while this was saving - "
+                                     "check the figures and set it again"}), 409
+        cash_adj = float(row["cash_adj"]) or 0.0
+    elif budget is not None:
         row = db.conn().execute(
             # exact, not rounded: rounding the correction here is what moved a
             # pinned cash figure by a sub-cent sliver every time the budget changed
@@ -2750,7 +2816,7 @@ def api_wallet(market):
     _invalidate_advisor(market, uid())
     # retyped: an existing budget was changed (the difference went to 'In
     # positions', cash untouched) - as opposed to the first budget ever set
-    return jsonify({"ok": True, "budget": budget, "cash_adj": cash_adj, "retyped": bool(row)})
+    return jsonify({"ok": True, "budget": budget, "cash_adj": cash_adj, "retyped": bool(row), "pl": pl})
 
 
 def _cash_adj(user, market):

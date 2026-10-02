@@ -214,6 +214,20 @@ function fmtMoney(v, compact) {
     { minimumFractionDigits: dp, maximumFractionDigits: dp });
 }
 
+// a native amount in the DISPLAY currency, unformatted - fmtMoney's own
+// conversion, for sums that must add up to the cent after converting
+function toDisplay(v) {
+  const c = CUR[state.market];
+  if (state.currency !== "native" && fxRate) {
+    const want = state.currency === "USD" ? "$" : "₱";
+    if (want !== c) return (c === "$") ? v * fxRate : v / fxRate;
+  }
+  return v;
+}
+function dispCur() {
+  return (state.currency !== "native" && fxRate) ? (state.currency === "USD" ? "$" : "₱") : CUR[state.market];
+}
+
 function fmtNum(v, dp) {
   if (v == null || isNaN(v)) return "—";
   return v.toLocaleString("en-US", { maximumFractionDigits: dp == null ? 2 : dp });
@@ -235,6 +249,7 @@ function pctSpan(v, dp) {
 
 function moneySpan(v) {
   if (v == null || isNaN(v)) return '<span class="muted">—</span>';
+  if (Math.abs(v) < 0.005) v = 0;   // sub-cent dust is zero, not a red "-$0.00"
   const cls = v >= 0 ? "pos" : "neg";
   // money AMOUNTS (P/L, day moves) read in cents, always 2 decimals — the
   // 4-6 decimal precision in fmtMoney is for tiny coin PRICES, and made
@@ -509,9 +524,24 @@ async function loadHeader() {
   try {
     const p = await pP;
     const s = p.summary;
+    // the same sum the Wallet panel shows: worth = the budget money in positions
+    // + cash on hand +/- total P/L. When cash has outgrown the budget (banked
+    // profit) 'In positions' is floored at zero and that sum no longer adds up,
+    // so the header falls back to live holdings + cash.
+    // Each figure is rounded in the DISPLAY currency first and the P/L is what
+    // is left, so the line adds up to the cent even after a $ -> ₱ conversion
+    // (four figures converted and rounded on their own drift by a centavo).
+    const sums = s.total_worth != null && s.budget - s.cash >= -0.005;
+    const r2 = x => Math.round(x * 100) / 100;
+    const m2 = v => dispCur() + Math.abs(v).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const dW = sums ? r2(toDisplay(s.total_worth)) : 0, dP = sums ? r2(toDisplay(s.in_positions)) : 0,
+          dC = sums ? r2(toDisplay(s.cash)) : 0;
+    const dPL = r2(dW - dP - dC) + 0;   // + 0: never a negative zero
     const hsHtml = s.total_worth != null
-      ? `<span class="hv">${fmtMoney(s.total_worth)}</span>` +
-        `<span class="muted">= ${fmtMoney(s.value)} holdings + ${fmtMoney(s.cash)} cash</span>` +
+      ? `<span class="hv">${sums ? (dW < 0 ? "-" : "") + m2(dW) : fmtMoney(s.total_worth)}</span>` +
+        (sums
+          ? `<span class="muted" title="What the wallet is worth now = the budget money in positions + your cash on hand, plus or minus your total profit/loss">= ${m2(dP)} in positions + ${dC < 0 ? "-" : ""}${m2(dC)} cash <span class="${dPL >= 0 ? "pos" : "neg"}">${dPL >= 0 ? "+" : "−"} ${m2(dPL)} P/L</span></span>`
+          : `<span class="muted">= ${fmtMoney(s.value)} holdings + ${fmtMoney(s.cash)} cash</span>`) +
         `<span>${pctSpan(s.change_24h_pct)} 24h</span>`
       : `<span class="hv">${fmtMoney(s.value)}</span>` +
         `<span>${pctSpan(s.change_24h_pct)} 24h</span>` +
@@ -752,7 +782,7 @@ async function loadDashboard() {
   if (s.total_worth != null) {
     cards.push({ label: "Total Wallet Worth", val: fmtMoney(s.total_worth),
       sub: s.budget_return_pct != null
-        ? pctSpan(s.budget_return_pct) + ` <span class="muted">vs your ${fmtMoney(s.budget)} budget</span>`
+        ? moneySpan(s.total_worth - s.budget) + " (" + pctSpan(s.budget_return_pct) + `) <span class="muted">vs your ${fmtMoney(s.budget)} budget</span>`
         : '<span class="muted">positions + cash</span>' });
     cards.push({ label: "Cash Available", val: s.cash >= 0 ? fmtMoney(s.cash) : `<span class="neg">${fmtMoney(s.cash)}</span>`,
       sub: `<span class="muted">of a ${fmtMoney(s.budget)} budget</span>` });
@@ -762,7 +792,7 @@ async function loadDashboard() {
     { label: "Cost Basis (open)", val: fmtMoney(s.cost), sub: '<span class="muted">what your current positions cost you</span>' },
     { label: "Unrealized P/L", val: moneySpan(s.unrealized), sub: pctSpan(s.unrealized_pct) },
     { label: "Realized P/L", val: moneySpan(s.realized), sub: '<span class="muted">locked in from sells</span>' },
-    { label: "Total P/L", val: moneySpan(s.unrealized + s.realized), sub: '<span class="muted">realized + unrealized</span>' },
+    { label: "Trades P/L", val: moneySpan(s.unrealized + s.realized), sub: '<span class="muted">realized + unrealized, from your logged trades</span>' },
   );
   document.getElementById("dash-cards").innerHTML = cards
     .map(c => `<div class="card"><div class="label">${c.label}</div><div class="val">${c.val}</div><div class="sub">${c.sub}</div></div>`).join("");
@@ -1825,6 +1855,12 @@ async function loadPortfolio() {
 
   // how much is left to spend, right where trades are logged
   const s = p.summary || {};
+  // total P/L vs budget; a sub-cent remainder is zero, not a red "-$0.00"
+  const walletPl = s.total_worth != null && s.budget != null && Math.abs(s.total_worth - s.budget) >= 0.005
+    ? s.total_worth - s.budget : 0;
+  // wallet inputs are read in the market's own currency, whatever the display switch says
+  const plCur = document.getElementById("wallet-pl-cur");
+  if (plCur) plCur.textContent = cur();
   document.getElementById("wallet-live").innerHTML = s.cash != null
     ? `<div class="mini-stat"><span>Cash available</span>
          <b class="${s.cash >= 0.005 ? "pos" : s.cash <= -0.005 ? "neg" : "muted"}">${fmtMoney(s.cash)}</b></div>
@@ -1833,11 +1869,17 @@ async function loadPortfolio() {
        <div class="mini-stat"><span>Budget</span><b>${fmtMoney(s.budget)}</b></div>
        <div class="mini-stat" title="What your positions would sell for at the latest prices. The coloured figure is that worth against the budget money in them — the same gain or loss as your return vs budget.">
          <span>Worth now</span><b>${fmtMoney(s.value)}${s.total_worth != null && s.budget != null
-           ? ` <small class="${s.total_worth - s.budget >= 0 ? "pos" : "neg"}">${s.total_worth - s.budget >= 0 ? "+" : ""}${fmtMoney(s.total_worth - s.budget, false, 2)}</small>` : ""}</b></div>` +
+           ? ` <small class="${walletPl >= 0 ? "pos" : "neg"}">${walletPl >= 0 ? "+" : ""}${fmtMoney(walletPl, false, 2)}</small><button type="button" class="pl-edit" id="wallet-pl-edit" title="Set your total P/L" aria-label="Edit your total profit or loss">✎</button>` : ""}</b></div>` +
        (Math.abs(s.cash_adj || 0) >= 0.005 ? `<div class="mini-stat" title="The difference between the cash your trades imply and the cash you've set (or kept when retyping the budget) — included in Cash available, so it also shows in your return vs budget">
          <span>Cash correction</span><b>${moneySpan(s.cash_adj)}</b></div>` : "")
     : '<div class="mini-stat"><span>Cash tracking</span><b class="muted">off — set a budget below</b></div>';
 
+  const plEdit = document.getElementById("wallet-pl-edit");
+  if (plEdit) plEdit.onclick = () => {
+    const inp = document.getElementById("wallet-pl");
+    inp.scrollIntoView({ block: "center", behavior: "smooth" });
+    inp.focus({ preventScroll: true });
+  };
   // Fix-records widgets: position picker + handlers
   const sel = document.getElementById("adj-asset");
   sel.innerHTML = '<option value="">— pick a position —</option>' +
@@ -3330,6 +3372,27 @@ const walletAdjust = async (sign) => {
 };
 document.getElementById("wallet-add").onclick = () => walletAdjust(1);
 document.getElementById("wallet-take").onclick = () => walletAdjust(-1);
+
+document.getElementById("wallet-pl-save").onclick = async () => {
+  const msg = document.getElementById("wallet-msg");
+  msg.textContent = "";
+  const inp = document.getElementById("wallet-pl");
+  if (inp.value.trim() === "" || !Number.isFinite(parseFloat(inp.value))) {
+    msg.innerHTML = '<span class="neg">Enter your total profit or loss, e.g. -120 or 350.</span>';
+    return;
+  }
+  try {
+    const r = await api(M() + "/wallet", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pl: inp.value }),
+    });
+    inp.value = "";
+    msg.innerHTML = `<span class="pos">Total P/L set to ${r.pl >= 0 ? "+" : ""}${fmtMoney(r.pl, false, 2)} ✓ — that makes your budget ${fmtMoney(r.budget, false, 2)}, and the change shows in In positions. Your holdings and cash on hand aren't touched. It moves with prices from here.</span>`;
+    loadPortfolio(); loadHeader();
+  } catch (e) {
+    msg.innerHTML = `<span class="neg">${esc(e.message)}</span>`;
+  }
+};
 
 document.getElementById("wallet-save").onclick = async () => {
   const msg = document.getElementById("wallet-msg");

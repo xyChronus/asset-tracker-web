@@ -240,13 +240,22 @@
             <button type="button" id="wallet-take" class="mini-btn">− Withdraw</button>
           </div>
         </label>
+        <label style="margin-top:8px">Know your total profit or loss instead? Set it here (in <span id="wallet-pl-cur">this market's currency</span>)
+          <div class="input-row">
+            <input type="number" step="any" id="wallet-pl" placeholder="e.g. -120 or 350">
+            <button type="button" id="wallet-pl-save" class="mini-btn">Set</button>
+          </div>
+        </label>
         <div class="muted small-note">The budget is what you've put in, and it splits two ways:
           <b>cash available</b> plus the money <b>in positions</b> (budget − cash). Retyping the
           budget changes <b>In positions</b> directly — your cash stays where it is — while
           Add/Withdraw moves the cash (a deposit is cash), and <b>Set actual cash on hand</b>
           below moves only the cash. <b>Worth now</b> is what those positions would sell for
-          today. Leave the budget empty to turn cash tracking off (that also clears any cash
-          correction).</div>
+          today, and the figure beside it is your <b>total P/L</b>: worth now + cash − budget.
+          Setting the total P/L works out the budget that matches it (money already taken out
+          counts as less put in) — the change shows in <b>In positions</b>; your holdings and
+          cash on hand aren't touched, and the P/L moves with prices from there. Leave the budget empty to turn cash tracking off (that also clears
+          any cash correction).</div>
         <div class="form-msg" id="wallet-msg"></div>
       </div>
       <div class="panel-head"><h3>🔧 Fix records</h3></div>
