@@ -221,7 +221,15 @@ class _Conn:
 
 IDLE_CLOSE_S = 90.0
 _all_conns = weakref.WeakSet()
-_janitor_started = False
+_janitor_pid = None      # the process whose janitor thread is running
+# Threads do not survive a fork, module state does. gunicorn (on Render) loads
+# the app in its master - db.init() opens a connection there - and forks the
+# worker: the worker arrives with the master's connection in its main thread
+# and a janitor flag for a thread it doesn't have. Reset here so the worker
+# starts its own janitor; the inherited connection is parked unused (it
+# shares a socket with the master - closing it would end the master's
+# session, so it is kept referenced and simply never touched).
+_inherited = []
 
 
 def _janitor():
@@ -235,10 +243,24 @@ def _janitor():
 
 
 def _start_janitor():
-    global _janitor_started
-    if not _janitor_started:
-        _janitor_started = True
+    global _janitor_pid
+    if _janitor_pid != os.getpid():
+        _janitor_pid = os.getpid()
         threading.Thread(target=_janitor, daemon=True, name="db-janitor").start()
+
+
+def _after_fork_in_child():
+    global _janitor_pid
+    _janitor_pid = None
+    c = getattr(_local, "conn", None)   # the forking thread's connection
+    if c is not None:
+        _inherited.append(c)
+        _local.conn = None
+    _all_conns.clear()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_after_fork_in_child)
 
 
 def conn():

@@ -140,6 +140,14 @@ def _bump_pw_version(user_id):
 
 
 @app.before_request
+def _collector_in_this_process():
+    # the process answering requests must be the one collecting (see
+    # ensure_scheduler); normally already true via gunicorn.conf.py post_fork
+    if _scheduler_pid != os.getpid():
+        ensure_scheduler()
+
+
+@app.before_request
 def _require_login():
     p = request.path
     if any(p == x or p.startswith(x) for x in PUBLIC_PATHS):
@@ -1725,7 +1733,7 @@ def scheduler():
         time.sleep(2)
 
 
-_scheduler_started = False
+_scheduler_pid = None        # the process that owns the collector thread
 _scheduler_guard = threading.Lock()
 
 
@@ -1733,14 +1741,24 @@ _BOOT_MS = int(time.time() * 1000)
 
 
 def ensure_scheduler():
-    global _scheduler_started
+    """Start the shared collector in THIS process, once. Keyed by pid, not a
+    bare flag: Render's gunicorn loads the app in its master and then forks
+    the worker that serves requests, so a flag set at import time reaches the
+    worker already True while the thread it describes lives in the master.
+    Seen 2026-10-02: collector in pid 58, requests served by pid 61, whose
+    15-minute snapshot cache only learned of new prices when it expired. The
+    worker is the one place the collector may live - it writes what this
+    same process serves. gunicorn.conf.py's post_fork calls this at boot;
+    the first request is the fallback if that hook is ever absent."""
+    global _scheduler_pid
     if os.environ.get("RUN_SCHEDULER", "1") != "1":
         return
     with _scheduler_guard:
-        if not _scheduler_started:
-            _scheduler_started = True
-            threading.Thread(target=scheduler, daemon=True, name="scheduler").start()
-            print(f"[scheduler] shared data collector started (pid {os.getpid()})")
+        if _scheduler_pid == os.getpid():
+            return
+        _scheduler_pid = os.getpid()
+        threading.Thread(target=scheduler, daemon=True, name="scheduler").start()
+        print(f"[scheduler] shared data collector started (pid {os.getpid()})")
 
 
 # --------------------------------------------------------------- portfolio
@@ -4020,7 +4038,11 @@ def api_status(market):
 # ----------------------------------------------------------------------- boot
 
 db.init()
-ensure_scheduler()
+# the collector is NOT started here: under gunicorn this module may be
+# imported by the master (app preload), and a thread started there would
+# collect for a process that serves nobody. gunicorn.conf.py starts it in
+# the worker; the first request does if that hook is absent.
 
 if __name__ == "__main__":
+    ensure_scheduler()
     app.run(host="127.0.0.1", port=int(os.environ.get("PORT", 8951)), threaded=True)
