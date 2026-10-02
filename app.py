@@ -1729,6 +1729,9 @@ _scheduler_started = False
 _scheduler_guard = threading.Lock()
 
 
+_BOOT_MS = int(time.time() * 1000)
+
+
 def ensure_scheduler():
     global _scheduler_started
     if os.environ.get("RUN_SCHEDULER", "1") != "1":
@@ -1736,8 +1739,8 @@ def ensure_scheduler():
     with _scheduler_guard:
         if not _scheduler_started:
             _scheduler_started = True
-            threading.Thread(target=scheduler, daemon=True).start()
-            print("[scheduler] shared data collector started")
+            threading.Thread(target=scheduler, daemon=True, name="scheduler").start()
+            print(f"[scheduler] shared data collector started (pid {os.getpid()})")
 
 
 # --------------------------------------------------------------- portfolio
@@ -3984,14 +3987,34 @@ def api_status(market):
     # failure that is costing data (no success since, prices going stale)
     # from one a later call already recovered from - the dot used to go red
     # on any remembered error string, even with prices updating normally
-    return jsonify({"quotes_updated": quotes_updated, "open": market_session(market)[0],
-                    "signals_updated": db.kv_get(f"{market}:signals", {}).get("updated"),
-                    "news_updated": db.kv_get(f"{market}:news_updated"),
-                    "source_error": err, "source": source,
-                    "source_error_at": int(mod.last_error_at * 1000) if err and mod.last_error_at else None,
-                    "source_ok_at": int(mod.last_ok * 1000) if mod.last_ok else None,
-                    "degraded": degraded,
-                    "interval_s": config.INTERVALS[market]["quotes"]})
+    out = {"quotes_updated": quotes_updated, "open": market_session(market)[0],
+           "signals_updated": db.kv_get(f"{market}:signals", {}).get("updated"),
+           "news_updated": db.kv_get(f"{market}:news_updated"),
+           "source_error": err, "source": source,
+           "source_error_at": int(mod.last_error_at * 1000) if err and mod.last_error_at else None,
+           "source_ok_at": int(mod.last_ok * 1000) if mod.last_ok else None,
+           "degraded": degraded,
+           "interval_s": config.INTERVALS[market]["quotes"]}
+    if session.get("admin"):
+        # the admin's view of the process that answered: is the collector
+        # running HERE, and does this process's snapshot cache agree with the
+        # database - the two questions an "it says stale but it isn't" report
+        # comes down to. Harmless numbers, but members don't need them.
+        key = ("crypto:watch_markets" if market == "crypto" else f"{market}:quotes")
+        row = db.conn().execute("SELECT value FROM kv WHERE key=%s", (key,)).fetchone()
+        try:
+            db_updated = json.loads(row["value"]).get("updated") if row else None
+        except (ValueError, TypeError):
+            db_updated = None
+        out["diag"] = {
+            "pid": os.getpid(), "boot_ms": _BOOT_MS, "uptime_s": int(time.time() - _BOOT_MS / 1000),
+            "scheduler_thread": any(t.name == "scheduler" and t.is_alive() for t in threading.enumerate()),
+            "threads": threading.active_count(),
+            "cached_quotes_updated": quotes_updated, "db_quotes_updated": db_updated,
+            "source_last_ok": mod.last_ok, "source_last_error_at": mod.last_error_at,
+            "hot_cache_keys": len(db._kv_cache),
+        }
+    return jsonify(out)
 
 
 # ----------------------------------------------------------------------- boot
